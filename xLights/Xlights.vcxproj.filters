@@ -1,0 +1,2335 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="BatchRenderDialog.cpp" />
+    <ClCompile Include="BulkEditControls.cpp" />
+    <ClCompile Include="BulkEditSliderDialog.cpp" />
+    <ClCompile Include="CachedFileDownloader.cpp" />
+    <ClCompile Include="ColorManager.cpp" />
+    <ClCompile Include="CustomTimingDialog.cpp" />
+    <ClCompile Include="EffectTimingDialog.cpp" />
+    <ClCompile Include="effects\GIFImage.cpp" />
+    <ClCompile Include="FontManager.cpp" />
+    <ClCompile Include="GenerateLyricsDialog.cpp" />
+    <ClCompile Include="HousePreviewPanel.cpp" />
+    <ClCompile Include="IPEntryDialog.cpp" />
+    <ClCompile Include="MatrixFaceDownloadDialog.cpp" />
+    <ClCompile Include="AudioManager.cpp" />
+    <ClCompile Include="BitmapCache.cpp" />
+    <ClCompile Include="BufferPanel.cpp" />
+    <ClCompile Include="BufferSizeDialog.cpp" />
+    <ClCompile Include="ChannelLayoutDialog.cpp" />
+    <ClCompile Include="Color.cpp" />
+    <ClCompile Include="ColorCurve.cpp" />
+    <ClCompile Include="ColorCurveDialog.cpp" />
+    <ClCompile Include="ColorPanel.cpp" />
+    <ClCompile Include="ControllerConnectionDialog.cpp" />
+    <ClCompile Include="ConvertDialog.cpp" />
+    <ClCompile Include="ConvertLogDialog.cpp" />
+    <ClCompile Include="DataLayer.cpp" />
+    <ClCompile Include="DimmingCurve.cpp" />
+    <ClCompile Include="DimmingCurvePanel.cpp" />
+    <ClCompile Include="EffectAssist.cpp" />
+    <ClCompile Include="EffectIconPanel.cpp" />
+    <ClCompile Include="EffectListDialog.cpp" />
+    <ClCompile Include="EffectsPanel.cpp" />
+    <ClCompile Include="effects\assist\AssistPanel.cpp" />
+    <ClCompile Include="effects\assist\PicturesAssistPanel.cpp" />
+    <ClCompile Include="effects\assist\xlGridCanvasEmpty.cpp" />
+    <ClCompile Include="effects\assist\xlGridCanvasMorph.cpp" />
+    <ClCompile Include="effects\assist\xlGridCanvasPictures.cpp" />
+    <ClCompile Include="effects\EffectManager.cpp" />
+    <ClCompile Include="effects\EffectPanelUtils.cpp" />
+    <ClCompile Include="EffectTreeDialog.cpp" />
+    <ClCompile Include="ExportModelSelect.cpp" />
+    <ClCompile Include="FileConverter.cpp" />
+    <ClCompile Include="FlickerFreeBitmapButton.cpp" />
+    <ClCompile Include="GenerateCustomModelDialog.cpp" />
+    <ClCompile Include="JobPool.cpp" />
+    <ClCompile Include="KeyBindings.cpp" />
+    <ClCompile Include="kiss_fft\kiss_fft.c" />
+    <ClCompile Include="kiss_fft\tools\kiss_fftr.c" />
+    <ClCompile Include="LayoutGroup.cpp" />
+    <ClCompile Include="LayoutPanel.cpp" />
+    <ClCompile Include="LMSImportChannelMapDialog.cpp" />
+    <ClCompile Include="LorConvertDialog.cpp" />
+    <ClCompile Include="LyricsDialog.cpp" />
+    <ClCompile Include="MIDI\Binasc.cpp" />
+    <ClCompile Include="MIDI\MidiEvent.cpp" />
+    <ClCompile Include="MIDI\MidiEventList.cpp" />
+    <ClCompile Include="MIDI\MidiFile.cpp" />
+    <ClCompile Include="MIDI\MidiMessage.cpp" />
+    <ClCompile Include="ModelPreview.cpp" />
+    <ClCompile Include="models\Node.cpp" />
+    <ClCompile Include="models\Shapes.cpp" />
+    <ClCompile Include="MusicXML.cpp" />
+    <ClCompile Include="NewTimingDialog.cpp" />
+    <ClCompile Include="NodesGridCellEditor.cpp" />
+    <ClCompile Include="NoteImportDialog.cpp" />
+    <ClCompile Include="OptionChooser.cpp" />
+    <ClCompile Include="outputs\TestPreset.cpp" />
+    <ClCompile Include="PaletteMgmtDialog.cpp" />
+    <ClCompile Include="PerspectivesPanel.cpp" />
+    <ClCompile Include="PhonemeDictionary.cpp" />
+    <ClCompile Include="PixelBuffer.cpp" />
+    <ClCompile Include="PreviewPane.cpp" />
+    <ClCompile Include="RenameTextDialog.cpp" />
+    <ClCompile Include="Render.cpp" />
+    <ClCompile Include="RenderBuffer.cpp" />
+    <ClCompile Include="RenderProgressDialog.cpp" />
+    <ClCompile Include="ResizeImageDialog.cpp" />
+    <ClCompile Include="SaveChangesDialog.cpp" />
+    <ClCompile Include="SelectPanel.cpp" />
+    <ClCompile Include="SelectTimingsDialog.cpp" />
+    <ClCompile Include="SeqElementMismatchDialog.cpp" />
+    <ClCompile Include="SeqExportDialog.cpp" />
+    <ClCompile Include="SeqFileUtilities.cpp" />
+    <ClCompile Include="SeqSettingsDialog.cpp" />
+    <ClCompile Include="SequenceData.cpp" />
+    <ClCompile Include="SequenceViewManager.cpp" />
+    <ClCompile Include="SevenSegmentDialog.cpp" />
+    <ClCompile Include="SplashDialog.cpp" />
+    <ClCompile Include="StartChannelDialog.cpp" />
+    <ClCompile Include="StrandNodeNamesDialog.cpp" />
+    <ClCompile Include="SubBufferPanel.cpp" />
+    <ClCompile Include="SuperStarImportDialog.cpp" />
+    <ClCompile Include="support\EzGrid.cpp" />
+    <ClCompile Include="support\FastComboEditor.cpp" />
+    <ClCompile Include="support\GridCellChoiceRenderer.cpp" />
+    <ClCompile Include="TabConvert.cpp" />
+    <ClCompile Include="TabPreview.cpp" />
+    <ClCompile Include="TabSequence.cpp" />
+    <ClCompile Include="TabSetup.cpp" />
+    <ClCompile Include="TimingPanel.cpp" />
+    <ClCompile Include="tmGridCell.cpp" />
+    <ClCompile Include="TopEffectsPanel.cpp" />
+    <ClCompile Include="UpdaterDialog.cpp" />
+    <ClCompile Include="ValueCurve.cpp" />
+    <ClCompile Include="ValueCurveButton.cpp" />
+    <ClCompile Include="ValueCurveDialog.cpp" />
+    <ClCompile Include="vamp-hostsdk\acsymbols.c" />
+    <ClCompile Include="vamp-hostsdk\FFT.cpp" />
+    <ClCompile Include="vamp-hostsdk\Files.cpp" />
+    <ClCompile Include="vamp-hostsdk\host-c.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginChannelAdapter.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginHostAdapter.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginInputDomainAdapter.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginLoader.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginSummarisingAdapter.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginWrapper.cpp" />
+    <ClCompile Include="vamp-hostsdk\RealTime.cpp" />
+    <ClCompile Include="VAMPPluginDialog.cpp" />
+    <ClCompile Include="VideoExporter.cpp" />
+    <ClCompile Include="VendorModelDialog.cpp" />
+    <ClCompile Include="VideoReader.cpp" />
+    <ClCompile Include="ViewsModelsPanel.cpp" />
+    <ClCompile Include="VSAFile.cpp" />
+    <ClCompile Include="VsaImportDialog.cpp" />
+    <ClCompile Include="WiringDialog.cpp" />
+    <ClCompile Include="wxCheckedListCtrl.cpp" />
+    <ClCompile Include="xlColorCanvas.cpp" />
+    <ClCompile Include="xlColorPicker.cpp" />
+    <ClCompile Include="xlColorPickerFields.cpp" />
+    <ClCompile Include="xlGridCanvas.cpp" />
+    <ClCompile Include="xLightsApp.cpp" />
+    <ClCompile Include="xLightsImportChannelMapDialog.cpp" />
+    <ClCompile Include="xLightsMain.cpp" />
+    <ClCompile Include="xLightsTimer.cpp" />
+    <ClCompile Include="xLightsVersion.cpp" />
+    <ClCompile Include="xLightsXmlFile.cpp" />
+    <ClCompile Include="xlSlider.cpp" />
+    <ClCompile Include="PixelTestDialog.cpp" />
+    <ClCompile Include="SequenceVideoPanel.cpp" />
+    <ClCompile Include="SequenceVideoPreview.cpp" />
+    <ClCompile Include="controllers\WebSocketClient.cpp" />
+    <ClCompile Include="LayerSelectDialog.cpp" />
+    <ClCompile Include="..\xSchedule\md5.cpp" />
+    <ClCompile Include="VendorMusicDialog.cpp" />
+    <ClCompile Include="VendorMusicHelpers.cpp" />
+    <ClCompile Include="JukeboxPanel.cpp" />
+    <ClCompile Include="LinkJukeboxButtonDialog.cpp" />
+    <ClCompile Include="DissolveTransitionPattern.cpp" />
+    <ClCompile Include="OpenGLShaders.cpp" />
+    <ClCompile Include="xlLockButton.cpp" />
+    <ClCompile Include="support\VectorMath.cpp" />
+    <ClCompile Include="ViewpointDialog.cpp" />
+    <ClCompile Include="ViewpointMgr.cpp" />
+    <ClCompile Include="LyricUserDictDialog.cpp" />
+    <ClCompile Include="RenderCache.cpp" />
+    <ClCompile Include="Parallel.cpp" />
+    <ClCompile Include="models\ObjectManager.cpp" />
+    <ClCompile Include="models\ViewObjectManager.cpp" />
+    <ClCompile Include="ViewObjectPanel.cpp" />
+    <ClCompile Include="NodeSelectGrid.cpp" />
+    <ClCompile Include="MultiControllerUploadDialog.cpp" />
+    <ClCompile Include="wxModelGridCellRenderer.cpp" />
+    <ClCompile Include="FSEQFile.cpp" />
+    <ClCompile Include="PathGenerationDialog.cpp" />
+    <ClCompile Include="RemapDMXChannelsDialog.cpp" />
+    <ClCompile Include="LOREdit.cpp" />
+    <ClCompile Include="AlignmentDialog.cpp" />
+    <ClCompile Include="CharMapDialog.cpp" />
+    <ClCompile Include="models\ArchesModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\ArtNetOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\BarsEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\BarsPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="models\BaseObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="OutputModelManager.cpp" />
+    <ClCompile Include="models\ModelManager.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\Model.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ChannelBlockModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\CandyCaneModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\CircleModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\CubeModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="CustomModelDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\CustomModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\IciclesModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ImageObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ImageModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\MatrixModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\MeshObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\GridlinesObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\PolyLineModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\SphereModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\SpinnerModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\StarModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\SubModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="SubModelsDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\TreeModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ViewObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\WreathModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ModelGroup.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelFaceDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelDimmingCurveDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ModelScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelStateDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\SingleLineModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\MeshObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ImportPreviewsModelsDialog.cpp" />
+    <ClCompile Include="ShaderDownloadDialog.cpp" />
+    <ClCompile Include="outputs\ZCPPOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\DDPOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\E131Output.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\Falcon.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ButterflyEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ButterflyPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CandleEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CandlePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CirclesEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CirclesPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CurtainEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\CurtainPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\DMXEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\DMXPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FanPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FanEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FacesPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FacesEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GarlandsPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GarlandsEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GalaxyPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GalaxyEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FireworksPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FireworksEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FirePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FireEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FillPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\FillEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\DMXOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TextEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TextPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\KaleidoscopePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\KaleidoscopeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\SerialOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\serial.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\OutputManager.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\Output.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\ESPixelStick.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\FPP.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\FPPConnectDialog.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\J1Sys.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\AlphaPix.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\ControllerUploadData.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MorphPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MorphEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="Vixen3.cpp" />
+    <ClCompile Include="effects\MusicEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MusicPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="NoteRangeDialog.cpp" />
+    <ClCompile Include="effects\ShaderEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShaderPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShapeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShapePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShimmerEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShimmerPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShockwaveEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ShockwavePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SingleStrandEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SingleStrandPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SnowflakesEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SnowflakesPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SnowstormEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SnowstormPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SpiralsEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\StateEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\StatePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SpirographPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SpirographEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SpiralsPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\WaveEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\WarpPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\WarpEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\VUMeterPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\VUMeterEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\WavePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\VideoEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\VideoPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TwinklePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TwinkleEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TreePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TreeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TendrilPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\TendrilEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ServoPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ServoEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PlasmaPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PlasmaEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PinwheelPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PinwheelEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PicturesPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PicturesEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PianoPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\PianoEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="models\WindowFrameModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\WholeHouseModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelChainDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelGroupPanel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LiquidEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LiquidPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LifeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LifePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LightningEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LightningPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LinesEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\LinesPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MarqueePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MarqueeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MeteorsPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MeteorsEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\RenderableEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GlediatorPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GlediatorEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\OnPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\OnEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\OffPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\OffEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\Pixlite16.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\RippleEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\RipplePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\SanDevices.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="BulkEditFontPickerDialog.cpp" />
+    <ClCompile Include="outputs\NullOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\OpenDMXOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\OpenPixelNetOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\IPOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\LorController.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\LorControllers.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\LOROptimisedOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\LOROutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="CheckboxSelectDialog.cpp" />
+    <ClCompile Include="EmailDialog.cpp" />
+    <ClCompile Include="vamp-hostsdk\PluginBufferingAdapter.cpp" />
+    <ClCompile Include="DragValueCurveBitmapButton.cpp" />
+    <ClCompile Include="ValueCurvesPanel.cpp" />
+    <ClCompile Include="ColoursPanel.cpp" />
+    <ClCompile Include="DragColoursBitmapButton.cpp" />
+    <ClCompile Include="TraceLog.cpp" />
+    <ClCompile Include="effects\StrobeEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\StrobePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\xxxEthernetOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\xxxSerialOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\HinksPix.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\HinksPixExportDialog.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ColorWashEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\ColorWashPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxModel.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxSkulltronix.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxFloodlight.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxMovingHead.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxColorAbility.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxPanTiltAbility.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxShutterAbility.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxServo.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxServo3D.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\Mesh.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxImage.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxFloodArea.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\Servo.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\BackupSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\SequenceFileSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\ViewSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\xLightsPreferences.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\OtherSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\OutputSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\ColorManagerSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\EffectsGridSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\RandomEffectsSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\ServoConfigDialog.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxSkull.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\SkullConfigDialog.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\ControllerCaps.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\Controller.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\ControllerEthernet.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\ControllerNull.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\ControllerSerial.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="..\xFade\wxLED.cpp" />
+    <ClCompile Include="controllers\BaseController.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="ControllerModelDialog.cpp" />
+    <ClCompile Include="SubModelGenerateDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="BulkEditColourPickerDialog.cpp" />
+    <ClCompile Include="outputs\RenardOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\OPCOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="KeyBindingEditDialog.cpp" />
+    <ClCompile Include="outputs\PixelNetOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\Minleon.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\GenericSerialOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="Discovery.cpp" />
+    <ClCompile Include="models\RulerObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxGeneral.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="AboutDialog.cpp" />
+    <ClCompile Include="outputs\KinetOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\DragEffectBitmapButton.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\Effect.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\EffectDropTarget.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\EffectLayer.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\EffectsGrid.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\Element.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\MainSequencer.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\RowHeading.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\SequenceElements.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\tabSequencer.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\TimeLine.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\UndoManager.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="sequencer\Waveform.cpp">
+      <Filter>sequencer</Filter>
+    </ClCompile>
+    <ClCompile Include="models\TerrainScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\TerrianObject.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="CopyFormat1.cpp" />
+    <ClCompile Include="MediaImportOptionsDialog.cpp" />
+    <ClCompile Include="SequencePackage.cpp" />
+    <ClCompile Include="cad\CADModel.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="cad\DXFWriter.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="cad\ModelToCAD.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="cad\STLWriter.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="cad\VRMLWriter.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="cad\CADWriter.cpp">
+      <Filter>cad</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\WLED.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="Pixels.cpp" />
+    <ClCompile Include="LORPreview.cpp" />
+    <ClCompile Include="ExportSettings.cpp" />
+    <ClCompile Include="GPURenderUtils.cpp" />
+    <ClCompile Include="graphics\opengl\DrawGLUtils.cpp">
+      <Filter>graphics\opengl</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\opengl\xlGLCanvas.cpp">
+      <Filter>graphics\opengl</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\xlGraphicsAccumulators.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\xlFontInfo.cpp" />
+    <ClCompile Include="ScriptsDialog.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\connection.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\context.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\message.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\pages.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\request.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\response.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\server.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\sha1.cpp" />
+    <ClCompile Include="..\xSchedule\wxHTTPServer\status.cpp" />
+    <ClCompile Include="graphics\xlMesh.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="automation\automation.cpp">
+      <Filter>automation</Filter>
+    </ClCompile>
+    <ClCompile Include="automation\xLightsAutomations.cpp">
+      <Filter>automation</Filter>
+    </ClCompile>
+    <ClCompile Include="automation\LuaRunner.cpp">
+      <Filter>automation</Filter>
+    </ClCompile>
+    <ClCompile Include="..\common\xlBaseApp.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="Mouse3DManager.cpp" />
+    <ClCompile Include="effects\FX.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="WindowsHardwareVideoReader.cpp" />
+    <ClCompile Include="ColourReplaceDialog.cpp" />
+    <ClCompile Include="models\BoxedScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\PolyPointScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\ThreePointScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\TwoPointScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="FindDataPanel.cpp" />
+    <ClCompile Include="models\MultiPointModel.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="models\MultiPointScreenLocation.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="SearchPanel.cpp" />
+    <ClCompile Include="effects\SketchEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SketchPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\SketchEffectDrawing.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\assist\SketchAssistPanel.cpp" />
+    <ClCompile Include="effects\assist\SketchCanvasPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="outputs\TwinklyOutput.cpp">
+      <Filter>Outputs</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxColorAbilityRGB.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxColorAbilityWheel.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxPresetAbility.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="TipOfTheDayDialog.cpp" />
+    <ClCompile Include="ModelRemap.cpp" />
+    <ClCompile Include="RestoreBackupDialog.cpp" />
+    <ClCompile Include="LayoutUtils.cpp" />
+    <ClCompile Include="preferences\CheckSequenceSettingsPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="UtilClasses.cpp" />
+    <ClCompile Include="automation\PythonRunner.cpp">
+      <Filter>automation</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\Experience.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="BulkEditComboDialog.cpp" />
+    <ClCompile Include="utils\string_utils.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="UtilFunctions.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\ip_utils.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="utils\Curl.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="DuplicateDialog.cpp" />
+    <ClCompile Include="models\DMX\DmxColorAbilityCMY.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GuitarEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\GuitarPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\opengl\xlOGL3GraphicsContext.cpp">
+      <Filter>graphics\opengl</Filter>
+    </ClCompile>
+    <ClCompile Include="MetronomeLabelDialog.cpp" />
+    <ClCompile Include="utils\CurlManager.cpp">
+      <Filter>utils</Filter>
+    </ClCompile>
+    <ClCompile Include="controllers\FPPUploadProgressDialog.cpp">
+      <Filter>Controllers</Filter>
+    </ClCompile>
+    <ClCompile Include="AutoLabelDialog.cpp" />
+    <ClCompile Include="effects\DuplicateEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\DuplicatePanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\AdjustEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\AdjustPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="EditAliasesDialog.cpp">
+      <Filter>Models</Filter>
+    </ClCompile>
+    <ClCompile Include="TempFileManager.cpp" />
+    <ClCompile Include="xlColourData.cpp" />
+    <ClCompile Include="effects\MovingHeadEffect.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MovingHeadCanvasPanel.cpp">
+      <Filter>Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\MovingHeads\MhChannel.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\MovingHeads\MhChannelDialog.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\MovingHeads\MhFeature.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\MovingHeads\MhFeatureDialog.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MHRgbPickerPanel.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MHPresetBitmapButton.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MHPathPresetBitmapButton.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MHColorWheelPanel.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxMotor.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxMovingHeadAdv.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="SpecialOptions.cpp" />
+    <ClCompile Include="controllers\ILightThat.cpp" />
+    <ClCompile Include="EditSubmodelAliasesDialog.cpp" />
+    <ClCompile Include="effects\MovingHeadPanels\MovingHeadDimmerPanel.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="models\DMX\DmxDimmerAbility.cpp">
+      <Filter>Models\DMX</Filter>
+    </ClCompile>
+    <ClCompile Include="effects\MovingHeadPanels\MHDimmerPresetBitmapButton.cpp">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClCompile>
+    <ClCompile Include="ShowFolderSearchDialog.cpp" />
+    <ClCompile Include="effects\ispc\ISPCComputeUtilities.cpp">
+      <Filter>Effects\ispc</Filter>
+    </ClCompile>
+    <ClCompile Include="preferences\ServicesPanel.cpp">
+      <Filter>Preferences</Filter>
+    </ClCompile>
+    <ClCompile Include="ai\AIColorPaletteDialog.cpp">
+      <Filter>ai</Filter>
+    </ClCompile>
+    <ClCompile Include="ai\aiBase.cpp">
+      <Filter>ai</Filter>
+    </ClCompile>
+    <ClCompile Include="ai\chatGPT.cpp">
+      <Filter>ai</Filter>
+    </ClCompile>
+    <ClCompile Include="CheckSequenceReport.cpp" />
+    <ClCompile Include="ai\ollama.cpp">
+      <Filter>ai</Filter>
+    </ClCompile>
+    <ClCompile Include="ai\ServiceManager.cpp">
+      <Filter>ai</Filter>
+    </ClCompile>
+    <ClCompile Include="ai\AIColorPaletteDialog.h" />
+    <ClCompile Include="..\xSchedule\wxJSON\jsonreader.cpp" />
+    <ClCompile Include="..\xSchedule\wxJSON\jsonval.cpp" />
+    <ClCompile Include="..\xSchedule\wxJSON\jsonwriter.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="BatchRenderDialog.h" />
+    <ClInclude Include="BulkEditControls.h" />
+    <ClInclude Include="BulkEditSliderDialog.h" />
+    <ClInclude Include="CachedFileDownloader.h" />
+    <ClInclude Include="ColorManager.h" />
+    <ClInclude Include="EffectTimingDialog.h" />
+    <ClInclude Include="FontManager.h" />
+    <ClInclude Include="GenerateLyricsDialog.h" />
+    <ClInclude Include="HousePreviewPanel.h" />
+    <ClInclude Include="MatrixFaceDownloadDialog.h" />
+    <ClInclude Include="CustomTimingDialog.h" />
+    <ClInclude Include="effects\GIFImage.h" />
+    <ClInclude Include="IPEntryDialog.h" />
+    <ClInclude Include="AudioManager.h" />
+    <ClInclude Include="BitmapCache.h" />
+    <ClInclude Include="BufferPanel.h" />
+    <ClInclude Include="BufferSizeDialog.h" />
+    <ClInclude Include="ChannelLayoutDialog.h" />
+    <ClInclude Include="Color.h" />
+    <ClInclude Include="ColorCurve.h" />
+    <ClInclude Include="colorcurvedialog.h" />
+    <ClInclude Include="ColorPanel.h" />
+    <ClInclude Include="ControllerConnectionDialog.h" />
+    <ClInclude Include="ConvertDialog.h" />
+    <ClInclude Include="ConvertLogDialog.h" />
+    <ClInclude Include="DataLayer.h" />
+    <ClInclude Include="DimmingCurve.h" />
+    <ClInclude Include="DimmingCurvePanel.h" />
+    <ClInclude Include="EffectAssist.h" />
+    <ClInclude Include="EffectIconPanel.h" />
+    <ClInclude Include="EffectListDialog.h" />
+    <ClInclude Include="EffectsPanel.h" />
+    <ClInclude Include="effects\EffectManager.h" />
+    <ClInclude Include="effects\EffectPanelUtils.h" />
+    <ClInclude Include="EffectTreeDialog.h" />
+    <ClInclude Include="ExportModelSelect.h" />
+    <ClInclude Include="FileConverter.h" />
+    <ClInclude Include="FlickerFreeBitmapButton.h" />
+    <ClInclude Include="GenerateCustomModelDialog.h" />
+    <ClInclude Include="Images_png.h" />
+    <ClInclude Include="JobPool.h" />
+    <ClInclude Include="KeyBindings.h" />
+    <ClInclude Include="LayoutGroup.h" />
+    <ClInclude Include="LayoutPanel.h" />
+    <ClInclude Include="LMSImportChannelMapDialog.h" />
+    <ClInclude Include="LorConvertDialog.h" />
+    <ClInclude Include="LyricsDialog.h" />
+    <ClInclude Include="ModelPreview.h" />
+    <ClInclude Include="models\Node.h" />
+    <ClInclude Include="models\Shapes.h" />
+    <ClInclude Include="MusicXML.h" />
+    <ClInclude Include="NewTimingDialog.h" />
+    <ClInclude Include="NodesGridCellEditor.h" />
+    <ClInclude Include="NoteImportDialog.h" />
+    <ClInclude Include="OptionChooser.h" />
+    <ClInclude Include="ExternalHooks.h" />
+    <ClInclude Include="outputs\TestPreset.h" />
+    <ClInclude Include="PaletteMgmtDialog.h" />
+    <ClInclude Include="PerspectivesPanel.h" />
+    <ClInclude Include="PhonemeDictionary.h" />
+    <ClInclude Include="PixelBuffer.h" />
+    <ClInclude Include="PreviewPane.h" />
+    <ClInclude Include="RenameTextDialog.h" />
+    <ClInclude Include="RenderBuffer.h" />
+    <ClInclude Include="RenderCommandEvent.h" />
+    <ClInclude Include="RenderProgressDialog.h" />
+    <ClInclude Include="ResizeImageDialog.h" />
+    <ClInclude Include="SaveChangesDialog.h" />
+    <ClInclude Include="SelectPanel.h" />
+    <ClInclude Include="SelectTimingsDialog.h" />
+    <ClInclude Include="SeqElementMismatchDialog.h" />
+    <ClInclude Include="SeqExportDialog.h" />
+    <ClInclude Include="SeqSettingsDialog.h" />
+    <ClInclude Include="SequenceData.h" />
+    <ClInclude Include="SequenceViewManager.h" />
+    <ClInclude Include="SevenSegmentDialog.h" />
+    <ClInclude Include="SplashDialog.h" />
+    <ClInclude Include="StartChannelDialog.h" />
+    <ClInclude Include="StrandNodeNamesDialog.h" />
+    <ClInclude Include="SubBufferPanel.h" />
+    <ClInclude Include="SuperStarImportDialog.h" />
+    <ClInclude Include="support\EzGrid.h" />
+    <ClInclude Include="support\FastComboEditor.h" />
+    <ClInclude Include="support\GridCellChoiceRenderer.h" />
+    <ClInclude Include="TimingPanel.h" />
+    <ClInclude Include="tmGridCell.h" />
+    <ClInclude Include="TopEffectsPanel.h" />
+    <ClInclude Include="UpdaterDialog.h" />
+    <ClInclude Include="UtilClasses.h" />
+    <ClInclude Include="ValueCurve.h" />
+    <ClInclude Include="ValueCurveButton.h" />
+    <ClInclude Include="ValueCurveDialog.h" />
+    <ClInclude Include="vamp-hostsdk\Files.h" />
+    <ClInclude Include="vamp-hostsdk\host-c.h" />
+    <ClInclude Include="vamp-hostsdk\hostguard.h" />
+    <ClInclude Include="vamp-hostsdk\plugguard.h" />
+    <ClInclude Include="vamp-hostsdk\Plugin.h" />
+    <ClInclude Include="vamp-hostsdk\Plugin2.h" />
+    <ClInclude Include="vamp-hostsdk\PluginBase.h" />
+    <ClInclude Include="vamp-hostsdk\PluginBase2.h" />
+    <ClInclude Include="vamp-hostsdk\PluginBufferingAdapter.h" />
+    <ClInclude Include="vamp-hostsdk\PluginChannelAdapter.h" />
+    <ClInclude Include="vamp-hostsdk\PluginHostAdapter.h" />
+    <ClInclude Include="vamp-hostsdk\PluginInputDomainAdapter.h" />
+    <ClInclude Include="vamp-hostsdk\PluginLoader.h" />
+    <ClInclude Include="vamp-hostsdk\PluginSummarisingAdapter.h" />
+    <ClInclude Include="vamp-hostsdk\PluginWrapper.h" />
+    <ClInclude Include="vamp-hostsdk\RealTime.h" />
+    <ClInclude Include="vamp-hostsdk\RealTime2.h" />
+    <ClInclude Include="vamp-hostsdk\vamp-hostsdk.h" />
+    <ClInclude Include="vamp-hostsdk\vamp.h" />
+    <ClInclude Include="vamp-hostsdk\Window.h" />
+    <ClInclude Include="VAMPPluginDialog.h" />
+    <ClInclude Include="VideoExporter.h" />
+    <ClInclude Include="VendorModelDialog.h" />
+    <ClInclude Include="VideoReader.h" />
+    <ClInclude Include="ViewsModelsPanel.h" />
+    <ClInclude Include="VSAFile.h" />
+    <ClInclude Include="VsaImportDialog.h" />
+    <ClInclude Include="WiringDialog.h" />
+    <ClInclude Include="wxCheckedListCtrl.h" />
+    <ClInclude Include="xlColorCanvas.h" />
+    <ClInclude Include="xlColorPicker.h" />
+    <ClInclude Include="xlColorPickerFields.h" />
+    <ClInclude Include="xlCustomControl.h" />
+    <ClInclude Include="xlGridCanvas.h" />
+    <ClInclude Include="xLightsApp.h" />
+    <ClInclude Include="xLightsImportChannelMapDialog.h" />
+    <ClInclude Include="xLightsMain.h" />
+    <ClInclude Include="xLightsTimer.h" />
+    <ClInclude Include="xLightsVersion.h" />
+    <ClInclude Include="xLightsXmlFile.h" />
+    <ClInclude Include="xlSlider.h" />
+    <ClInclude Include="PixelTestDialog.h" />
+    <ClInclude Include="SequenceVideoPanel.h" />
+    <ClInclude Include="SequenceVideoPreview.h" />
+    <ClInclude Include="controllers\WebSocketClient.h" />
+    <ClInclude Include="LayerSelectDialog.h" />
+    <ClInclude Include="..\xSchedule\md5.h" />
+    <ClInclude Include="VendorMusicDialog.h" />
+    <ClInclude Include="VendorMusicHelpers.h" />
+    <ClInclude Include="JukeboxPanel.h" />
+    <ClInclude Include="LinkJukeboxButtonDialog.h" />
+    <ClInclude Include="RenderUtils.h" />
+    <ClInclude Include="DissolveTransitionPattern.h" />
+    <ClInclude Include="OpenGLShaders.h" />
+    <ClInclude Include="effects\assist\AssistPanel.h" />
+    <ClInclude Include="effects\assist\PicturesAssistPanel.h" />
+    <ClInclude Include="effects\assist\xlGridCanvasEmpty.h" />
+    <ClInclude Include="effects\assist\xlGridCanvasMorph.h" />
+    <ClInclude Include="effects\assist\xlGridCanvasPictures.h" />
+    <ClInclude Include="xlLockButton.h" />
+    <ClInclude Include="support\VectorMath.h" />
+    <ClInclude Include="ViewpointDialog.h" />
+    <ClInclude Include="ViewpointMgr.h" />
+    <ClInclude Include="LyricUserDictDialog.h" />
+    <ClInclude Include="RenderCache.h" />
+    <ClInclude Include="Parallel.h" />
+    <ClInclude Include="models\ObjectManager.h" />
+    <ClInclude Include="models\ViewObjectManager.h" />
+    <ClInclude Include="ViewObjectPanel.h" />
+    <ClInclude Include="NodeSelectGrid.h" />
+    <ClInclude Include="models\tiny_obj_loader.h" />
+    <ClInclude Include="MultiControllerUploadDialog.h" />
+    <ClInclude Include="wxModelGridCellRenderer.h" />
+    <ClInclude Include="FSEQFile.h" />
+    <ClInclude Include="PathGenerationDialog.h" />
+    <ClInclude Include="RemapDMXChannelsDialog.h" />
+    <ClInclude Include="LOREdit.h" />
+    <ClInclude Include="..\include\globals.h" />
+    <ClInclude Include="AlignmentDialog.h" />
+    <ClInclude Include="CharMapDialog.h" />
+    <ClInclude Include="models\ArchesModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\ArtNetOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\BarsEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\BarsPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="models\BaseObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="OutputModelManager.h" />
+    <ClInclude Include="models\ModelManager.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\Model.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ChannelBlockModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\CandyCaneModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\CircleModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\CubeModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="CustomModelDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\CustomModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\IciclesModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ImageObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ImageModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\MatrixModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\MeshObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\GridlinesObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\PolyLineModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\SphereModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\SpinnerModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\StarModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\SubModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="SubModelsDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\TreeModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ViewObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\WreathModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ModelGroup.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelFaceDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelDimmingCurveDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ModelScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelStateDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\SingleLineModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\MeshObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ImportPreviewsModelsDialog.h" />
+    <ClInclude Include="ShaderDownloadDialog.h" />
+    <ClInclude Include="outputs\ZCPP.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\ZCPPOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\DDPOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\E131Output.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\Falcon.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ButterflyEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ButterflyPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CandleEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CandlePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CirclesEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CirclesPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CurtainEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\CurtainPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\DMXEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\DMXPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FanPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FanEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FacesPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FacesEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GarlandsPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GarlandsEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GalaxyPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GalaxyEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FireworksPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FireworksEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FirePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FireEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FillPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\FillEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\Controller.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\DMXOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\DLightOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TextEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TextPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\KaleidoscopePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\KaleidoscopeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\SerialOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\serial.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\OutputManager.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\Output.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\ESPixelStick.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\FPP.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\FPPConnectDialog.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\J1Sys.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\AlphaPix.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\ControllerUploadData.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="Vixen3.h" />
+    <ClInclude Include="effects\MorphPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MorphEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MusicEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MusicPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="NoteRangeDialog.h" />
+    <ClInclude Include="effects\ShaderEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShaderPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShapeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShapePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShimmerEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShimmerPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShockwaveEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ShockwavePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SingleStrandEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SingleStrandPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SnowflakesEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SnowflakesPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SnowstormEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SnowstormPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SpiralsEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\StateEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\StatePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SpirographPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SpirographEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SpiralsPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\WaveEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\WarpPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\WarpEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\VUMeterPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\VUMeterEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\WavePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\VideoEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\VideoPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TwinklePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TwinkleEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TreePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TreeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TendrilPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\TendrilEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ServoPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ServoEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PlasmaPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PlasmaEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PinwheelPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PinwheelEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PicturesPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PicturesEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PianoPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\PianoEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="models\WindowFrameModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\WholeHouseModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelChainDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelGroupPanel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LiquidEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LiquidPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LifeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LifePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LightningEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LightningPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LinesEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\LinesPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MarqueePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MarqueeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MeteorsPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MeteorsEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\RenderableEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GlediatorPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GlediatorEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\OnPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\OnEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\OffPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\OffEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\Pixlite16.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\RippleEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\RipplePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\SanDevices.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="BulkEditFontPickerDialog.h" />
+    <ClInclude Include="outputs\NullOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\OpenDMXOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\OpenPixelNetOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\IPOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\LorController.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\LorControllers.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\LOROptimisedOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\LOROutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="EmailDialog.h" />
+    <ClInclude Include="DragValueCurveBitmapButton.h" />
+    <ClInclude Include="ValueCurvesPanel.h" />
+    <ClInclude Include="ColoursPanel.h" />
+    <ClInclude Include="DragColoursBitmapButton.h" />
+    <ClInclude Include="SpecialOptions.h" />
+    <ClInclude Include="TraceLog.h" />
+    <ClInclude Include="effects\StrobeEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\StrobePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\xxxEthernetOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\xxxSerialOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\HinksPix.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\HinksPixExportDialog.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ColorWashPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ColorWashEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxModel.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxSkulltronix.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\models\modelimages.h" />
+    <ClInclude Include="models\DMX\DmxFloodlight.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxMovingHead.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxColorAbility.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxPanTiltAbility.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxShutterAbility.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxServo.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxServo3D.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\Mesh.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxImage.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxFloodArea.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\Servo.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\BackupSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\SequenceFileSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\ViewSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\OtherSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\OutputSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\ColorManagerSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\EffectsGridSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="preferences\RandomEffectsSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\ServoConfigDialog.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxSkull.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\SkullConfigDialog.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\ControllerCaps.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\ControllerEthernet.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\ControllerNull.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\ControllerSerial.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="..\xFade\wxLED.h" />
+    <ClInclude Include="controllers\BaseController.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="ControllerModelDialog.h" />
+    <ClInclude Include="SubModelGenerateDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="BulkEditColourPickerDialog.h" />
+    <ClInclude Include="outputs\RenardOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\OPCOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="KeyBindingEditDialog.h" />
+    <ClInclude Include="outputs\PixelNetOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\Minleon.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\GenericSerialOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="Discovery.h" />
+    <ClInclude Include="models\RulerObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxGeneral.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="AboutDialog.h" />
+    <ClInclude Include="outputs\KinetOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\DragEffectBitmapButton.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\Effect.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\EffectDropTarget.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\EffectLayer.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\EffectsGrid.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\Element.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\ElementLayers.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\MainSequencer.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\RowHeading.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\SequenceElements.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\TimeLine.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\UndoManager.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="sequencer\Waveform.h">
+      <Filter>sequencer</Filter>
+    </ClInclude>
+    <ClInclude Include="models\TerrianObject.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\TerrianScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="CopyFormat1.h" />
+    <ClInclude Include="MediaImportOptionsDialog.h" />
+    <ClInclude Include="SequencePackage.h" />
+    <ClInclude Include="cad\CADModel.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\CADWriter.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\DXFWriter.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\ModelToCAD.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\STLWriter.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\VRMLWriter.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="cad\CADPoint.h">
+      <Filter>cad</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\WLED.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="Pixels.h" />
+    <ClInclude Include="LORPreview.h" />
+    <ClInclude Include="ExportSettings.h" />
+    <ClInclude Include="graphics\opengl\DrawGLUtils.h">
+      <Filter>graphics\opengl</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\opengl\xlGLCanvas.h">
+      <Filter>graphics\opengl</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\xlGraphicsBase.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\xlGraphicsContext.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\xlGraphicsAccumulators.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\opengl\XlightsDrawable.h" />
+    <ClInclude Include="graphics\xlFontInfo.h" />
+    <ClInclude Include="ScriptsDialog.h" />
+    <ClInclude Include="..\xSchedule\wxHTTPServer\sha1.h" />
+    <ClInclude Include="..\xSchedule\wxHTTPServer\wxhttpserver.h" />
+    <ClInclude Include="graphics\tiny_obj_loader.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\xlMesh.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="automation\automation.h">
+      <Filter>automation</Filter>
+    </ClInclude>
+    <ClInclude Include="automation\LuaRunner.h">
+      <Filter>automation</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\xlBaseApp.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="..\common\xlStackWalker.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="Mouse3DManager.h" />
+    <ClInclude Include="effects\FX.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="WindowsHardwareVideoReader.h" />
+    <ClInclude Include="ColourReplaceDialog.h" />
+    <ClInclude Include="models\BoxedScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\PolyPointScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\ThreePointScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\TwoPointScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="FindDataPanel.h" />
+    <ClInclude Include="models\MultiPointModel.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="models\MultiPointScreenLocation.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="SearchPanel.h" />
+    <ClInclude Include="effects\SketchEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SketchPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\SketchEffectDrawing.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\assist\SketchAssistPanel.h" />
+    <ClInclude Include="effects\assist\SketchCanvasPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="outputs\TwinklyOutput.h">
+      <Filter>Outputs</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxColorAbilityRGB.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxColorAbilityWheel.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxPresetAbility.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="TipOfTheDayDialog.h" />
+    <ClInclude Include="ModelRemap.h" />
+    <ClInclude Include="RestoreBackupDialog.h" />
+    <ClInclude Include="LayoutUtils.h" />
+    <ClInclude Include="preferences\CheckSequenceSettingsPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="automation\PythonRunner.h">
+      <Filter>automation</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\Experience.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="BulkEditComboDialog.h" />
+    <ClInclude Include="utils\string_utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="UtilFunctions.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\ip_utils.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="utils\Curl.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="DuplicateDialog.h" />
+    <ClInclude Include="models\DMX\DmxColorAbilityCMY.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GuitarEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\GuitarPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\opengl\xlOGL3GraphicsContext.h">
+      <Filter>graphics\opengl</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\opengl\GL\glext.h">
+      <Filter>graphics\opengl\GL</Filter>
+    </ClInclude>
+    <ClInclude Include="MetronomeLabelDialog.h" />
+    <ClInclude Include="utils\CurlManager.h">
+      <Filter>utils</Filter>
+    </ClInclude>
+    <ClInclude Include="controllers\FPPUploadProgressDialog.h">
+      <Filter>Controllers</Filter>
+    </ClInclude>
+    <ClInclude Include="AutoLabelDialog.h" />
+    <ClInclude Include="effects\DuplicateEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\DuplicatePanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\AdjustEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\AdjustPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="EditAliasesDialog.h">
+      <Filter>Models</Filter>
+    </ClInclude>
+    <ClInclude Include="TempFileManager.h" />
+    <ClInclude Include="xlColourData.h" />
+    <ClInclude Include="controllers\ILightThat.h" />
+    <ClInclude Include="EditSubmodelAliasesDialog.h" />
+    <ClInclude Include="effects\MovingHeadPanels\MHPathPresetBitmapButton.h" />
+    <ClInclude Include="effects\MovingHeadPanels\MHPresetBitmapButton.h" />
+    <ClInclude Include="models\BaseObjectVisitor.h" />
+    <ClInclude Include="models\DMX\DmxMotor.h" />
+    <ClInclude Include="models\DMX\DmxMotorBase.h" />
+    <ClInclude Include="models\DMX\DmxMotorPanTilt.h" />
+    <ClInclude Include="models\DMX\MovingHeads\MhChannel.h" />
+    <ClInclude Include="models\DMX\MovingHeads\MhChannelDialog.h" />
+    <ClInclude Include="models\DMX\MovingHeads\MhFeature.h" />
+    <ClInclude Include="models\DMX\MovingHeads\MhFeatureDialog.h" />
+    <ClInclude Include="models\XmlSerializer.h" />
+    <ClInclude Include="models\DMX\DmxDimmerAbility.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadEffect.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadPanel.h">
+      <Filter>Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxMovingHeadAdv.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="models\DMX\DmxMovingHeadComm.h">
+      <Filter>Models\DMX</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadPanels\MovingHeadCanvasPanel.h">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadPanels\MHRgbPickerPanel.h">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadPanels\MHColorWheelPanel.h">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\MovingHeadPanels\MHColorPanel.h">
+      <Filter>Effects\MovingHeadPanels</Filter>
+    </ClInclude>
+    <ClInclude Include="ShowFolderSearchDialog.h" />
+    <ClInclude Include="effects\ispc\ISPCComputeUtilities.h">
+      <Filter>Effects\ispc</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ispc\LayerBlendingFunctions.ispc.h">
+      <Filter>Effects\ispc</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ispc\ButterflyFunctions.ispc.h" />
+    <ClInclude Include="effects\ispc\PinwheelFunctions.ispc.h" />
+    <ClInclude Include="effects\ispc\PlasmaFunctions.ispc.h" />
+    <ClInclude Include="effects\ispc\SpacialColors.ispc.h" />
+    <ClInclude Include="preferences\ServicesPanel.h">
+      <Filter>Preferences</Filter>
+    </ClInclude>
+    <ClInclude Include="effects\ispc\VideoFunctions.ispc.h" />
+    <ClInclude Include="ai\aiBase.h">
+      <Filter>ai</Filter>
+    </ClInclude>
+    <ClInclude Include="ai\chatGPT.h">
+      <Filter>ai</Filter>
+    </ClInclude>
+    <ClInclude Include="CheckSequenceReport.h" />
+    <ClInclude Include="ai\ollama.h">
+      <Filter>ai</Filter>
+    </ClInclude>
+    <ClInclude Include="ai\ServiceManager.h">
+      <Filter>ai</Filter>
+    </ClInclude>
+    <ClInclude Include="ai\aiType.h">
+      <Filter>ai</Filter>
+    </ClInclude>
+    <ClInclude Include="..\xSchedule\wxJSON\json_defs.h" />
+    <ClInclude Include="..\xSchedule\wxJSON\jsonreader.h" />
+    <ClInclude Include="..\xSchedule\wxJSON\jsonval.h" />
+    <ClInclude Include="..\xSchedule\wxJSON\jsonwriter.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Models">
+      <UniqueIdentifier>{b79fdd8e-7e7c-4782-993b-6823a86b5147}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Outputs">
+      <UniqueIdentifier>{dfe9d5da-0dd9-4e21-9343-0a44da6b4534}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Effects">
+      <UniqueIdentifier>{3c4a01c4-d8e7-4148-b2ac-0fe747bc1b86}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Controllers">
+      <UniqueIdentifier>{be70286a-a106-4f14-a344-f7ce82c3c438}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Models\DMX">
+      <UniqueIdentifier>{4fb623be-9694-497c-b76e-19e9b12e5991}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Preferences">
+      <UniqueIdentifier>{deb253e2-d6a8-4b5f-909d-9a98e9e667e1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="sequencer">
+      <UniqueIdentifier>{3f511f30-f755-4c36-bc33-eaba751cc83e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="cad">
+      <UniqueIdentifier>{1096ad9f-b290-43d7-9267-5716023074ad}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics">
+      <UniqueIdentifier>{91803950-314a-4700-8d29-8be91f8a217d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\opengl">
+      <UniqueIdentifier>{6a3bbe99-6c51-4b5c-a7af-1e8d44671419}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="automation">
+      <UniqueIdentifier>{4712b6e7-2234-4c16-8ba5-b15d04dcba71}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="common">
+      <UniqueIdentifier>{d66f2316-0042-426b-8102-445d990406d2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils">
+      <UniqueIdentifier>{c1416434-1c5e-4d35-9335-0e5286dca853}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\opengl\GL">
+      <UniqueIdentifier>{6ee588bc-dc96-462e-b373-e36fbb8a27e0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Effects\MovingHeadPanels">
+      <UniqueIdentifier>{dea5bd41-37f4-437f-872b-6b26dc00a5c9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Effects\ispc">
+      <UniqueIdentifier>{6b247f11-eaa7-479e-9e82-e1369cd64fad}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Prompts">
+      <UniqueIdentifier>{22d4d199-c5a9-4be6-8413-da0802e96e06}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ai">
+      <UniqueIdentifier>{b7af1744-89fc-4b00-b7a5-fac169948940}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="resource.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="..\documentation\xlDo Commands.txt">
+      <Filter>automation</Filter>
+    </Text>
+    <Text Include="..\prompts\AI_Model_AutoMap.txt">
+      <Filter>Prompts</Filter>
+    </Text>
+    <Text Include="..\prompts\AI_Node_AutoMap.txt">
+      <Filter>Prompts</Filter>
+    </Text>
+    <Text Include="..\prompts\AI_Strand_AutoMap.txt">
+      <Filter>Prompts</Filter>
+    </Text>
+    <Text Include="..\prompts\AI_SubModel_AutoMap.txt">
+      <Filter>Prompts</Filter>
+    </Text>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="effects\ispc\LayerBlendingFunctions.ispc" />
+    <CustomBuild Include="effects\ispc\ButterflyFunctions.ispc" />
+    <CustomBuild Include="effects\ispc\PinwheelFunctions.ispc" />
+    <CustomBuild Include="effects\ispc\PlasmaFunctions.ispc" />
+    <CustomBuild Include="effects\ispc\VideoFunctions.ispc" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,36 @@
+/* XPM */
+static const char *fireworks[] = {
+/* width height num_colors chars_per_pixel */
+"16 16 12 1",
+/* colors */
+"  c #000000",
+". c #ffe7ec",
+"X c #fea7ba",
+"o c #ff6c8c",
+"O c #ff3662",
+"+ c #ff0037",
+"@ c #ff1447",
+"# c #e7eafc",
+"$ c #b6bff6",
+"% c #7c8bef",
+"& c #455be9",
+"* c #102ce3",
+/* pixels */
+"                ",
+"     .  .       ",
+"                ",
+"  .   XX   .    ",
+"  o  o o        ",
+"    O           ",
+"     +@     #   ",
+" X   @@ # o    $",
+"    O  X %  $ % ",
+"       X  &  &  ",
+" .         **   ",
+"    .   .  ** %#",
+"                ",
+"         &  &   ",
+"       %     %  ",
+"      #       $ "
+};
+

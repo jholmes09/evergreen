@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<wxsmith>
+	<object class="wxPanel" name="EffectsPanel">
+		<id_arg>0</id_arg>
+		<object class="wxFlexGridSizer" variable="FlexGridSizer1" member="no">
+			<cols>1</cols>
+			<rows>1</rows>
+			<growablecols>0</growablecols>
+			<growablerows>0</growablerows>
+			<object class="sizeritem">
+				<object class="wxChoicebook" name="ID_CHOICEBOOK1" variable="EffectChoicebook" member="yes">
+					<handler function="EffectSelected" entry="EVT_CHOICEBOOK_PAGE_CHANGED" />
+				</object>
+				<flag>wxRIGHT|wxEXPAND</flag>
+				<border>2</border>
+				<option>1</option>
+			</object>
+		</object>
+	</object>
+</wxsmith>

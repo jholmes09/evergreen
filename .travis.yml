@@ -1,0 +1,31 @@
+dist: trusty
+os: linux
+language: cpp
+services:
+  - docker
+git:
+  depth: 3
+script:
+  - docker pull docker pull ghcr.io/xlightssequencer/xlights-build-docker:master
+  - docker run --name buildvm ghcr.io/xlightssequencer/xlights-build-docker /bin/bash Recipe.appimage
+after_success:
+  - docker cp buildvm:/xLights/xLights/AppImage/ /tmp/
+  - ls -lh /tmp/*
+deploy:
+  provider: releases
+  token: $GITHUB_TOKEN
+  file_glob: true
+  file: /tmp/AppImage/*.AppImage
+  skip_cleanup: true
+  on:
+    tags: true
+env:
+  global:
+    - MAKEFLAGS="-j 2"
+notifications:
+  email:
+    recipients:
+      - chris@adebenham.com
+      - keithsw1111@hotmail.com
+    on_success: never
+    on_failure: always

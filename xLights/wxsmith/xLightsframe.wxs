@@ -1,0 +1,1670 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<wxsmith>
+	<object class="wxFrame" name="xLightsFrame">
+		<title>&lt;use variables in xLightsMain.h&gt;</title>
+		<size>1411,1103</size>
+		<id_arg>0</id_arg>
+		<handler function="OnClose" entry="EVT_CLOSE" />
+		<handler function="OnChar" entry="EVT_CHAR" />
+		<object class="wxAuiManager" variable="MainAuiManager" member="yes">
+			<style>wxAUI_MGR_ALLOW_FLOATING|wxAUI_MGR_DEFAULT</style>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUITOOLBAR_MAIN" subclass="xlAuiToolBar" variable="MainToolBar" member="yes">
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_OPENSHOW" variable="AuiToolBarItemOpenShowDirectory" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;wxART_FOLDER_OPEN&quot;)' />
+							<shorthelp>Select Show Directory</shorthelp>
+							<handler function="OnMenuOpenFolderSelected" entry="EVT_TOOL" />
+						</object>
+						<label>Open Show Directory</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_NEWSEQUENCE" variable="AuiToolBarItemNewSequence" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;wxART_NEW&quot;)' />
+							<shorthelp>New Sequence</shorthelp>
+							<handler function="OnButtonNewSequenceClick" entry="EVT_TOOL" />
+						</object>
+						<label>New Sequence</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_OPEN" variable="AuiToolBarItemOpen" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;wxART_FILE_OPEN&quot;)' />
+							<shorthelp>Open Sequence</shorthelp>
+							<handler function="OnBitmapButtonOpenSeqClick" entry="EVT_TOOL" />
+						</object>
+						<label>Open Sequence</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_SAVE" variable="AuiToolBarItemSave" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;wxART_FILE_SAVE&quot;)' />
+							<shorthelp>Save</shorthelp>
+							<handler function="OnBitmapButtonSaveSeqClick" entry="EVT_TOOL" />
+						</object>
+						<label>Save</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_SAVEAS" variable="AuiToolBarItemSaveAs" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;wxART_FILE_SAVE_AS&quot;)' />
+							<shorthelp>Save As</shorthelp>
+							<handler function="OnButtonClickSaveAs" entry="EVT_TOOL" />
+						</object>
+						<label>Save As</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_RENDERALL" variable="AuiToolBarItemRenderAll" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_RENDER_ALL&quot;)' />
+							<shorthelp>Render All</shorthelp>
+							<handler function="OnAuiToolBarItemRenderAllClick" entry="EVT_TOOL" />
+						</object>
+						<label>Render All</label>
+					</object>
+				</object>
+				<name>Main Tool Bar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Main Tool Bar</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>10</layer>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUITOOLBAR_PLAY" subclass="xlAuiToolBar" variable="PlayToolBar" member="yes">
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_PLAY_NOW" variable="AuiToolBarItemPlayButton" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_PLAY&quot;)' />
+							<shorthelp>Play</shorthelp>
+							<handler function="OnAuiToolBarItemPlayButtonClick" entry="EVT_TOOL" />
+						</object>
+						<label>Play</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_PAUSE" variable="AuiToolBarItemPauseButton" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_PAUSE&quot;)' />
+							<shorthelp>Pause</shorthelp>
+							<handler function="OnAuiToolBarItemPauseButtonClick" entry="EVT_TOOL" />
+						</object>
+						<label>Pause</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_STOP" variable="AuiToolBarItemStop" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_STOP&quot;)' />
+							<shorthelp>Stop</shorthelp>
+							<handler function="OnAuiToolBarItemStopClick" entry="EVT_TOOL" />
+						</object>
+						<label>Stop</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_FIRST_FRAME" variable="AuiToolBarFirstFrame" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_BACKWARD&quot;)' />
+							<shorthelp>First Frame</shorthelp>
+							<handler function="OnAuiToolBarFirstFrameClick" entry="EVT_TOOL" />
+						</object>
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_LAST_FRAME" variable="AuiToolBarLastFrame" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_FORWARD&quot;)' />
+							<shorthelp>Last Frame</shorthelp>
+							<handler function="OnAuiToolBarLastFrameClick" entry="EVT_TOOL" />
+						</object>
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBAR_REPLAY_SECTION" variable="AuiToolBarItemReplaySection" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_REPLAY&quot;)' />
+							<shorthelp>Replay Section</shorthelp>
+							<handler function="OnAuiToolBarItemReplaySectionClick" entry="EVT_TOOL" />
+						</object>
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_CHECKBOX_LIGHT_OUTPUT" variable="CheckBoxLightOutput" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_OUTPUT_LIGHTS&quot;)' />
+							<shorthelp>Output To Lights</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnCheckBoxLightOutputClick" entry="EVT_TOOL" />
+						</object>
+						<label>Output To Lights</label>
+					</object>
+				</object>
+				<name>Play Tool Bar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Play Tool Bar</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>10</layer>
+				<position>11</position>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUIWINDOWTOOLBAR" subclass="xlAuiToolBar" variable="WindowMgmtToolbar" member="yes">
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM2" variable="AuiToolBarEffectSettings" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_EFFECTSETTINGS&quot;)' />
+							<shorthelp>Effect Settings</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="ShowHideEffectSettingsWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Effect Settings</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM5" variable="AuiToolBarColors" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_COLORS&quot;)' />
+							<shorthelp>Effect Colors</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="ShowHideColorWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Effect Colors</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM7" variable="AuiToolBarLayerSettings" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_LAYERS&quot;)' />
+							<shorthelp>Layer Settings</shorthelp>
+							<handler function="ShowHideBufferSettingsWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Layer Settings</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM3" variable="AuiToolBarLayers" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_LAYERS2&quot;)' />
+							<shorthelp>Layer Blending</shorthelp>
+							<handler function="ShowHideLayerTimingWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Layer Blending</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_TOGGLE_MODEL_PREVIEW" variable="AuiToolBarButtonModelPreview" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_MODEL_PREVIEW&quot;)' />
+							<shorthelp>Model Preview</shorthelp>
+							<handler function="ShowHideModelPreview" entry="EVT_TOOL" />
+						</object>
+						<label>Model Preview</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_TOGGLE_HOUSE_PREVIEW" variable="AuiToolBarButtonHousePreview" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_HOUSE_PREVIEW&quot;)' />
+							<shorthelp>House Preview</shorthelp>
+							<handler function="ShowHideHousePreview" entry="EVT_TOOL" />
+						</object>
+						<label>House Preview</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM6" variable="AuiToolBarItemModels" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_SEQUENCE_ELEMENTS&quot;)' />
+							<shorthelp>Display Elements</shorthelp>
+							<handler function="ShowHideDisplayElementsWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Models</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM8" variable="AuiToolBarItemEffects" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_EFFECTS&quot;)' />
+							<shorthelp>Effects</shorthelp>
+							<handler function="OnAuiToolBarItemShowHideEffects" entry="EVT_TOOL" />
+						</object>
+						<label>Effects</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM9" variable="AuiToolBarItemEffectsAsst" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_EFFECTASSISTANT&quot;)' />
+							<shorthelp>Effects Assistant</shorthelp>
+							<handler function="ShowHideEffectAssistWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Effects Assistant</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM10" variable="AuiToolBarItemSelectEffects" member="no">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_EFFECTASSISTANT&quot;)' />
+							<shorthelp>Select Effects</shorthelp>
+							<handler function="ShowHideSelectEffectsWindow" entry="EVT_TOOL" />
+						</object>
+						<label>Select Effects</label>
+					</object>
+				</object>
+				<name>Windows Tool Bar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Windows Tool Bar</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>10</layer>
+				<position>12</position>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUITOOLBAR_EDIT" subclass="xlAuiToolBar" variable="EditToolBar" member="yes">
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_PASTE_BY_TIME" variable="AuiToolBarItemPasteByTime" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_PASTE_BY_TIME&quot;)' />
+							<shorthelp>Paste By Time</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAuiToolBarItemPasteByTimeClick" entry="EVT_TOOL" />
+						</object>
+						<label>Paste By Time</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_PASTE_BY_CELL" variable="AuiToolBarItemPasteByCell" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_PASTE_BY_CELL&quot;)' />
+							<shorthelp>Paste By Cell</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAuiToolBarItemPasteByCellClick" entry="EVT_TOOL" />
+						</object>
+						<label>Paste By Cell</label>
+					</object>
+				</object>
+				<name>Edit Tool Bar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Pane caption</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>10</layer>
+				<position>5</position>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUITOOLBAR_AC" subclass="xlAuiToolBar" variable="ACToolbar" member="yes">
+					<pos>1,30</pos>
+					<handler function="OnACToolbarDropdown" entry="EVT_AUITOOLBAR_TOOL_DROPDOWN" />
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACDISABLED" variable="AC_Disable" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_DISABLED&quot;)' />
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_DisableClick" entry="EVT_TOOL" />
+						</object>
+						<label>Disable</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarSeparator" />
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACSELECT" variable="AC_Select" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_SELECT&quot;)' />
+							<shorthelp>Select - SHIFT L</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_SelectClick" entry="EVT_TOOL" />
+						</object>
+						<label>Select</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACOFF" variable="AC_Off" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_OFF&quot;)' />
+							<shorthelp>Off - DELETE</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_OffClick" entry="EVT_TOOL" />
+						</object>
+						<label>Off</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACON" variable="AC_On" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_ON&quot;)' />
+							<shorthelp>On - O</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_OnClick" entry="EVT_TOOL" />
+						</object>
+						<label>On</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACSHIMMER" variable="AC_Shimmer" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_SHIMMER&quot;)' />
+							<shorthelp>Shimmer - S</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_ShimmerClick" entry="EVT_TOOL" />
+						</object>
+						<label>Shimmer</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACTWINKLE" variable="AC_Twinkle" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_TWINKLE&quot;)' />
+							<shorthelp>Twinkle - K</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_TwinkleClick" entry="EVT_TOOL" />
+						</object>
+						<label>Twinkle</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarSeparator" />
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACINTENSITY" variable="AC_Intensity" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_INTENSITY&quot;)' />
+							<shorthelp>Intensity - I</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_IntensityClick" entry="EVT_TOOL" />
+						</object>
+						<label>Intensity</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACRAMPUP" variable="AC_RampUp" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_RAMPUP&quot;)' />
+							<shorthelp>Ramp Up - U</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_RampUpClick" entry="EVT_TOOL" />
+						</object>
+						<label>Ramp Up</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACRAMPDOWN" variable="AC_RampDown" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_RAMPDOWN&quot;)' />
+							<shorthelp>Ramp Down - D</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_RampDownClick" entry="EVT_TOOL" />
+						</object>
+						<label>Ramp Down</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACRAMPUPDOWN" variable="AC_RampUpDown" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_RAMPUPDOWN&quot;)' />
+							<shorthelp>Ramp Up/Down - A</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_RampUpDownClick" entry="EVT_TOOL" />
+						</object>
+						<label>Ramp Up/Down</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxChoice" name="ID_CHOICE_PARM1" variable="ChoiceParm1" member="yes">
+							<content>
+								<item>0</item>
+								<item>10</item>
+								<item>20</item>
+								<item>25</item>
+								<item>30</item>
+								<item>33</item>
+								<item>40</item>
+								<item>50</item>
+								<item>60</item>
+								<item>66</item>
+								<item>70</item>
+								<item>75</item>
+								<item>80</item>
+								<item>90</item>
+								<item>100</item>
+							</content>
+							<selection>0</selection>
+							<pos>276,12</pos>
+							<handler function="OnChoiceParm1Select" entry="EVT_CHOICE" />
+						</object>
+						<label>Parm1</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxChoice" name="ID_CHOICE_PARM2" variable="ChoiceParm2" member="yes">
+							<content>
+								<item>0</item>
+								<item>10</item>
+								<item>20</item>
+								<item>25</item>
+								<item>30</item>
+								<item>33</item>
+								<item>40</item>
+								<item>50</item>
+								<item>60</item>
+								<item>66</item>
+								<item>70</item>
+								<item>75</item>
+								<item>80</item>
+								<item>90</item>
+								<item>100</item>
+							</content>
+							<selection>14</selection>
+							<pos>476,11</pos>
+							<handler function="OnChoiceParm2Select" entry="EVT_CHOICE" />
+						</object>
+						<label>Parm2</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarSeparator" />
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACFILL" variable="AC_Fill" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_FILL&quot;)' />
+							<shorthelp>Fill - F</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_FillClick" entry="EVT_TOOL" />
+						</object>
+						<label>Fill</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACCASCADE" variable="AC_Cascade" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_CASCADE&quot;)' />
+							<shorthelp>Cascade - H</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_CascadeClick" entry="EVT_TOOL" />
+						</object>
+						<label>Cascade</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarSeparator" />
+						<label>Item label</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACFOREGROUND" variable="AC_Foreground" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_FOREGROUND&quot;)' />
+							<shorthelp>Foreground - G</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_ForegroundClick" entry="EVT_TOOL" />
+						</object>
+						<label>Foreground</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM_ACBACKGROUND" variable="AC_Background" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlAC_BACKGROUND&quot;)' />
+							<shorthelp>Background - B</shorthelp>
+							<itemkind>Check</itemkind>
+							<handler function="OnAC_BackgroundClick" entry="EVT_TOOL" />
+						</object>
+						<label>Background</label>
+					</object>
+				</object>
+				<name>ACToolbar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>AC Toolbar</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>6</layer>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUITOOLBAR_VIEW" subclass="xlAuiToolBar" variable="ViewToolBar" member="yes">
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="wxID_ZOOM_IN" variable="AuiToolBarItemZoomin" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_ZOOM_IN&quot;)' />
+							<shorthelp>Zoom In</shorthelp>
+							<handler function="OnAuiToolBarItemZoominClick" entry="EVT_TOOL" />
+						</object>
+						<label>Zoom In</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="wxID_ZOOM_OUT" variable="AuiToolBarItem_ZoomOut" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_ZOOM_OUT&quot;)' />
+							<shorthelp>Zoom Out</shorthelp>
+							<handler function="OnAuiToolBarItem_ZoomOutClick" entry="EVT_TOOL" />
+						</object>
+						<label>Zoom Out</label>
+					</object>
+					<object class="AuiToolBarItem">
+						<object class="wxAuiToolBarItem" name="ID_AUITOOLBARITEM14" variable="AuiToolBarItem_Settings" member="yes">
+							<bitmap code='GetToolbarBitmapBundle(&quot;xlART_SETTINGS&quot;)' />
+							<shorthelp>Settings</shorthelp>
+							<handler function="OnMenu_Settings_SequenceSelected" entry="EVT_TOOL" />
+						</object>
+						<label>Sequence Settings</label>
+					</object>
+				</object>
+				<name>View Tool Bar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Pane caption</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>10</layer>
+				<position>13</position>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiToolBar" name="ID_AUIEFFECTSTOOLBAR" subclass="xlAuiToolBar" variable="EffectsToolBar" member="yes">
+					<extra_code>AddEffectButtonsToToolbar(toolbar);</extra_code>
+				</object>
+				<name>EffectsToolBar</name>
+				<standardpanetype>Toolbar</standardpanetype>
+				<caption>Effects</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<layer>5</layer>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<resizable>0</resizable>
+				<gripper>Default</gripper>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxAuiNotebook" name="ID_NOTEBOOK1" variable="Notebook1" member="yes">
+					<style>wxAUI_NB_SCROLL_BUTTONS|wxAUI_NB_TOP|wxBORDER_NONE</style>
+					<handler function="OnNotebook1PageChanged1" entry="EVT_AUINOTEBOOK_PAGE_CHANGED" />
+					<handler function="OnNotebook1PageChanging" entry="EVT_AUINOTEBOOK_PAGE_CHANGING" />
+					<object class="AuiNotebookPage">
+						<object class="wxPanel" name="ID_PANEL_SETUP" variable="PanelSetup" member="yes">
+							<object class="wxFlexGridSizer" variable="FlexGridSizerSetup" member="yes">
+								<cols>1</cols>
+								<growablecols>0</growablecols>
+								<growablerows>1</growablerows>
+								<object class="sizeritem">
+									<object class="wxStaticBoxSizer" variable="StaticBoxSizer1" member="yes">
+										<label>Directories</label>
+										<orient>wxVERTICAL</orient>
+										<object class="sizeritem">
+											<object class="wxGridBagSizer" variable="GridBagSizer1" member="yes">
+												<growablecols>4</growablecols>
+												<object class="sizeritem">
+													<object class="wxStaticText" name="wxID_ANY" variable="StaticText38" member="no">
+														<label>Show Directory:</label>
+													</object>
+													<col>0</col>
+													<row>0</row>
+													<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxButton" name="ID_BUTTON3" variable="Button_ChangeShowDirPermanently" member="yes">
+														<label>Change Permanently</label>
+														<handler function="OnMenuOpenFolderSelected" entry="EVT_BUTTON" />
+													</object>
+													<col>1</col>
+													<row>0</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxButton" name="ID_BUTTON11" variable="Button_CheckShowFolderTemporarily" member="yes">
+														<label>Change Temporarily</label>
+														<handler function="OnButton_ChangeShowFolderTemporarily" entry="EVT_BUTTON" />
+													</object>
+													<col>2</col>
+													<row>0</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxButton" name="ID_BUTTON13" variable="Button_ChangeTemporarilyAgain" member="yes">
+														<label>Change Temporarily Again</label>
+														<hidden>1</hidden>
+														<handler function="OnButton_ChangeTemporarilyAgainClick" entry="EVT_BUTTON" />
+													</object>
+													<col>3</col>
+													<row>0</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxStaticText" name="ID_STATICTEXT4" variable="ShowDirectoryLabel" member="yes">
+														<label>{Show Directory not set}</label>
+													</object>
+													<col>4</col>
+													<row>0</row>
+													<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxStaticText" name="ID_STATICTEXT2" variable="StaticText_BaseShowDirLabel" member="yes">
+														<label>Base Show Directory:</label>
+													</object>
+													<col>0</col>
+													<row>1</row>
+													<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxFlexGridSizer" variable="FlexGridSizer2" member="yes">
+														<cols>3</cols>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON14" variable="Button_ChangeBaseShowDir" member="yes">
+																<label>Change</label>
+																<handler function="OnButton_ChangeBaseShowDirClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON17" variable="Button_OpenBaseShowDir" member="yes">
+																<label>Open</label>
+																<tooltip>Open the base show folder</tooltip>
+																<handler function="OnButton_OpenBaseShowDirClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+													</object>
+													<col>1</col>
+													<row>1</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxButton" name="ID_BUTTON15" variable="Button_ClearBaseShowDir" member="yes">
+														<label>Clear</label>
+														<handler function="OnButton_ClearBaseShowDirClick" entry="EVT_BUTTON" />
+													</object>
+													<col>2</col>
+													<row>1</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxStaticText" name="ID_STATICTEXT3" variable="StaticText_BaseShowDir" member="yes">
+														<label>No base show directory</label>
+													</object>
+													<col>4</col>
+													<row>1</row>
+													<flag>wxALL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxFlexGridSizer" variable="FlexGridSizer1" member="yes">
+														<cols>3</cols>
+														<object class="sizeritem">
+															<object class="wxCheckBox" name="ID_CHECKBOX1" variable="CheckBox_AutoUpdateBase" member="yes">
+																<label>Auto Update On Load</label>
+																<handler function="OnCheckBox_AutoUpdateBaseClick" entry="EVT_CHECKBOX" />
+															</object>
+															<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON16" variable="Button_UpdateBase" member="yes">
+																<label>Update</label>
+																<handler function="OnButton_UpdateBaseClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+													</object>
+													<col>3</col>
+													<row>1</row>
+													<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+													<border>5</border>
+													<option>1</option>
+												</object>
+											</object>
+											<flag>wxALL|wxEXPAND</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+									</object>
+									<flag>wxALL|wxEXPAND</flag>
+									<border>5</border>
+									<option>1</option>
+								</object>
+								<object class="sizeritem">
+									<object class="wxStaticBoxSizer" variable="StaticBoxSizer2" member="no">
+										<label>Controllers</label>
+										<object class="sizeritem">
+											<object class="wxFlexGridSizer" variable="FlexGridSizerNetworks" member="no">
+												<cols>4</cols>
+												<growablecols>2</growablecols>
+												<growablerows>0</growablerows>
+												<object class="sizeritem">
+													<object class="wxBoxSizer" variable="BoxSizer1" member="no">
+														<orient>wxVERTICAL</orient>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON_SAVE_SETUP" variable="ButtonSaveSetup" member="yes">
+																<label>Save</label>
+																<handler function="OnButtonSaveSetupClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+														<object class="spacer">
+															<flag>wxALL|wxEXPAND</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON9" variable="ButtonAddControllerSerial" member="yes">
+																<label>Add USB</label>
+																<handler function="OnButtonAddControllerSerialClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON6" variable="ButtonAddControllerEthernet" member="yes">
+																<label>Add Ethernet</label>
+																<size>98,28</size>
+																<handler function="OnButtonAddControllerEthernetClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON10" variable="ButtonAddControllerNull" member="yes">
+																<label>Add Null</label>
+																<handler function="OnButtonAddControllerNullClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+														<object class="spacer">
+															<flag>wxALL|wxEXPAND</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON5" variable="ButtonDiscover" member="yes">
+																<label>Discover</label>
+																<handler function="OnButtonDiscoverClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxButton" name="ID_BUTTON18" variable="ButtonFPPConnect" member="yes">
+																<label>FPP Connect</label>
+																<handler function="OnButtonFPPConnectClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxEXPAND</flag>
+															<border>3</border>
+															<option>1</option>
+														</object>
+													</object>
+													<flag>wxALIGN_TOP|wxALIGN_CENTER_HORIZONTAL</flag>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxFlexGridSizer" variable="FlexGridSizer9" member="no">
+														<cols>1</cols>
+														<object class="sizeritem">
+															<object class="wxBitmapButton" name="ID_BITMAPBUTTON1" variable="BitmapButtonMoveNetworkUp" member="yes">
+																<bitmap code='GetButtonBitmapBundle(&quot;wxART_GO_UP&quot;)' />
+																<tooltip>Move selected item up</tooltip>
+																<handler function="OnButtonNetworkMoveUpClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxALIGN_RIGHT|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+														<object class="sizeritem">
+															<object class="wxBitmapButton" name="ID_BITMAPBUTTON2" variable="BitmapButtonMoveNetworkDown" member="yes">
+																<bitmap code='GetButtonBitmapBundle(&quot;wxART_GO_DOWN&quot;)' />
+																<tooltip>Move selected item down</tooltip>
+																<handler function="OnButtonNetworkMoveDownClick" entry="EVT_BUTTON" />
+															</object>
+															<flag>wxALL|wxALIGN_RIGHT|wxALIGN_CENTER_VERTICAL</flag>
+															<border>5</border>
+															<option>1</option>
+														</object>
+													</object>
+													<flag>wxBOTTOM|wxLEFT|wxALIGN_LEFT|wxALIGN_TOP</flag>
+													<border>10</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxPanel" name="ID_PANEL2" variable="Panel2" member="yes">
+														<object class="wxFlexGridSizer" variable="FlexGridSizerSetupControllers" member="yes">
+															<cols>1</cols>
+															<growablecols>0</growablecols>
+															<growablerows>0</growablerows>
+														</object>
+													</object>
+													<flag>wxALL|wxEXPAND</flag>
+													<border>2</border>
+													<option>1</option>
+												</object>
+												<object class="sizeritem">
+													<object class="wxPanel" name="ID_PANEL3" variable="Panel5" member="yes">
+														<minsize>200,-1</minsize>
+														<maxsize>200,-1</maxsize>
+														<style>wxTAB_TRAVERSAL|wxALWAYS_SHOW_SB|wxFULL_REPAINT_ON_RESIZE</style>
+														<object class="wxFlexGridSizer" variable="FlexGridSizerSetupRight" member="yes">
+															<cols>1</cols>
+															<growablecols>0</growablecols>
+															<growablerows>0</growablerows>
+															<object class="sizeritem">
+																<object class="wxFlexGridSizer" variable="FlexGridSizerSetupProperties" member="yes">
+																	<cols>1</cols>
+																	<growablecols>0</growablecols>
+																	<growablerows>0</growablerows>
+																</object>
+																<flag>wxALL|wxEXPAND</flag>
+																<option>1</option>
+															</object>
+															<object class="sizeritem">
+																<object class="wxFlexGridSizer" variable="FlexGridSizerSetupControllerButtons" member="yes">
+																	<rows>2</rows>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON1" variable="ButtonVisualise" member="yes">
+																			<label>Visualise ...</label>
+																			<handler function="OnButtonVisualiseClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON2" variable="ButtonUploadInput" member="yes">
+																			<label>Upload Input</label>
+																			<handler function="OnButtonUploadInputClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON7" variable="ButtonOpen" member="yes">
+																			<label>Open</label>
+																			<handler function="OnButtonOpenClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxStaticText" name="ID_STATICTEXT1" variable="StaticTextDummy" member="yes">
+																			<label></label>
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON8" variable="ButtonControllerDelete" member="yes">
+																			<label>Delete</label>
+																			<handler function="OnButtonControllerDeleteClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON4" variable="ButtonUploadOutput" member="yes">
+																			<label>Upload Output</label>
+																			<handler function="OnButtonUploadOutputClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																	<object class="sizeritem">
+																		<object class="wxButton" name="ID_BUTTON12" variable="Button_OpenProxy" member="yes">
+																			<label>Open Proxy</label>
+																			<handler function="OnButton_OpenProxyClick" entry="EVT_BUTTON" />
+																		</object>
+																		<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+																		<border>5</border>
+																		<option>1</option>
+																	</object>
+																</object>
+																<flag>wxALL|wxALIGN_CENTER_HORIZONTAL</flag>
+																<border>5</border>
+																<option>1</option>
+															</object>
+														</object>
+													</object>
+													<flag>wxALL|wxEXPAND</flag>
+													<border>2</border>
+													<option>1</option>
+												</object>
+											</object>
+											<flag>wxALL|wxEXPAND</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+									</object>
+									<flag>wxALL|wxEXPAND</flag>
+									<border>5</border>
+									<option>1</option>
+								</object>
+							</object>
+						</object>
+						<label>Controllers</label>
+						<selected>1</selected>
+					</object>
+					<object class="AuiNotebookPage">
+						<object class="wxPanel" name="ID_PANEL_PREVIEW" variable="PanelPreview" member="yes">
+							<object class="wxFlexGridSizer" variable="FlexGridSizerPreview" member="no">
+								<cols>1</cols>
+								<rows>1</rows>
+								<growablecols>0</growablecols>
+								<growablerows>0</growablerows>
+							</object>
+						</object>
+						<label>Layout</label>
+					</object>
+					<object class="AuiNotebookPage">
+						<object class="wxPanel" name="XLIGHTS_SEQUENCER_TAB" variable="PanelSequencer" member="yes">
+							<style>wxTAB_TRAVERSAL|wxWANTS_CHARS</style>
+							<handler function="OnPanelSequencerPaint" entry="EVT_PAINT" />
+							<object class="wxAuiManager" variable="m_mgr" member="yes">
+								<style>wxAUI_MGR_ALLOW_FLOATING|wxAUI_MGR_DEFAULT</style>
+								<handler function="OnPaneClose" entry="EVT_AUI_PANE_CLOSE" />
+							</object>
+						</object>
+						<label>Sequencer</label>
+					</object>
+				</object>
+				<name>MainPain</name>
+				<standardpanetype>Center</standardpanetype>
+				<caption>Pane caption</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<dockdirection>Center</dockdirection>
+				<dockfixed>0</dockfixed>
+				<dockabledirection></dockabledirection>
+				<floatable>0</floatable>
+				<movable>0</movable>
+				<paneborder>0</paneborder>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+			<object class="AuiManagerItem">
+				<object class="wxPanel" name="ID_PANEL1" variable="AUIStatusBar" member="yes">
+					<style>wxBORDER_NONE|wxTAB_TRAVERSAL</style>
+					<object class="wxGridBagSizer" variable="StatusBarSizer" member="yes">
+						<growablerows>0</growablerows>
+						<object class="spacer">
+							<col>0</col>
+							<row>0</row>
+							<flag>wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+							<option>1</option>
+							<size>8,0</size>
+						</object>
+						<object class="sizeritem">
+							<object class="wxStaticText" name="ID_STATICTEXT6" variable="StatusText" member="yes">
+								<label>Label</label>
+							</object>
+							<col>1</col>
+							<row>0</row>
+							<flag>wxALL|wxEXPAND</flag>
+							<border>2</border>
+							<option>2</option>
+						</object>
+						<object class="sizeritem">
+							<object class="wxPanel" name="ID_PANEL5" variable="Panel1" member="no">
+								<minsize>100,-1d</minsize>
+								<object class="wxFlexGridSizer" variable="GaugeSizer" member="yes">
+									<cols>1</cols>
+									<rows>1</rows>
+									<growablecols>0</growablecols>
+									<object class="sizeritem">
+										<object class="wxGauge" name="ID_GAUGE1" variable="ProgressBar" member="yes">
+											<size>100,-1d</size>
+										</object>
+										<flag>wxEXPAND</flag>
+									</object>
+								</object>
+							</object>
+							<col>2</col>
+							<row>0</row>
+							<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+							<option>1</option>
+						</object>
+						<object class="sizeritem">
+							<object class="wxStaticText" name="ID_STATICTEXT7" variable="FileNameText" member="yes">
+								<label>Label</label>
+							</object>
+							<col>3</col>
+							<row>0</row>
+							<flag>wxALL|wxEXPAND</flag>
+							<border>2</border>
+							<option>1</option>
+						</object>
+					</object>
+				</object>
+				<name>Status Bar</name>
+				<caption>Status bar</caption>
+				<captionvisible>0</captionvisible>
+				<minimizebutton>0</minimizebutton>
+				<maximizebutton>0</maximizebutton>
+				<pinbutton>0</pinbutton>
+				<closebutton>0</closebutton>
+				<dockdirection>Bottom</dockdirection>
+				<dockabledirection>.Dockable(false)</dockabledirection>
+				<floatable>0</floatable>
+				<floatingposition>0,0</floatingposition>
+				<floatingsize>0,0</floatingsize>
+				<movable>0</movable>
+				<paneborder>0</paneborder>
+				<destroyonclose>0</destroyonclose>
+				<firstadd>0</firstadd>
+			</object>
+		</object>
+		<object class="wxMenuBar" variable="MenuBar" member="yes">
+			<object class="wxMenu" variable="MenuFile" member="yes">
+				<label>&amp;File</label>
+				<object class="wxMenuItem" name="ID_NEW_SEQUENCE" variable="MenuItem3" member="yes">
+					<label>New Sequence</label>
+					<accel>Ctrl-n</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_NEW&quot;)' />
+					<handler function="OnButtonNewSequenceClick" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_OPEN_SEQUENCE" variable="MenuItem_File_Open_Sequence" member="yes">
+					<label>Open Sequence</label>
+					<accel>CTRL-o</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_FILE_OPEN&quot;)' />
+					<handler function="OnMenuItem_File_Open_SequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenu" name="ID_MENUITEM_OPENRECENTSEQUENCE" variable="RecentSequencesMenu" member="yes">
+					<label>Open Recent Sequence</label>
+					<object class="wxMenuItem" name="ID_MENUITEM4" variable="MenuItem7" member="no">
+						<label>RECENT1</label>
+					</object>
+				</object>
+				<object class="wxMenuItem" name="IS_SAVE_SEQ" variable="MenuItem_File_Save" member="yes">
+					<label>Save</label>
+					<accel>CTRL-S</accel>
+					<enabled>0</enabled>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_FILE_SAVE&quot;)' />
+					<handler function="OnMenuItem_File_Save_Selected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_SAVE_AS_SEQUENCE" variable="MenuItem_File_SaveAs_Sequence" member="yes">
+					<label>Save Sequence As</label>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_FILE_SAVE_AS&quot;)' />
+					<handler function="OnMenuItem_File_SaveAs_SequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_CLOSE_SEQ" variable="MenuItem_File_Close_Sequence" member="yes">
+					<label>Close Sequence</label>
+					<enabled>0</enabled>
+					<handler function="OnMenuItem_File_Close_SequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="wxID_PREFERENCES" variable="MenuItem61" member="no">
+					<label>Preferences...</label>
+					<accel>CTRL-,</accel>
+					<handler function="OnMenuItemPreferencesSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_SEQ_SETTINGS" variable="Menu_Settings_Sequence" member="yes">
+					<label>Sequence Settings</label>
+					<handler function="OnMenu_Settings_SequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_KEYBINDINGS" variable="MenuItem_KeyBindings" member="yes">
+					<label>Key bindings</label>
+					<handler function="OnMenuItem_KeyBindingsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_EXPORT_VIDEO" variable="MenuItem_File_Export_Video" member="yes">
+					<label>Export House Preview Video</label>
+					<handler function="OnMenuItem_File_Export_VideoSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MENUITEM2" variable="MenuItem5" member="no">
+					<label>Select Show Folder</label>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_FOLDER_OPEN&quot;)' />
+					<handler function="OnMenuOpenFolderSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenu" name="ID_MENUITEM_RECENTFOLDERS" variable="RecentShowFoldersMenu" member="yes">
+					<label>Recent Show Folders</label>
+					<object class="wxMenuItem" name="ID_MENUITEM8" variable="MenuItem11" member="no">
+						<label>RECENTFOLDER1</label>
+					</object>
+				</object>
+				<object class="wxMenuItem" name="ID_FILE_BACKUP" variable="MenuItemBackup" member="yes">
+					<label>Backup</label>
+					<accel>F10</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_HARDDISK&quot;)' />
+					<handler function="OnMenuItemBackupSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_FILE_RESTOREBACKUP" variable="MenuItemRestoreBackup" member="yes">
+					<label>Restore Backup</label>
+					<handler function="OnMenuItemRestoreBackupSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_FILE_ALTBACKUP" variable="mAltBackupMenuItem" member="yes">
+					<label>Alternate Backup</label>
+					<accel>F11</accel>
+					<handler function="OnmAltBackupMenuItemSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="wxID_EXIT" variable="QuitMenuItem" member="yes">
+					<label>Quit</label>
+					<accel>Alt-F4</accel>
+					<help>Quit the application</help>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_QUIT&quot;)' />
+					<handler function="OnQuit" entry="EVT_MENU" />
+				</object>
+			</object>
+			<object class="wxMenu" variable="Menu3" member="yes">
+				<label>&amp;Edit</label>
+				<object class="wxMenuItem" name="wxID_UNDO" variable="MenuItem37" member="yes">
+					<label>Undo</label>
+					<accel>Ctrl-z</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_UNDO&quot;)' />
+				</object>
+				<object class="wxMenuItem" name="wxID_REDO" variable="MenuItem_REDO" member="yes">
+					<label>Redo</label>
+					<accel>Ctrl-y</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_REDO&quot;)' />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="wxID_CUT" variable="MenuItem34" member="yes">
+					<label>Cut</label>
+					<accel>CTRL-x</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_CUT&quot;)' />
+				</object>
+				<object class="wxMenuItem" name="wxID_COPY" variable="MenuItem35" member="yes">
+					<label>Copy</label>
+					<accel>CTRL-c</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_COPY&quot;)' />
+				</object>
+				<object class="wxMenuItem" name="wxID_PASTE" variable="MenuItem36" member="yes">
+					<label>Paste</label>
+					<accel>CTRL-v</accel>
+					<bitmap code='GetMenuItemBitmapBundle(&quot;wxART_PASTE&quot;)' />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_SHIFT_EFFECTS_AND_TIMING" variable="MenuItemShiftEffectsAndTiming" member="yes">
+					<label>Shift Effects And Timing</label>
+					<help>Use this options to shift all timing and effects in the sequence.</help>
+					<handler function="OnMenuItemShiftEffectsAndTimingSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_SHIFT_EFFECTS" variable="MenuItemShiftEffects" member="yes">
+					<label>Shift Effects</label>
+					<help>Use this options to shift all effects in the sequence.</help>
+					<handler function="OnMenuItemShiftEffectsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_SHIFT_SELECTED_EFFECTS" variable="MenuItemShiftSelectedEffects" member="yes">
+					<label>Shift Selected Effects</label>
+					<handler function="OnMenuItemShiftSelectedEffectsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MNU_COLOURREPLACE" variable="MenuItem_ColorReplace" member="yes">
+					<label>Color Replace</label>
+					<handler function="OnMenuItem_ColorReplaceSelected" entry="EVT_MENU" />
+				</object>
+			</object>
+			<object class="wxMenu" variable="Menu1" member="yes">
+				<label>&amp;Tools</label>
+				<object class="wxMenuItem" name="ID_MENUITEM13" variable="ActionTestMenuItem" member="yes">
+					<label>&amp;Test</label>
+					<handler function="OnActionTestMenuItemSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MNU_CHECKSEQ" variable="MenuItemCheckSequence" member="yes">
+					<label>C&amp;heck Sequence</label>
+					<handler function="OnMenuItemCheckSequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_CLEANUPFILE" variable="MenuItem_CleanupFileLocations" member="yes">
+					<label>Cleanup File Locations</label>
+					<help>Moves all files into or under the show folder.</help>
+					<handler function="OnMenuItem_CleanupFileLocationsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_PACKAGESEQUENCE" variable="MenuItem_PackageSequence" member="yes">
+					<label>Package &amp;Sequence</label>
+					<handler function="OnMenuItem_PackageSequenceSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_DOWNLOADSEQUENCES" variable="MenuItem_DownloadSequences" member="yes">
+					<label>Download Sequences/Lyrics</label>
+					<handler function="OnMenuItem_DownloadSequencesSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MENU_BATCH_RENDER" variable="MenuItemBatchRender" member="no">
+					<label>&amp;Batch Render</label>
+					<handler function="OnMenuItemBatchRenderSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_FPP_CONNECT" variable="MenuItem_FPP_Connect" member="yes">
+					<label>&amp;FPP Connect</label>
+					<handler function="OnMenuItem_FPP_ConnectSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_BULKUPLOAD" variable="MenuItemBulkControllerUpload" member="yes">
+					<label>Bulk Controller Upload</label>
+					<handler function="OnMenuItemBulkControllerUploadSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_HINKSPIX_EXPORT" variable="MenuItemHinksPixExport" member="yes">
+					<label>HinksPix Export</label>
+					<handler function="OnMenuItemHinksPixExportSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_RUN_SCRIPT" variable="MenuItemRunScript" member="yes">
+					<label>Run Scripts</label>
+					<handler function="OnMenuItemRunScriptSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_EXPORT_MODELS" variable="mExportModelsMenuItem" member="yes">
+					<label>E&amp;xport Models</label>
+					<handler function="OnmExportModelsMenuItemSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_EXPORT_EFFECTS" variable="MenuItem_ExportEffects" member="yes">
+					<label>Export &amp;Effects</label>
+					<handler function="OnMenuItem_ExportEffectsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_EXPORT_CONTROLLER_CONNECTIONS" variable="MenuItem_ExportControllerConnections" member="yes">
+					<label>Export Controller Connections</label>
+					<handler function="OnMenuItem_ExportControllerConnectionsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MENU_VIEW_LOG" variable="MenuItem_ViewLog" member="yes">
+					<label>&amp;View Log</label>
+					<handler function="OnMenuItem_ViewLogSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENUITEM18" variable="MenuItem38" member="yes">
+					<label>&amp;Package Log Files</label>
+					<help>Packages up current configuration, logs and sequence for reporting a problem to development team.</help>
+					<handler function="OnMenuItemPackageDebugFiles" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="iD_MNU_VENDORCACHEPURGE" variable="MenuItem_PurgeVendorCache" member="yes">
+					<label>Purge Download Cache</label>
+					<handler function="OnMenuItem_PurgeVendorCacheSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_PURGERENDERCACHE" variable="MenuItem_PurgeRenderCache" member="yes">
+					<label>Purge Render Cache</label>
+					<handler function="OnMenuItem_PurgeRenderCacheSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_CRASH" variable="MenuItem_CrashXLights" member="yes">
+					<label>Crash xLights</label>
+					<handler function="OnMenuItem_CrashXLightsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_DUMPRENDERSTATE" variable="MenuItem_LogRenderState" member="yes">
+					<label>Log Render State</label>
+					<handler function="OnMenuItem_LogRenderStateSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MENU_GENERATE2DPATH" variable="MenuItem_Generate2DPath" member="yes">
+					<label>Generate 2D Path</label>
+					<handler function="OnMenuItem_Generate2DPathSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENUITEM_GenerateCustomModel" variable="Menu_GenerateCustomModel" member="yes">
+					<label>&amp;Generate Custom Model</label>
+					<handler function="OnMenu_GenerateCustomModelSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_REMAPCUSTOM" variable="MenuItem_RemapCustom" member="yes">
+					<label>Remap Custom Model</label>
+					<handler function="OnMenuItem_RemapCustomSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_GENERATELYRICS" variable="MenuItem_GenerateLyrics" member="yes">
+					<label>Generate &amp;Lyrics From Data</label>
+					<help>Generate lyric phenomes from data</help>
+					<handler function="OnMenuItem_GenerateLyricsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENUITEM_CONVERT" variable="MenuItemConvert" member="yes">
+					<label>&amp;Convert</label>
+					<handler function="OnMenuItemConvertSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_PREPAREAUDIO" variable="MenuItem_PrepareAudio" member="yes">
+					<label>Prepare Audio</label>
+					<handler function="OnMenuItem_PrepareAudioSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_USER_DICT" variable="MenuItemUserDict" member="yes">
+					<label>User Lyric Dictionary</label>
+					<handler function="OnMenuItemUserDictSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_FIND_SHOW_FOLDER" variable="MenuItemFindShowFolder" member="yes">
+					<label>Search for Show Folders</label>
+					<handler function="OnMenuItemFindShowFolderSelected" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MNU_XSCHEDULE" variable="MenuItem_xSchedule" member="yes">
+					<label>xSchedu&amp;le</label>
+					<handler function="OnMenuItem_xScheduleSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_XCAPTURE" variable="xCaptureMenuItem" member="yes">
+					<label>xCapture</label>
+					<handler function="OnMenuItem_xCaptureSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_XSCANNER" variable="MenuItem_xScanner" member="yes">
+					<label>xScanner</label>
+					<handler function="OnMenuItem_xScannerSelected" entry="EVT_MENU" />
+				</object>
+			</object>
+			<object class="wxMenu" variable="MenuView" member="yes">
+				<label>&amp;View</label>
+				<object class="wxMenuItem" name="wxID_ZOOM_IN" variable="MenuItem_ViewZoomIn" member="yes">
+					<label>Zoom In</label>
+					<handler function="OnAuiToolBarItemZoominClick" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="wxID_ZOOM_OUT" variable="MenuItem_ViewZoomOut" member="yes">
+					<label>Zoom Out</label>
+					<handler function="OnAuiToolBarItem_ZoomOutClick" entry="EVT_MENU" />
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MENUITEM5" variable="MenuItem13" member="no">
+					<label>Reset Toolbars</label>
+					<handler function="ResetToolbarLocations" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="MNU_ID_ACLIGHTS" variable="MenuItem_ACLIghts" member="yes">
+					<label>AC Lights Toolbar</label>
+					<handler function="OnMenuItem_ACLIghtsSelected" entry="EVT_MENU" />
+					<checkable>1</checkable>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_SHOWRAMPS" variable="MenuItem_ShowACRamps" member="yes">
+					<label>Show AC Ramps</label>
+					<help>Show on effects and twinkle effects as ramps.</help>
+					<handler function="OnMenuItem_ShowACRampsSelected" entry="EVT_MENU" />
+					<checkable>1</checkable>
+				</object>
+				<object class="separator" />
+				<object class="wxMenu" name="ID_MENUITEM7" variable="MenuItemPerspectives" member="yes">
+					<label>Perspectives</label>
+					<object class="wxMenuItem" name="ID_MENUITEM_SAVE_PERSPECTIVE" variable="MenuItemViewSavePerspective" member="yes">
+						<label>Save Current</label>
+						<handler function="OnMenuItemViewSavePerspectiveSelected" entry="EVT_MENU" />
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_SAVE_AS_PERSPECTIVE" variable="MenuItemViewSaveAsPerspective" member="yes">
+						<label>Save As New</label>
+						<handler function="OnMenuItemViewSaveAsPerspectiveSelected" entry="EVT_MENU" />
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_LOAD_PERSPECTIVE" variable="MenuItemLoadEditPerspective" member="yes">
+						<label>Edit/Load</label>
+						<handler function="OnMenuItemLoadEditPerspectiveSelected" entry="EVT_MENU" />
+					</object>
+					<object class="wxMenuItem" name="ID_MNU_PERSPECTIVES_AUTOSAVE" variable="MenuItem_PerspectiveAutosave" member="yes">
+						<label>Auto Save</label>
+						<help>Save the current perspective between sessions independent of the show directory.</help>
+						<handler function="OnMenuItem_PerspectiveAutosaveSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="separator" />
+				</object>
+				<object class="wxMenu" name="ID_MENUITEM10" variable="MenuItem18" member="yes">
+					<label>Windows</label>
+					<object class="wxMenuItem" name="ID_MENUITEM_DISPLAY_ELEMENTS" variable="MenuItemDisplayElements" member="yes">
+						<label>Display Elements</label>
+						<handler function="ShowHideDisplayElementsWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENU_TOGGLE_MODEL_PREVIEW" variable="MenuItemModelPreview" member="yes">
+						<label>Model Preview</label>
+						<handler function="ShowHideModelPreview" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENU_TOGGLE_HOUSE_PREVIEW" variable="MenuItemHousePreview" member="yes">
+						<label>House Preview</label>
+						<handler function="ShowHideHousePreview" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM14" variable="MenuItemEffectSettings" member="yes">
+						<label>Effect Settings</label>
+						<handler function="ShowHideEffectSettingsWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM15" variable="MenuItemColours" member="yes">
+						<label>Colors</label>
+						<handler function="ShowHideColorWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM16" variable="MenuItemLayerBlending" member="yes">
+						<label>Layer Blending</label>
+						<handler function="ShowHideLayerTimingWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM9" variable="MenuItemLayerSettings" member="yes">
+						<label>Layer Settings</label>
+						<handler function="ShowHideBufferSettingsWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM17" variable="MenuItemEffectDropper" member="yes">
+						<label>Effect Dropper</label>
+						<handler function="ShowHideEffectDropper" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MNU_VALUECURVES" variable="MenuItemValueCurves" member="yes">
+						<label>Value Curves</label>
+						<handler function="OnMenuItem_ValueCurvesSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MNU_COLOURDROPPER" variable="MenuItemColourDropper" member="yes">
+						<label>Color Dropper</label>
+						<handler function="OnMenuItem_ColourDropperSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_EFFECT_ASSIST_WINDOW" variable="MenuItemEffectAssist" member="yes">
+						<label>Effect Assist</label>
+						<handler function="ShowHideEffectAssistWindow" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_SELECT_EFFECT" variable="MenuItemSelectEffect" member="yes">
+						<label>Select Effect</label>
+						<handler function="OnMenuItemSelectEffectSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_SEARCH_EFFECTS" variable="MenuItemSearchEffects" member="yes">
+						<label>Search Effects</label>
+						<handler function="OnMenuItemSearchEffectsSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_VIDEOPREVIEW" variable="MenuItemVideoPreview" member="yes">
+						<label>Video Preview</label>
+						<handler function="OnMenuItemShowHideVideoPreview" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MNU_JUKEBOX" variable="MenuItemJukebox" member="yes">
+						<label>Jukebox</label>
+						<handler function="OnMenuItem_JukeboxSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="wxMenuItem" name="ID_MNU_FINDDATA" variable="MenuItemFindData" member="yes">
+						<label>Find Effect Data</label>
+						<handler function="OnMenuItemFindDataSelected" entry="EVT_MENU" />
+						<checkable>1</checkable>
+					</object>
+					<object class="separator" />
+					<object class="wxMenu" name="ID_MENUITEM3" variable="MenuItem1" member="yes">
+						<label>Suppress Dock</label>
+						<object class="wxMenuItem" name="ID_MNU_SUPPRESSDOCK_HP" variable="MenuItem_SD_HP" member="yes">
+							<label>House Preview</label>
+							<handler function="OnMenuItem_SuppressDock" entry="EVT_MENU" />
+							<checkable>1</checkable>
+						</object>
+						<object class="wxMenuItem" name="ID_MNU_SUPPRESSDOCK_MP" variable="MenuItem_SD_MP" member="yes">
+							<label>Model Preview</label>
+							<handler function="OnMenuItem_SuppressDock" entry="EVT_MENU" />
+							<checkable>1</checkable>
+						</object>
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_WINDOWS_PERSPECTIVE" variable="MenuItem26" member="no">
+						<label>Perspectives</label>
+						<handler function="ShowHidePerspectivesWindow" entry="EVT_MENU" />
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM_WINDOWS_DOCKALL" variable="MenuItem21" member="no">
+						<label>Dock All</label>
+						<handler function="OnMenuDockAllSelected" entry="EVT_MENU" />
+					</object>
+					<object class="wxMenuItem" name="ID_MENUITEM11" variable="MenuItem33" member="yes">
+						<label>Reset to Defaults</label>
+						<handler function="ResetWindowsToDefaultPositions" entry="EVT_MENU" />
+					</object>
+				</object>
+			</object>
+			<object class="wxMenu" variable="AudioMenu" member="yes">
+				<label>&amp;Audio</label>
+				<object class="wxMenuItem" name="ID_PLAY_FULL" variable="MenuItem8" member="no">
+					<label>Play Full Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_1POINT5SPEED" variable="MenuItem39" member="yes">
+					<label>Play 1.5x Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MN_2SPEED" variable="MenuItem49" member="yes">
+					<label>Play 2x Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_3SPEED" variable="MenuItem50" member="yes">
+					<label>Play 3x Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_4SPEED" variable="MenuItem51" member="yes">
+					<label>Play 4x Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_PLAY_3_4" variable="MenuItem9" member="no">
+					<label>Play 3/4 Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_PLAY_1_2" variable="MenuItem30" member="no">
+					<label>Play 1/2 Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_PLAY_1_4" variable="MenuItem31" member="no">
+					<label>Play 1/4 Speed</label>
+					<handler function="SetPlaySpeed" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="separator" />
+				<object class="wxMenuItem" name="ID_MNU_LOUDVOLUME" variable="MenuItem_LoudVol" member="yes">
+					<label>Loud</label>
+					<handler function="OnMenuItem_LoudVolSelected" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_MEDVOLUME" variable="MenuItem_MedVol" member="yes">
+					<label>Medium</label>
+					<handler function="OnMenuItem_MedVolSelected" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_QUIET" variable="MenuItem_QuietVol" member="yes">
+					<label>Quiet</label>
+					<handler function="OnMenuItem_QuietVolSelected" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_SUPERQUIET" variable="MenuItem_VQuietVol" member="yes">
+					<label>Very Quiet</label>
+					<handler function="OnMenuItem_VQuietVolSelected" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_SILENT" variable="MenuItem_SilentVol" member="yes">
+					<label>Silent</label>
+					<handler function="OnMenuItem_SilentVolSelected" entry="EVT_MENU" />
+					<radio>1</radio>
+				</object>
+			</object>
+			<object class="wxMenu" variable="Menu2" member="no">
+				<label>&amp;Import</label>
+				<object class="wxMenuItem" name="ID_IMPORT_EFFECTS" variable="MenuItem_ImportEffects" member="yes">
+					<label>Import Effects</label>
+					<handler function="OnMenuItemImportEffects" entry="EVT_MENU" />
+				</object>
+			</object>
+			<object class="wxMenu" variable="MenuHelp" member="no">
+				<label>&amp;Help</label>
+				<object class="wxMenuItem" name="ID_MNU_TOD" variable="MenuItem_TOD" member="yes">
+					<label>Tip of the Day</label>
+					<handler function="OnMenuItem_TODSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_MANUAL" variable="MenuItem_UserManual" member="yes">
+					<label>User Manual</label>
+					<handler function="OnMenuItem_UserManualSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_ZOOM" variable="MenuItem_Zoom" member="yes">
+					<label>Zoom Room Help</label>
+					<help>Access the free Zoom Room for Help</help>
+					<handler function="OnMenuItem_ZoomSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENUITEM1" variable="MenuItem_ShowKeyBindings" member="yes">
+					<label>Key Bindings</label>
+					<handler function="OnMenuItem_ShowKeyBindingsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="idMenuHelpContent" variable="MenuItem4" member="no">
+					<label>Content</label>
+					<accel>F1</accel>
+					<handler function="OnBitmapButtonTabInfoClick" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_HELP_FORMUM" variable="MenuItem_Help_Forum" member="yes">
+					<label>Forum</label>
+					<handler function="OnMenuItem_Help_ForumSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_VIDEOS" variable="MenuItem_VideoTutorials" member="yes">
+					<label>Video Tutorials</label>
+					<handler function="OnMenuItem_VideoTutorialsSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_HELP_DOWNLOAD" variable="MenuItem_Help_Download" member="yes">
+					<label>Download</label>
+					<handler function="OnMenuItem_Help_DownloadSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_HELP_RELEASE_NOTES" variable="MenuItem_Help_ReleaseNotes" member="yes">
+					<label>Release Notes</label>
+					<handler function="OnMenuItem_Help_ReleaseNotesSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_HELP_ISSUE" variable="MenuItem_Help_Isue_Tracker" member="yes">
+					<label>Issue Tracker</label>
+					<handler function="OnMenuItem_Help_Isue_TrackerSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MENU_HELP_FACEBOOK" variable="MenuItem_Help_Facebook" member="yes">
+					<label>Facebook</label>
+					<handler function="OnMenuItem_Help_FacebookSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_DONATE" variable="MenuItem_Donate" member="yes">
+					<label>Donate</label>
+					<help>Donate to the xLights project.</help>
+					<handler function="OnMenuItem_DonateSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="ID_MNU_UPDATE" variable="MenuItem_Update" member="yes">
+					<label>Check for Updates</label>
+					<help>Check for newer xLights updates</help>
+					<enabled>0</enabled>
+					<handler function="OnMenuItem_UpdateSelected" entry="EVT_MENU" />
+				</object>
+				<object class="wxMenuItem" name="wxID_ABOUT" variable="MenuItem2" member="no">
+					<label>About</label>
+					<help>Show info about this application</help>
+					<handler function="OnAbout" entry="EVT_MENU" />
+				</object>
+			</object>
+		</object>
+		<object class="wxTimer" name="ID_TIMER_OutputTimer" subclass="xLightsTimer" variable="OutputTimer" member="yes">
+			<handler function="OnOutputTimerTrigger" entry="EVT_TIMER" />
+		</object>
+		<object class="wxTimer" name="ID_TIMER_AutoSave" variable="AutoSaveTimer" member="yes">
+			<handler function="OnTimer_AutoSaveTrigger" entry="EVT_TIMER" />
+		</object>
+		<object class="wxTimer" name="ID_TIMER_EFFECT_SETTINGS" variable="EffectSettingsTimer" member="yes">
+			<handler function="OnEffectSettingsTimerTrigger" entry="EVT_TIMER" />
+		</object>
+		<object class="wxTimer" name="ID_TIMER_RENDERSTATUS" variable="RenderStatusTimer" member="yes">
+			<interval>100</interval>
+			<handler function="OnRenderStatusTimerTrigger" entry="EVT_TIMER" />
+		</object>
+	</object>
+</wxsmith>
