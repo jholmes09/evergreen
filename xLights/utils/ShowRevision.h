@@ -416,7 +416,7 @@ inline bool Confirm(const wxString& showDir, wxWindow* parent)
     };
     static const char* const kFiles[][2] = { { "xlights_networks.xml", "<Networks" },
                                              { "xlights_rgbeffects.xml", "<xrgb" } };
-    const wxString title = "Jeff Holmes Presents:";
+    const wxString title = "Protected File";
     const wxString notOpened = "This show folder could not be opened.";
     const wxString notUpdated = "This show folder could not be opened because a show file could not be updated.";
 
