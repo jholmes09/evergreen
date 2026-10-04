@@ -13,6 +13,7 @@
 #include <wx/tokenzr.h>
 #include <wx/clipbrd.h>
 #include "settings/XLightsConfigAdapter.h"
+#include "ShowRevision.h"
 #include <wx/wfstream.h>
 #include <wx/sstream.h>
 #include <wx/xml/xml.h>
@@ -97,7 +98,16 @@ std::string xLightsFrame::BuildEffectsXml()
 {
     XmlSerializer serializer;
     StringSerializingVisitor visitor;
-    visitor.WriteOpenTag("xrgb");
+    // Keep the show folder revision stamp on the root element (see ShowRevision.h).
+    BaseSerializingVisitor::AttrCollector rootAttrs;
+    for (const auto& a : ShowRevision::StampAttrs(wxFileName(CurrentDir, XLIGHTS_RGBEFFECTS_FILE).GetFullPath(), "<xrgb")) {
+        rootAttrs.Add(a.first.c_str(), a.second);
+    }
+    if (rootAttrs.attrs.empty()) {
+        visitor.WriteOpenTag("xrgb");
+    } else {
+        visitor.WriteOpenTag("xrgb", rootAttrs);
+    }
     serializer.SerializeAllModels(AllModels, visitor);
     serializer.SerializeAllObjects(AllObjects, visitor);
     std::vector<LayoutGroupData> lgData;
