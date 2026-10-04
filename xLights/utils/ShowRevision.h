@@ -13,22 +13,36 @@
 // Show folder revision stamp.
 //
 // A show folder may carry a rev="..." attribute on the root element of
-// xlights_networks.xml and/or xlights_rgbeffects.xml. When either is present the
-// folder is only opened after the matching entry is confirmed, and the attribute
-// is then removed from every file carrying it so later opens are unaffected. Shared by xLights and xSchedule; header-only so neither
-// project file needs to change.
+// xlights_networks.xml and/or xlights_rgbeffects.xml. When present, the folder
+// only opens after the matching entry is confirmed, and the stamp is then removed
+// from every file carrying it.
+//
+// A stamp may also carry revd="...": a sealed countdown (stamp date, days allowed,
+// latest date seen, clock-rollback count). While days remain the folder opens
+// after a notice showing the days left; at zero the entry is required. The latest
+// date only moves forward, and each open with the clock behind it costs a day. A
+// missing, edited or mismatched countdown counts as zero days. The countdown and
+// the stamp are also remembered on this computer, so restoring an older copy of
+// the files or removing the attributes does not reset or clear them.
+//
+// Shared by xLights and xSchedule; header-only so neither project file needs to change.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
+#include <wx/config.h>
+#include <wx/datetime.h>
 #include <wx/file.h>
 #include <wx/filefn.h>
 #include <wx/filename.h>
 #include <wx/msgdlg.h>
 #include <wx/textdlg.h>
 #include <wx/window.h>
+#include <wx/xml/xml.h>
 
 namespace ShowRevision {
 
@@ -161,15 +175,16 @@ inline void Derive(const uint8_t salt[kSaltBytes], const std::string& entry, uin
     }
 }
 
-// Locate rev="<hex>" inside the root start tag (e.g. "<Networks"). On success,
+// Locate name="<hex>" (rev by default) inside the root start tag (e.g. "<Networks"). On success,
 // start/len cover the attribute including its leading whitespace, and value is the hex.
-inline bool FindStamp(const std::string& xml, const char* rootTag, size_t& start, size_t& len, std::string& value)
+inline bool FindStamp(const std::string& xml, const char* rootTag, size_t& start, size_t& len, std::string& value,
+                      const char* name = "rev")
 {
     size_t tag = xml.find(rootTag);
     if (tag == std::string::npos) return false;
     size_t tagEnd = xml.find('>', tag);
     if (tagEnd == std::string::npos) return false;
-    const std::string key = "rev=\"";
+    const std::string key = std::string(name) + "=\"";
     size_t pos = tag;
     while (true) {
         pos = xml.find(key, pos);
@@ -211,69 +226,376 @@ inline bool WriteAll(const wxString& path, const std::string& data)
     return wxRenameFile(tmp, path, true);
 }
 
+inline std::string ToHex(const uint8_t* p, size_t n)
+{
+    static const char digits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(n * 2);
+    for (size_t i = 0; i < n; i++) {
+        out += digits[p[i] >> 4];
+        out += digits[p[i] & 15];
+    }
+    return out;
+}
+
+inline void HashOf(const std::string& data, uint8_t out[kDigestBytes])
+{
+    Sha256 s;
+    s.Update((const uint8_t*)data.data(), data.size());
+    s.Final(out);
+}
+
+// Must match the stamping tool.
+constexpr const char* kSealKey = "Evergreen show revision countdown v1";
+constexpr size_t kNonceBytes = 4;
+constexpr size_t kStateBytes = 12;
+constexpr size_t kMacBytes = 16;
+constexpr size_t kSealedHex = (kNonceBytes + kStateBytes + kMacBytes) * 2;
+constexpr int kMaxDays = 3650;
+
+struct Countdown {
+    uint32_t stampDay = 0; // days since 1970-01-01, local calendar date
+    uint16_t allowed = 0;
+    uint32_t lastSeen = 0;
+    uint16_t penalty = 0;
+};
+
+inline int DaysLeft(const Countdown& c)
+{
+    long left = (long)c.allowed - ((long)c.lastSeen - (long)c.stampDay) - (long)c.penalty;
+    return left < 0 ? 0 : (int)left;
+}
+
+// Today's local calendar date as days since 1970-01-01.
+inline uint32_t Today()
+{
+    wxDateTime t = wxDateTime::Today();
+    long y = t.GetYear();
+    unsigned m = (unsigned)t.GetMonth() + 1;
+    unsigned d = t.GetDay();
+    if (m <= 2) y--;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = era * 146097L + (long)doe - 719468L;
+    return days < 0 ? 0 : (uint32_t)days;
+}
+
+inline std::string KeyFor(const uint8_t salt[kSaltBytes])
+{
+    uint8_t k[kDigestBytes];
+    HashOf(std::string(kSealKey) + std::string((const char*)salt, kSaltBytes), k);
+    return std::string((const char*)k, kDigestBytes);
+}
+
+// revd = nonce || (state XOR H(key||"ks"||nonce)) || H(key||"mac"||nonce||ct)[0..16)
+inline std::string Seal(const uint8_t salt[kSaltBytes], const Countdown& c)
+{
+    uint8_t buf[kNonceBytes + kStateBytes + kMacBytes];
+    std::random_device rd;
+    for (size_t i = 0; i < kNonceBytes; i++) buf[i] = (uint8_t)rd();
+    uint8_t* st = buf + kNonceBytes;
+    st[0] = (uint8_t)(c.stampDay >> 24); st[1] = (uint8_t)(c.stampDay >> 16);
+    st[2] = (uint8_t)(c.stampDay >> 8);  st[3] = (uint8_t)c.stampDay;
+    st[4] = (uint8_t)(c.allowed >> 8);   st[5] = (uint8_t)c.allowed;
+    st[6] = (uint8_t)(c.lastSeen >> 24); st[7] = (uint8_t)(c.lastSeen >> 16);
+    st[8] = (uint8_t)(c.lastSeen >> 8);  st[9] = (uint8_t)c.lastSeen;
+    st[10] = (uint8_t)(c.penalty >> 8);  st[11] = (uint8_t)c.penalty;
+
+    const std::string key = KeyFor(salt);
+    const std::string nonce((const char*)buf, kNonceBytes);
+    uint8_t ks[kDigestBytes];
+    HashOf(key + "ks" + nonce, ks);
+    for (size_t i = 0; i < kStateBytes; i++) st[i] ^= ks[i];
+    uint8_t mac[kDigestBytes];
+    HashOf(key + "mac" + nonce + std::string((const char*)st, kStateBytes), mac);
+    std::memcpy(buf + kNonceBytes + kStateBytes, mac, kMacBytes);
+    return ToHex(buf, sizeof(buf));
+}
+
+inline bool Unseal(const uint8_t salt[kSaltBytes], const std::string& hex, Countdown& c)
+{
+    uint8_t buf[kNonceBytes + kStateBytes + kMacBytes];
+    if (hex.size() != kSealedHex || !FromHex(hex, buf, sizeof(buf))) return false;
+    const std::string key = KeyFor(salt);
+    const std::string nonce((const char*)buf, kNonceBytes);
+    uint8_t* st = buf + kNonceBytes;
+    uint8_t mac[kDigestBytes];
+    HashOf(key + "mac" + nonce + std::string((const char*)st, kStateBytes), mac);
+    uint8_t diff = 0;
+    for (size_t i = 0; i < kMacBytes; i++) diff |= (uint8_t)(mac[i] ^ buf[kNonceBytes + kStateBytes + i]);
+    if (diff != 0) return false;
+    uint8_t ks[kDigestBytes];
+    HashOf(key + "ks" + nonce, ks);
+    for (size_t i = 0; i < kStateBytes; i++) st[i] ^= ks[i];
+    c.stampDay = ((uint32_t)st[0] << 24) | ((uint32_t)st[1] << 16) | ((uint32_t)st[2] << 8) | st[3];
+    c.allowed = (uint16_t)((st[4] << 8) | st[5]);
+    c.lastSeen = ((uint32_t)st[6] << 24) | ((uint32_t)st[7] << 16) | ((uint32_t)st[8] << 8) | st[9];
+    c.penalty = (uint16_t)((st[10] << 8) | st[11]);
+    return c.allowed >= 1 && c.allowed <= kMaxDays && c.lastSeen >= c.stampDay;
+}
+
+// Set name="value" on the root start tag, replacing any existing value.
+inline bool SetAttr(std::string& xml, const char* rootTag, const char* name, const std::string& value)
+{
+    size_t start, len;
+    std::string old;
+    if (FindStamp(xml, rootTag, start, len, old, name)) {
+        xml.replace(start, len, std::string(" ") + name + "=\"" + value + "\"");
+        return true;
+    }
+    size_t tag = xml.find(rootTag);
+    if (tag == std::string::npos) return false;
+    size_t end = xml.find('>', tag);
+    if (end == std::string::npos) return false;
+    if (xml[end - 1] == '/') end--;
+    xml.insert(end, std::string(" ") + name + "=\"" + value + "\"");
+    return true;
+}
+
+inline void RemoveAttr(std::string& xml, const char* rootTag, const char* name)
+{
+    size_t start, len;
+    std::string old;
+    if (FindStamp(xml, rootTag, start, len, old, name)) xml.erase(start, len);
+}
+
+// Settings shared by xLights and xSchedule on this computer.
+inline wxString MemoryName() { return "EvergreenShow"; }
+
+inline wxString FolderEntry(const wxString& showDir)
+{
+    wxFileName fn = wxFileName::DirName(showDir);
+    fn.Normalize(wxPATH_NORM_DOTS | wxPATH_NORM_ABSOLUTE);
+    wxString p = fn.GetPath().Lower();
+    const wxScopedCharBuffer utf8 = p.ToUTF8();
+    uint8_t h[kDigestBytes];
+    HashOf(std::string(utf8.data(), utf8.length()), h);
+    return "/ShowRevision/F" + ToHex(h, 12);
+}
+
+inline wxString StampEntry(const uint8_t salt[kSaltBytes])
+{
+    return "/ShowRevision/S" + ToHex(salt, kSaltBytes);
+}
+
 } // namespace detail
 
-// True when the folder may be opened: no stamp, or the entry matched (the stamp
-// is then cleared from every file). False when the user cancels. Must run before
-// anything reads the show folder.
+// Keeps the stamp when xLights rewrites xlights_networks.xml from scratch.
+inline void CarryOver(const wxString& path, wxXmlNode* root)
+{
+    std::string xml;
+    if (!wxFileExists(path) || !detail::ReadAll(path, xml)) return;
+    for (const char* name : { "rev", "revd" }) {
+        size_t start, len;
+        std::string value;
+        if (detail::FindStamp(xml, "<Networks", start, len, value, name)) {
+            root->AddAttribute(name, value);
+        }
+    }
+}
+
+// True when the folder may be opened: no stamp, days remain on the countdown and
+// the user continues, or the entry matched (the stamp is then cleared from every
+// file). False when the user cancels or a show file cannot be updated. Must run
+// before anything reads the show folder.
 inline bool Confirm(const wxString& showDir, wxWindow* parent)
 {
-    struct Stamped {
+    struct ShowFile {
         wxString path;
+        const char* root;
         std::string xml;
-        size_t start = 0, len = 0;
+        bool stamped = false;
+        std::string rev;
+        std::string revd;
         uint8_t salt[detail::kSaltBytes];
         uint8_t expected[detail::kDigestBytes];
+        bool counted = false;
+        detail::Countdown countdown;
     };
     static const char* const kFiles[][2] = { { "xlights_networks.xml", "<Networks" },
                                              { "xlights_rgbeffects.xml", "<xrgb" } };
+    const wxString title = "Jeff Holmes Presents:";
+    const wxString notOpened = "This show folder could not be opened.";
+    const wxString notUpdated = "This show folder could not be opened because a show file could not be updated.";
 
-    std::vector<Stamped> found;
-    for (const auto& f : kFiles) {
-        Stamped st;
-        st.path = wxFileName(showDir, f[0]).GetFullPath();
-        std::string value;
-        if (!wxFileExists(st.path) || !detail::ReadAll(st.path, st.xml)) continue;
-        if (!detail::FindStamp(st.xml, f[1], st.start, st.len, value)) continue;
-        if (value.size() != (detail::kSaltBytes + detail::kDigestBytes) * 2 ||
-            !detail::FromHex(value.substr(0, detail::kSaltBytes * 2), st.salt, detail::kSaltBytes) ||
-            !detail::FromHex(value.substr(detail::kSaltBytes * 2), st.expected, detail::kDigestBytes)) {
-            // A malformed stamp is treated as present: refuse rather than open silently.
-            wxMessageBox("This show folder could not be opened.", "Jeff Holmes Presents:", wxOK | wxICON_ERROR, parent);
+    // Parses rev/revd into f. False when rev is malformed.
+    auto parse = [](ShowFile& f) {
+        if (f.rev.size() != (detail::kSaltBytes + detail::kDigestBytes) * 2 ||
+            !detail::FromHex(f.rev.substr(0, detail::kSaltBytes * 2), f.salt, detail::kSaltBytes) ||
+            !detail::FromHex(f.rev.substr(detail::kSaltBytes * 2), f.expected, detail::kDigestBytes)) {
             return false;
         }
-        found.push_back(std::move(st));
-    }
-    if (found.empty()) return true;
+        f.stamped = true;
+        f.counted = !f.revd.empty() && detail::Unseal(f.salt, f.revd, f.countdown);
+        return true;
+    };
 
-    const wxString message = "Use of this show folder without payment is prohibited. Please contact Jeff Holmes Presents for more information.";
+    std::vector<ShowFile> files;
+    for (const auto& k : kFiles) {
+        ShowFile f;
+        f.path = wxFileName(showDir, k[0]).GetFullPath();
+        f.root = k[1];
+        if (!wxFileExists(f.path) || !detail::ReadAll(f.path, f.xml)) continue;
+        size_t start, len;
+        if (detail::FindStamp(f.xml, f.root, start, len, f.rev)) {
+            detail::FindStamp(f.xml, f.root, start, len, f.revd, "revd");
+            if (!parse(f)) {
+                // A malformed stamp is treated as present: refuse rather than open silently.
+                wxMessageBox(notOpened, title, wxOK | wxICON_ERROR, parent);
+                return false;
+            }
+        }
+        files.push_back(std::move(f));
+    }
+
+    wxConfig memory(detail::MemoryName());
+    const wxString folderEntry = detail::FolderEntry(showDir);
+
+    std::vector<ShowFile*> stamped;
+    for (auto& f : files) {
+        if (f.stamped) stamped.push_back(&f);
+    }
+
+    if (stamped.empty()) {
+        // The attributes were removed from a folder this computer knows is stamped: put them back.
+        wxString remembered;
+        if (files.empty() || !memory.Read(folderEntry, &remembered)) return true;
+        const std::string rev = remembered.BeforeFirst('|').ToStdString();
+        const std::string revd = remembered.AfterFirst('|').ToStdString();
+        for (auto& f : files) {
+            f.rev = rev;
+            f.revd = revd;
+            if (!parse(f)) {
+                memory.DeleteEntry(folderEntry);
+                memory.Flush();
+                return true;
+            }
+            stamped.push_back(&f);
+        }
+        wxString cleared;
+        if (memory.Read(detail::StampEntry(files[0].salt), &cleared) && cleared == "ok") {
+            memory.DeleteEntry(folderEntry);
+            memory.Flush();
+            return true;
+        }
+        for (auto f : stamped) {
+            if (!detail::SetAttr(f->xml, f->root, "rev", f->rev) ||
+                (!f->revd.empty() && !detail::SetAttr(f->xml, f->root, "revd", f->revd)) ||
+                !detail::WriteAll(f->path, f->xml)) {
+                wxMessageBox(notUpdated, title, wxOK | wxICON_ERROR, parent);
+                return false;
+            }
+        }
+    }
+
+    const wxString stampEntry = detail::StampEntry(stamped[0]->salt);
+
+    auto clearStamp = [&]() {
+        bool allWritten = true;
+        for (auto f : stamped) {
+            detail::RemoveAttr(f->xml, f->root, "rev");
+            detail::RemoveAttr(f->xml, f->root, "revd");
+            if (!detail::WriteAll(f->path, f->xml)) allWritten = false;
+        }
+        memory.Write(stampEntry, "ok");
+        memory.DeleteEntry(folderEntry);
+        memory.Flush();
+        return allWritten;
+    };
+
+    // Already confirmed on this computer (e.g. a backup restored after payment).
+    wxString cleared;
+    if (memory.Read(stampEntry, &cleared) && cleared == "ok") {
+        clearStamp();
+        return true;
+    }
+
+    // Every stamped file must carry the same valid countdown, or the folder is locked.
+    bool counted = true;
+    detail::Countdown c = stamped[0]->countdown;
+    for (auto f : stamped) {
+        if (!f->counted || f->countdown.stampDay != c.stampDay || f->countdown.allowed != c.allowed) {
+            counted = false;
+            break;
+        }
+        c.lastSeen = std::max(c.lastSeen, f->countdown.lastSeen);
+        c.penalty = std::max(c.penalty, f->countdown.penalty);
+    }
+
+    int daysLeft = 0;
+    if (counted) {
+        wxString seen;
+        if (memory.Read(stampEntry, &seen)) {
+            unsigned long last = 0, pen = 0;
+            if (seen.BeforeFirst(',').ToULong(&last) && seen.AfterFirst(',').ToULong(&pen)) {
+                c.lastSeen = std::max(c.lastSeen, (uint32_t)last);
+                c.penalty = std::max(c.penalty, (uint16_t)std::min(pen, 65535UL));
+            }
+        }
+        const uint32_t today = detail::Today();
+        if (today >= c.lastSeen) {
+            c.lastSeen = today;
+        } else if (c.penalty < 65535) {
+            c.penalty++; // clock is behind the latest date already seen
+        }
+        daysLeft = detail::DaysLeft(c);
+
+        const std::string sealed = detail::Seal(stamped[0]->salt, c);
+        for (auto f : stamped) {
+            if (f->countdown.lastSeen == c.lastSeen && f->countdown.penalty == c.penalty) continue;
+            if (!detail::SetAttr(f->xml, f->root, "revd", sealed) || !detail::WriteAll(f->path, f->xml)) {
+                wxMessageBox(notUpdated, title, wxOK | wxICON_ERROR, parent);
+                return false;
+            }
+        }
+        memory.Write(stampEntry, wxString::Format("%u,%u", (unsigned)c.lastSeen, (unsigned)c.penalty));
+        memory.Write(folderEntry, wxString(stamped[0]->rev) + "|" + sealed);
+    } else {
+        memory.Write(folderEntry, wxString(stamped[0]->rev) + "|" + stamped[0]->revd);
+    }
+    memory.Flush();
+
+    const wxString locked = "Use of this show folder without payment is prohibited. Please contact Jeff Holmes Presents for more information.";
     while (true) {
-        wxTextEntryDialog dlg(parent, message, "Jeff Holmes Presents:", "", wxTextEntryDialogStyle | wxTE_PASSWORD);
-        if (dlg.ShowModal() != wxID_OK) return false;
+        if (daysLeft > 0) {
+            const wxString notice = wxString::Format(
+                "Use of this show folder without payment is prohibited. This show folder will lock in %d %s. "
+                "Please contact Jeff Holmes Presents for more information.",
+                daysLeft, daysLeft == 1 ? "day" : "days");
+            wxMessageDialog note(parent, notice, title, wxYES_NO | wxCANCEL | wxICON_WARNING);
+            note.SetYesNoCancelLabels("Continue", "Enter Code", "Cancel");
+            const int choice = note.ShowModal();
+            if (choice == wxID_YES) return true;
+            if (choice != wxID_NO) return false;
+        }
+
+        wxTextEntryDialog dlg(parent, daysLeft > 0 ? wxString("Enter the code from Jeff Holmes Presents.") : locked,
+                              title, "", wxTextEntryDialogStyle | wxTE_PASSWORD);
+        if (dlg.ShowModal() != wxID_OK) {
+            if (daysLeft > 0) continue;
+            return false;
+        }
 
         const wxScopedCharBuffer utf8 = dlg.GetValue().ToUTF8();
         const std::string entry(utf8.data(), utf8.length());
         bool matched = false;
-        for (const auto& st : found) {
+        for (auto f : stamped) {
             uint8_t got[detail::kDigestBytes];
-            detail::Derive(st.salt, entry, got);
+            detail::Derive(f->salt, entry, got);
             uint8_t diff = 0;
-            for (size_t i = 0; i < detail::kDigestBytes; i++) diff |= (uint8_t)(got[i] ^ st.expected[i]);
+            for (size_t i = 0; i < detail::kDigestBytes; i++) diff |= (uint8_t)(got[i] ^ f->expected[i]);
             if (diff == 0) { matched = true; break; }
         }
         if (matched) break;
 
-        wxMessageBox("That entry was not accepted.", "Jeff Holmes Presents:", wxOK | wxICON_WARNING, parent);
+        wxMessageBox("That entry was not accepted.", title, wxOK | wxICON_WARNING, parent);
     }
 
-    bool allWritten = true;
-    for (auto& st : found) {
-        st.xml.erase(st.start, st.len);
-        if (!detail::WriteAll(st.path, st.xml)) allWritten = false;
-    }
-    if (!allWritten) {
+    if (!clearStamp()) {
         wxMessageBox("The show folder was opened, but a show file could not be updated. You may be asked again next time.",
-                     "Jeff Holmes Presents:", wxOK | wxICON_WARNING, parent);
+                     title, wxOK | wxICON_WARNING, parent);
     }
     return true;
 }
