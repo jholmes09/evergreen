@@ -1,0 +1,1081 @@
+cmake_minimum_required(VERSION 3.20)
+project(xLights VERSION 2026.04 LANGUAGES C CXX)
+
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT xLights)
+
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_EXTENSIONS ON)   # -std=gnu++20
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 11)
+
+# ─── Output directory ───────────────────────────────────────────────────────
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
+
+# ─── Shorthand paths ────────────────────────────────────────────────────────
+set(XL_INC  ${CMAKE_SOURCE_DIR}/include)
+set(XL_DEPS ${CMAKE_SOURCE_DIR}/dependencies)
+set(XL_LIB  ${CMAKE_SOURCE_DIR}/lib)
+
+# The shared dependency bundle, staged by ci_scripts/fetch_dependencies.ps1.
+# Windows searches it ahead of lib/windows64, which now only holds things
+# fetched separately (KLightMapper) rather than committed third-party binaries.
+set(XL_BUNDLE ${CMAKE_SOURCE_DIR}/dependencies-bundle)
+set(XL_WIN_LIB_HINTS ${XL_BUNDLE}/lib ${XL_BUNDLE}/libdbg ${XL_LIB}/windows64)
+
+if(MSVC)
+    add_compile_options("/utf-8")
+    # /MP — compile multiple source files in parallel within a single project.
+    # The old .vcxproj had this; without it cmake builds are significantly slower.
+    # Omit when a compiler launcher (sccache/ccache) is active because those
+    # tools manage their own parallelism and /MP conflicts with them.
+    if(NOT CMAKE_CXX_COMPILER_LAUNCHER)
+        add_compile_options("/MP")
+    endif()
+    # Pin the runtime library so every .obj in the build uses the same CRT.
+    # Visual Studio is a multi-config generator: CMAKE_BUILD_TYPE is empty at
+    # configure time, so use a generator expression to pick MD vs MDd per config.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        CACHE STRING "MSVC runtime library" FORCE)
+endif()
+
+add_compile_definitions(NOMINMAX)
+
+# Always defined for any cmake build — suppresses VS-only #pragma comment(lib,…)
+# directives in source files so cmake's target_link_libraries is the sole link mechanism.
+add_compile_definitions(XLIGHTS_CMAKE_BUILD)
+
+# ─── vcpkg static-libs option ───────────────────────────────────────────────
+# Enable with:  cmake -DXLIGHTS_USE_VCPKG=ON -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+# For a fully static build also pass:  -DVCPKG_TARGET_TRIPLET=x64-windows-static
+option(XLIGHTS_USE_VCPKG "Require all dependencies via vcpkg (no vendored fallback)" OFF)
+if(XLIGHTS_USE_VCPKG)
+    set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ON)
+    message(STATUS "XLIGHTS_USE_VCPKG=ON — all deps resolved via cmake CONFIG packages")
+endif()
+
+# ─── Platform compile definitions ───────────────────────────────────────────
+if(WIN32)
+    add_compile_definitions(_WINDOWS _CRT_SECURE_NO_WARNINGS IGNORE_VENDORS wxUSE_WEBP)
+    # Use generator expressions — CMAKE_BUILD_TYPE is always empty for the
+    # Visual Studio multi-config generator, so if/else on it never works.
+    add_compile_definitions(
+        $<$<CONFIG:Debug>:_DEBUG>
+        $<$<CONFIG:Debug>:WXDEBUG>
+        $<$<CONFIG:Debug>:__WXDEBUG__>
+        $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
+    )
+elseif(UNIX AND NOT APPLE)
+    add_compile_options(
+        -Wno-reorder -Wno-sign-compare -Wno-unused-variable
+        -Wno-unused-but-set-variable -Wno-unused-function -Wno-unknown-pragmas
+    )
+    add_compile_definitions(IGNORE_VENDORS wxUSE_WEBP)
+else()
+    add_compile_definitions(IGNORE_VENDORS wxUSE_WEBP)
+endif()
+
+# ─── wxWidgets ──────────────────────────────────────────────────────────────
+# On Windows the FindWxWidgets module requires wxWidgets_ROOT_DIR or WXWIN.
+# Prefer the CMake cache variable, then the environment variable, then probe
+# common install locations used by xLights developers.
+if(WIN32 AND NOT wxWidgets_ROOT_DIR)
+    if(DEFINED ENV{WXWIN})
+        set(wxWidgets_ROOT_DIR "$ENV{WXWIN}" CACHE PATH "wxWidgets root directory")
+    else()
+        foreach(_wx_candidate
+                "C:/software/wxWidgets"
+                "C:/wxWidgets"
+                "C:/wx"
+                "$ENV{USERPROFILE}/wxWidgets")
+            if(EXISTS "${_wx_candidate}/include/wx/wx.h")
+                set(wxWidgets_ROOT_DIR "${_wx_candidate}" CACHE PATH "wxWidgets root directory")
+                break()
+            endif()
+        endforeach()
+    endif()
+endif()
+# Point FindWxWidgets at the right lib subdirectory (vc_x64_lib for 64-bit MSVC).
+if(WIN32 AND wxWidgets_ROOT_DIR AND NOT wxWidgets_LIB_DIR)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(wxWidgets_LIB_DIR "${wxWidgets_ROOT_DIR}/lib/vc_x64_lib"
+            CACHE PATH "wxWidgets library directory")
+    else()
+        set(wxWidgets_LIB_DIR "${wxWidgets_ROOT_DIR}/lib/vc_lib"
+            CACHE PATH "wxWidgets library directory")
+    endif()
+endif()
+
+find_package(wxWidgets 3.3 REQUIRED
+    COMPONENTS core base gl net xml aui propgrid ribbon stc media qa html)
+include(${wxWidgets_USE_FILE})
+# Ensure wx lib dir is in the linker search path for all targets (covers
+# transitive #pragma comment(lib,...) references inside the wx static libs).
+if(WIN32 AND wxWidgets_LIB_DIR)
+    link_directories(${wxWidgets_LIB_DIR})
+endif()
+
+# ─── OpenGL ─────────────────────────────────────────────────────────────────
+find_package(OpenGL REQUIRED)
+
+# ─── FFmpeg ─────────────────────────────────────────────────────────────────
+# vcpkg's FFmpeg port does not ship FFMPEGConfig.cmake so find_package(FFMPEG)
+# in config mode fails. Use find_path / find_library for both paths — the vcpkg
+# toolchain adds installed/ to CMAKE_PREFIX_PATH so the vcpkg-installed headers
+# and libs are found automatically without extra hints.
+if(XLIGHTS_USE_VCPKG)
+    # _VCPKG_INSTALLED_DIR is set by vcpkg.cmake to the installed/ root.
+    # Build an explicit hint so find_path/find_library don't depend on
+    # CMAKE_PREFIX_PATH propagation order.
+    if(DEFINED _VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        set(_vcpkg_triplet_dir "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+    elseif(DEFINED ENV{VCPKG_ROOT} AND DEFINED VCPKG_TARGET_TRIPLET)
+        set(_vcpkg_triplet_dir "$ENV{VCPKG_ROOT}/installed/${VCPKG_TARGET_TRIPLET}")
+    else()
+        set(_vcpkg_triplet_dir "")
+    endif()
+
+    find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
+        HINTS "${_vcpkg_triplet_dir}/include"
+        NO_DEFAULT_PATH)
+    if(NOT FFMPEG_INCLUDE_DIR)
+        message(FATAL_ERROR "FFmpeg headers not found in '${_vcpkg_triplet_dir}/include'."
+                            " Run: vcpkg install ffmpeg[avcodec,avformat,avfilter,avutil,swscale,swresample]")
+    endif()
+    foreach(_ff avcodec avformat avutil avfilter swscale swresample)
+        string(TOUPPER ${_ff} _FF_UPPER)
+        find_library(${_FF_UPPER}_LIB NAMES ${_ff}
+            HINTS "${_vcpkg_triplet_dir}/lib"
+            NO_DEFAULT_PATH)
+        if(NOT ${_FF_UPPER}_LIB)
+            message(FATAL_ERROR "FFmpeg lib '${_ff}' not found in '${_vcpkg_triplet_dir}/lib'.")
+        endif()
+        list(APPEND FFMPEG_LIBS ${${_FF_UPPER}_LIB})
+    endforeach()
+elseif(UNIX AND NOT APPLE)
+    # Linux links the FFmpeg its distribution ships, so it must COMPILE against
+    # that same FFmpeg's headers. Searching the vendored ffmpeg-6 tree first
+    # meant headers and libraries agreed only by coincidence - fine while the
+    # distribution also shipped 6.x, wrong the moment it ships 7.x or 8.x.
+    #
+    # pkg-config reports the headers and libraries of one installation
+    # together, which is what makes them agree by construction. It also finds
+    # the multiarch include directory (/usr/include/<triple>/libavcodec on
+    # Debian and Ubuntu) that a plain /usr/include search never would.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFMPEG REQUIRED
+        libavcodec libavformat libavutil libavfilter libswscale libswresample)
+    set(FFMPEG_INCLUDE_DIR ${FFMPEG_INCLUDE_DIRS})
+    set(FFMPEG_LIBS ${FFMPEG_LINK_LIBRARIES})
+    message(STATUS "FFmpeg: libavcodec ${FFMPEG_libavcodec_VERSION} (pkg-config)")
+else()
+    # Windows without vcpkg still builds against the FFmpeg tree vendored in
+    # this repository; it has no system FFmpeg to find. This is the last
+    # consumer of include/ffmpeg-6, which can go once Windows moves to the
+    # dependency bundle.
+    find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
+        HINTS ${XL_BUNDLE}/include
+        NO_DEFAULT_PATH)
+    if(NOT FFMPEG_INCLUDE_DIR)
+        find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h)
+    endif()
+    set(_FF_HINTS ${XL_WIN_LIB_HINTS})
+    foreach(_ff avcodec avformat avutil avfilter swscale swresample)
+        string(TOUPPER ${_ff} _FF_UPPER)
+        find_library(${_FF_UPPER}_LIB NAMES ${_ff} HINTS ${_FF_HINTS})
+        list(APPEND FFMPEG_LIBS ${${_FF_UPPER}_LIB})
+    endforeach()
+endif()
+
+# ─── SDL2 ───────────────────────────────────────────────────────────────────
+# Try cmake config first (works on all platforms when SDL2 is installed with cmake).
+find_package(SDL2 QUIET CONFIG)
+if(SDL2_FOUND)
+    # Modern SDL2 cmake config: target SDL2::SDL2
+    set(SDL2_LINK_TARGET SDL2::SDL2)
+    set(SDL2_INC "")
+else()
+    # Manual fallback — the dependency bundle on Windows, system on Linux.
+    find_path(SDL2_INCLUDE_DIR SDL.h
+        HINTS ${XL_BUNDLE}/include/SDL2
+        PATHS /usr/include/SDL2 /usr/local/include/SDL2
+        NO_DEFAULT_PATH)
+    if(NOT SDL2_INCLUDE_DIR)
+        find_path(SDL2_INCLUDE_DIR SDL.h PATH_SUFFIXES SDL2)
+    endif()
+    find_library(SDL2_LIB NAMES SDL2 SDL2-static
+        HINTS ${XL_WIN_LIB_HINTS}
+        PATHS /usr/lib /usr/local/lib)
+    set(SDL2_LINK_TARGET ${SDL2_LIB})
+    set(SDL2_INC ${SDL2_INCLUDE_DIR})
+endif()
+
+# ─── zstd ───────────────────────────────────────────────────────────────────
+find_package(zstd QUIET CONFIG)
+if(TARGET zstd::libzstd_static OR TARGET zstd::libzstd_shared)
+    if(TARGET zstd::libzstd_static)
+        set(ZSTD_LINK_TARGET zstd::libzstd_static)
+    else()
+        set(ZSTD_LINK_TARGET zstd::libzstd_shared)
+    endif()
+    set(ZSTD_INC "")
+else()
+    # The vendored zstd.h describes the library Windows links from this repo.
+    # Hinting it on other platforms would shadow the system header while the
+    # system library is what actually gets linked.
+    if(WIN32)
+        set(_zstd_hints ${XL_BUNDLE}/include)
+    else()
+        set(_zstd_hints "")
+    endif()
+    find_path(ZSTD_INCLUDE_DIR zstd.h
+        HINTS ${_zstd_hints}
+        PATHS /usr/include /usr/local/include)
+    if(WIN32)
+        # libzstd_static.lib is MinGW-built and contains ___chkstk_ms (MSVC-incompatible).
+        # Prefer libzstd_static_VS.lib (MSVC CRT) and its debug variant.
+        find_library(ZSTD_LIB_RELEASE NAMES libzstd_static_VS zstd
+            HINTS ${XL_WIN_LIB_HINTS})
+        find_library(ZSTD_LIB_DEBUG NAMES libzstdd_static_VS libzstd_static_VS zstd
+            HINTS ${XL_WIN_LIB_HINTS})
+        set(ZSTD_LINK_TARGET optimized ${ZSTD_LIB_RELEASE} debug ${ZSTD_LIB_DEBUG})
+    else()
+        find_library(ZSTD_LIB NAMES zstd libzstd_static libzstd_static_VS
+            PATHS /usr/lib /usr/local/lib)
+        set(ZSTD_LINK_TARGET ${ZSTD_LIB})
+    endif()
+    set(ZSTD_INC ${ZSTD_INCLUDE_DIR})
+endif()
+
+# ─── libcurl ────────────────────────────────────────────────────────────────
+# CMake's built-in FindCURL works without pkg-config on all platforms.
+find_package(CURL QUIET)
+if(CURL_FOUND)
+    set(CURL_LINK_TARGET CURL::libcurl)
+    set(CURL_INC "")
+else()
+    find_path(CURL_INCLUDE_DIR curl/curl.h
+        HINTS ${XL_BUNDLE}/include
+        PATHS /usr/include /usr/local/include)
+    find_library(CURL_LIB NAMES libcurl_msvc curl libcurl curl_imp libcurl_a
+        HINTS ${XL_WIN_LIB_HINTS}
+        PATHS /usr/lib /usr/local/lib)
+    if(CURL_LIB)
+        set(CURL_LINK_TARGET ${CURL_LIB})
+    else()
+        set(CURL_LINK_TARGET "")
+        if(WIN32)
+            message(WARNING "libcurl not found — install curl via vcpkg or set CURL_DIR.")
+        endif()
+    endif()
+    set(CURL_INC "${CURL_INCLUDE_DIR}")
+endif()
+
+# ─── Lua ────────────────────────────────────────────────────────────────────
+# The dependency bundle on Windows, the system package elsewhere - the same Lua
+# the MSBuild, Xcode and Code::Blocks builds already use. This build used to
+# compile a vendored copy instead, which is exactly how it could drift from
+# the version the other three link against.
+find_path(LUA_INCLUDE_DIR lua.h
+    HINTS ${XL_BUNDLE}/include
+    PATHS /usr/include /usr/local/include
+    PATH_SUFFIXES lua5.4 lua5.3 lua)
+find_library(LUA_LIB NAMES lua lua5.4 lua5.3
+    HINTS ${XL_WIN_LIB_HINTS}
+    PATHS /usr/lib /usr/local/lib)
+if(NOT LUA_INCLUDE_DIR OR NOT LUA_LIB)
+    message(FATAL_ERROR
+        "Lua not found. Install the Lua development package (liblua5.3-dev or "
+        "liblua5.4-dev), or stage the dependency bundle via "
+        "ci_scripts/fetch_dependencies.ps1 on Windows.")
+endif()
+
+# ─── Source file collection ─────────────────────────────────────────────────
+
+# Core (wx-free)
+file(GLOB_RECURSE SRC_CORE
+    src-core/XmlSerializer/*.cpp
+    src-core/ai/*.cpp
+    src-core/cad/*.cpp
+    src-core/controllers/*.cpp
+	src-core/diagnostics/*.cpp
+    src-core/discovery/*.cpp
+    src-core/import_export/*.cpp
+    src-core/graphics/GLBackend.cpp
+    src-core/graphics/GLContextManager.cpp
+    src-core/graphics/xlFontInfo.cpp
+    src-core/graphics/xlGraphicsAccumulators.cpp
+    src-core/graphics/xlGraphicsCapability.cpp
+    src-core/graphics/xlMesh.cpp
+    src-core/lyrics/*.cpp
+    src-core/media/AudioLoader.cpp
+    src-core/media/AIModelStore.cpp
+    src-core/media/AudioManager.cpp
+    src-core/media/ChordDetector.cpp
+    src-core/media/FFmpegAudioDecoder.cpp
+    src-core/media/FFmpegVideoReader.cpp
+    src-core/media/MediaCompatibility.cpp
+    src-core/media/OnsetDetector.cpp
+    src-core/media/PitchDetector.cpp
+    src-core/media/SDLAudioOutput.cpp
+    src-core/media/Spectrogram.cpp
+    src-core/media/StemSeparator.cpp
+    src-core/media/TempoDetector.cpp
+    src-core/media/FFmpegVideoWriter.cpp
+    src-core/media/VideoDecodeSizeRegistry.cpp
+    src-core/media/VideoReader.cpp
+    src-core/media/VideoTranscoder.cpp
+    src-core/media/VideoWriter.cpp
+    src-core/media/kiss_fft/kiss_fft.c
+    src-core/media/kiss_fft/tools/kiss_fftr.c
+    src-core/models/*.cpp
+    src-core/models/DMX/*.cpp
+    src-core/models/DMX/MovingHeads/*.cpp
+    src-core/outputs/*.cpp
+    src-core/render/*.cpp
+    src-core/settings/*.cpp
+    src-core/utils/*.cpp
+)
+if(WIN32)
+    list(APPEND SRC_CORE
+        src-core/media/WindowsHardwareVideoReader.cpp
+        src-core/media/LiveCameraCapture.cpp)
+    list(REMOVE_ITEM SRC_CORE
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_posix.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_osx.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_win32.cpp)
+elseif(APPLE)
+    list(APPEND SRC_CORE src-core/media/AVFoundationVideoWriter.cpp)
+    list(REMOVE_ITEM SRC_CORE
+        ${CMAKE_SOURCE_DIR}/src-core/media/WindowsHardwareVideoReader.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_win32.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_posix.cpp)
+else()
+    list(REMOVE_ITEM SRC_CORE
+        ${CMAKE_SOURCE_DIR}/src-core/media/WindowsHardwareVideoReader.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_win32.cpp
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/serial_osx.cpp)
+endif()
+
+# uDMX requires libusb — detect here so SRC_CORE can be filtered before add_executable
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBUSB QUIET libusb-1.0)
+endif()
+if(NOT LIBUSB_FOUND)
+    find_library(LIBUSB_LIBRARIES NAMES usb-1.0 usb)
+    find_path(LIBUSB_INCLUDE_DIRS NAMES libusb.h PATH_SUFFIXES libusb-1.0)
+    if(LIBUSB_LIBRARIES AND LIBUSB_INCLUDE_DIRS)
+        set(LIBUSB_FOUND TRUE)
+    endif()
+endif()
+if(NOT LIBUSB_FOUND)
+    message(STATUS "libusb not found — uDMX output disabled")
+    list(REMOVE_ITEM SRC_CORE
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/uDMXOutput.h
+        ${CMAKE_SOURCE_DIR}/src-core/outputs/uDMXOutput.cpp)
+else()
+    message(STATUS "libusb found — uDMX output enabled")
+endif()
+
+# Effects
+file(GLOB SRC_EFFECTS
+    src-core/effects/*.cpp
+    src-core/effects/ispc/ISPCComputeUtilities.cpp
+)
+
+# ─── Vulkan compute backend (Linux/Windows analogue of the Metal backend) ───
+# Headers/loader come from the vendored submodules; volk dlopens the Vulkan
+# loader at runtime, so there is no link-time dependency and machines without
+# Vulkan silently fall back to the CPU render paths.
+option(XLIGHTS_USE_VULKAN "Enable the Vulkan GPU compute render backend" ON)
+set(XLIGHTS_VULKAN_ENABLED FALSE)
+# Linux + Windows (CMake).  Apple uses Metal.  The MSBuild .vcxproj still lacks
+# the glslc CustomBuild + ClCompile entries, so the .sln build stays CPU-only;
+# only the CMake path builds the Vulkan backend on Windows.
+if(XLIGHTS_USE_VULKAN AND ((UNIX AND NOT APPLE) OR WIN32))
+    list(APPEND SRC_EFFECTS
+        src-core/effects/vulkan/VulkanComputeUtilities.cpp
+        src-core/effects/vulkan/VulkanGraphicsUtilities.cpp
+        src-core/effects/vulkan/VulkanShaderTranslate.cpp
+        src-core/effects/vulkan/VulkanEffectManager.cpp
+        src-core/effects/vulkan/VulkanLibs.cpp
+        src-core/effects/vulkan/VulkanBarsEffect.cpp
+        src-core/effects/vulkan/VulkanColorWashEffect.cpp
+        src-core/effects/vulkan/VulkanShockwaveEffect.cpp
+        src-core/effects/vulkan/VulkanFanEffect.cpp
+        src-core/effects/vulkan/VulkanSpiralsEffect.cpp
+        src-core/effects/vulkan/VulkanGalaxyEffect.cpp
+        src-core/effects/vulkan/VulkanCirclesEffect.cpp
+        src-core/effects/vulkan/VulkanPlasmaEffect.cpp
+        src-core/effects/vulkan/VulkanButterflyEffect.cpp
+        src-core/effects/vulkan/VulkanPinwheelEffect.cpp
+        src-core/effects/vulkan/VulkanKaleidoscopeEffect.cpp
+        src-core/effects/vulkan/VulkanWarpEffect.cpp
+        src-core/effects/vulkan/VulkanTreeEffect.cpp
+        src-core/effects/vulkan/VulkanShimmerEffect.cpp
+        src-core/effects/vulkan/VulkanCandleEffect.cpp
+        src-core/effects/vulkan/VulkanWaveEffect.cpp
+        src-core/effects/vulkan/VulkanGarlandsEffect.cpp
+        src-core/effects/vulkan/VulkanFillEffect.cpp
+        src-core/effects/vulkan/VulkanMeteorsEffect.cpp
+        src-core/effects/vulkan/VulkanTwinkleEffect.cpp
+        src-core/effects/vulkan/VulkanFireEffect.cpp
+        src-core/effects/vulkan/VulkanLifeEffect.cpp
+        # Vulkan graphics backend (runtime-switchable OpenGL/Vulkan canvas)
+        src-core/graphics/vulkan/VulkanPipelineCache.cpp
+        src-core/graphics/vulkan/xlVulkanGraphicsContext.cpp
+        src-core/effects/vulkan/VulkanShaderEffect.cpp)
+    set(XLIGHTS_VULKAN_ENABLED TRUE)
+endif()
+
+# ─── ISPC (Intel SPMD Program Compiler — SIMD kernels) ──────────────────────
+# Visual Studio generators do not support enable_language(ISPC).
+# Use it on Linux/macOS (Ninja/Makefile), fall back to add_custom_command on VS.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
+    set(_ispc_targets "neon-i32x8")
+    set(_ispc_arch    "aarch64")
+else()
+    set(_ispc_targets "avx2-i32x16,avx1-i32x16,sse4.2-i32x8,sse2-i32x8")
+    set(_ispc_arch    "x86_64")
+endif()
+
+if(NOT WIN32)
+    # ── Linux / macOS: native CMake ISPC language support ──────────────────
+    include(CheckLanguage)
+    check_language(ISPC)
+    if(CMAKE_ISPC_COMPILER)
+        enable_language(ISPC)
+        set(CMAKE_ISPC_FLAGS "--target=${_ispc_targets} --arch=${_ispc_arch} --pic")
+        file(GLOB _ispc_sources "${CMAKE_SOURCE_DIR}/src-core/effects/ispc/*.ispc")
+        list(APPEND SRC_EFFECTS ${_ispc_sources})
+        message(STATUS "ISPC: using enable_language(ISPC) — ${CMAKE_ISPC_COMPILER}")
+    else()
+        message(WARNING "ispc not found — SIMD kernels disabled (install ISPC and add to PATH)")
+    endif()
+else()
+    # ── Windows / Visual Studio: add_custom_command per .ispc file ──────────
+    # VS generators reject enable_language(ISPC); drive ispc.exe manually.
+    find_program(ISPC_EXECUTABLE NAMES ispc ispc.exe
+        HINTS "${CMAKE_SOURCE_DIR}"
+        PATH_SUFFIXES bin)
+    if(ISPC_EXECUTABLE)
+        message(STATUS "ISPC: using add_custom_command — ${ISPC_EXECUTABLE}")
+        # Multi-target produces: Name.obj (dispatcher) + Name_avx2/_avx/_sse4/_sse2.obj
+        # Note: ISPC uses "_avx" (not "_avx1") as the suffix for the avx1-i32x16 target.
+        set(_ispc_suffixes "_avx2" "_avx" "_sse4" "_sse2")
+        set(_ispc_obj_dir "${CMAKE_CURRENT_BINARY_DIR}/ispc_objs")
+        file(GLOB _ispc_sources "${CMAKE_SOURCE_DIR}/src-core/effects/ispc/*.ispc")
+        set(ISPC_OBJECTS "")
+        foreach(_src ${_ispc_sources})
+            get_filename_component(_name "${_src}" NAME_WE)
+            set(_primary "${_ispc_obj_dir}/${_name}.obj")
+            set(_outputs "${_primary}")
+            foreach(_sfx ${_ispc_suffixes})
+                list(APPEND _outputs "${_ispc_obj_dir}/${_name}${_sfx}.obj")
+            endforeach()
+            add_custom_command(
+                OUTPUT  ${_outputs}
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ispc_obj_dir}"
+                COMMAND "${ISPC_EXECUTABLE}" "${_src}"
+                        "--target=${_ispc_targets}" "--arch=${_ispc_arch}"
+                        -o "${_primary}"
+                DEPENDS "${_src}"
+                COMMENT "ISPC: ${_name}"
+                VERBATIM
+            )
+            list(APPEND ISPC_OBJECTS ${_outputs})
+        endforeach()
+        set_source_files_properties(${ISPC_OBJECTS}
+            PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    else()
+        message(WARNING "ispc not found — SIMD kernels disabled (install ISPC and add to PATH)")
+    endif()
+endif()
+
+# UI (wxWidgets-dependent)
+file(GLOB_RECURSE SRC_UI
+    src-ui-wx/xLightsApp.cpp
+    src-ui-wx/xLightsMain.cpp
+    src-ui-wx/CommandPaletteDialog.cpp
+    src-ui-wx/EffectSymbolDialog.cpp
+    src-ui-wx/ai/*.cpp
+    src-ui-wx/app-shell/*.cpp
+    src-ui-wx/automation/*.cpp
+    src-ui-wx/color/*.cpp
+    src-ui-wx/controllerproperties/*.cpp
+    src-ui-wx/controllers/*.cpp
+    src-ui-wx/diagnostics/*.cpp
+    src-ui-wx/effectpanels/*.cpp
+    src-ui-wx/effects/*.cpp
+    src-ui-wx/graphics/opengl/xlGLCanvas.cpp
+    src-ui-wx/graphics/opengl/xlOGL3GraphicsContext.cpp
+    src-ui-wx/graphics/wxTextDrawingContext.cpp
+    src-ui-wx/import_export/*.cpp
+    src-ui-wx/klightmapper/*.cpp
+    src-ui-wx/layout/*.cpp
+    src-ui-wx/media/*.cpp
+    src-ui-wx/model/*.cpp
+    src-ui-wx/modelproperties/*.cpp
+    src-ui-wx/preferences/*.cpp
+    src-ui-wx/render/*.cpp
+    src-ui-wx/sequencer/*.cpp
+    src-ui-wx/settings/*.cpp
+    src-ui-wx/setup/*.cpp
+    src-ui-wx/shared/controls/*.cpp
+    src-ui-wx/shared/dialogs/*.cpp
+    src-ui-wx/shared/utils/*.cpp
+    src-ui-wx/support/*.cpp
+)
+
+if(WIN32)
+    file(GLOB SRC_UI_CUSTOM_MODEL_BUILDER src-ui-wx/custommodelbuilder/*.cpp)
+    list(APPEND SRC_UI ${SRC_UI_CUSTOM_MODEL_BUILDER})
+endif()
+
+if(XLIGHTS_VULKAN_ENABLED)
+    list(APPEND SRC_UI src-ui-wx/graphics/vulkan/xlVulkanCanvas.cpp)
+    if(UNIX AND NOT APPLE)
+        list(APPEND SRC_UI
+            src-ui-wx/graphics/vulkan/xlVulkanX11Surface.cpp
+            src-ui-wx/graphics/vulkan/xlVulkanWaylandSurface.cpp
+            src-ui-wx/graphics/vulkan/xlSoftwareGLProbe.cpp)
+    endif()
+endif()
+
+# macOS-only Objective-C++ helper for the command palette (SF Symbols / colors).
+# Must be appended after the glob: file(GLOB) does not evaluate generator
+# expressions, so a $<...> entry inside the glob above would be silently dropped.
+if(APPLE)
+    enable_language(OBJCXX)
+    list(APPEND SRC_UI ${CMAKE_SOURCE_DIR}/src-ui-wx/CommandPaletteHelper_mac.mm)
+endif()
+
+# Vendored third-party sources
+set(SRC_DEPS
+    common/xlBaseApp.cpp
+    dependencies/md5/md5.cpp
+    dependencies/midifile/src/Binasc.cpp
+    dependencies/midifile/src/MidiEvent.cpp
+    dependencies/midifile/src/MidiEventList.cpp
+    dependencies/midifile/src/MidiFile.cpp
+    dependencies/midifile/src/MidiMessage.cpp
+    dependencies/pugixml/src/pugixml.cpp
+    dependencies/vamp-hostsdk/FFT.cpp
+    dependencies/vamp-hostsdk/Files.cpp
+    dependencies/vamp-hostsdk/PluginBufferingAdapter.cpp
+    dependencies/vamp-hostsdk/PluginChannelAdapter.cpp
+    dependencies/vamp-hostsdk/PluginHostAdapter.cpp
+    dependencies/vamp-hostsdk/PluginInputDomainAdapter.cpp
+    dependencies/vamp-hostsdk/PluginLoader.cpp
+    dependencies/vamp-hostsdk/PluginSummarisingAdapter.cpp
+    dependencies/vamp-hostsdk/PluginWrapper.cpp
+    dependencies/vamp-hostsdk/RealTime.cpp
+    dependencies/vamp-hostsdk/acsymbols.c
+    dependencies/vamp-hostsdk/host-c.cpp
+    dependencies/wxHTTPServer/connection.cpp
+    dependencies/wxHTTPServer/context.cpp
+    dependencies/wxHTTPServer/message.cpp
+    dependencies/wxHTTPServer/pages.cpp
+    dependencies/wxHTTPServer/request.cpp
+    dependencies/wxHTTPServer/response.cpp
+    dependencies/wxHTTPServer/server.cpp
+    dependencies/wxHTTPServer/sha1.cpp
+    dependencies/wxHTTPServer/status.cpp
+    dependencies/wxJSON/jsonreader.cpp
+    dependencies/wxJSON/jsonval.cpp
+    dependencies/wxJSON/jsonwriter.cpp
+    dependencies/wxLED/wxLED.cpp
+)
+
+# ─── Executable ─────────────────────────────────────────────────────────────
+if(WIN32)
+    set(WIN32_RC xLights/resource.rc)
+endif()
+
+add_executable(xLights WIN32 MACOSX_BUNDLE
+    ${SRC_CORE}
+    ${SRC_EFFECTS}
+    ${SRC_UI}
+    ${SRC_DEPS}
+    ${WIN32_RC}
+)
+
+# Add ISPC-generated object files to the link step.
+if(ISPC_OBJECTS)
+    target_sources(xLights PRIVATE ${ISPC_OBJECTS})
+endif()
+
+# ─── IDE source grouping (Visual Studio Solution Explorer) ──────────────────
+# source_group(TREE ...) mirrors the on-disk directory tree so files appear
+# in a matching folder hierarchy in the VS Solution Explorer.
+source_group(TREE ${CMAKE_SOURCE_DIR} FILES ${SRC_CORE} ${SRC_EFFECTS})
+source_group(TREE ${CMAKE_SOURCE_DIR} FILES ${SRC_UI})
+source_group(TREE ${CMAKE_SOURCE_DIR} FILES ${SRC_DEPS})
+
+# ─── Include directories ────────────────────────────────────────────────────
+target_include_directories(xLights PRIVATE
+    ${CMAKE_SOURCE_DIR}/src-core
+    ${CMAKE_SOURCE_DIR}/src-core/render
+    ${CMAKE_SOURCE_DIR}/src-core/utils
+    ${CMAKE_SOURCE_DIR}/src-ui-wx
+
+    ${XL_DEPS}
+    ${XL_DEPS}/spdlog/include
+    ${XL_DEPS}/pugixml/src
+    ${XL_DEPS}/midifile/include
+    # Windows takes Box2D from the bundle include added below; Linux builds
+    # liquidfun itself and still needs the submodule headers.
+    $<$<NOT:$<BOOL:${WIN32}>>:${XL_DEPS}/liquidfun/liquidfun/Box2D>
+    ${XL_DEPS}/pybind11/include
+    ${XL_INC}
+    $<$<BOOL:${WIN32}>:${XL_BUNDLE}/include>
+    ${XL_INC}/sol2-3.5.0
+    ${FFMPEG_INCLUDE_DIR}
+    ${LUA_INCLUDE_DIR}
+    ${SDL2_INC}
+    ${ZSTD_INC}
+    ${CURL_INC}
+)
+
+if(XLIGHTS_VULKAN_ENABLED)
+    target_compile_definitions(xLights PRIVATE HAVE_VULKAN VK_NO_PROTOTYPES)
+    target_include_directories(xLights PRIVATE
+        ${XL_DEPS}/Vulkan-Headers/include
+        ${XL_DEPS}/volk
+        ${XL_DEPS}/VulkanMemoryAllocator/include)
+
+    # The native Vulkan Shader effect (graphics-pipeline path + glslang
+    # GLSL->SPIR-V) is Linux-only for now.  Windows Vulkan is compute-only until
+    # the glslang packaging/link is sorted there (the SDK's glslang lib set
+    # varies by version); HAVE_VULKAN_SHADER gates the shader/graphics sources and
+    # their references so the Windows builds link cleanly without them.
+    if((UNIX AND NOT APPLE) OR WIN32)
+        target_compile_definitions(xLights PRIVATE HAVE_VULKAN_SHADER)
+        if(WIN32)
+            if(XLIGHTS_USE_VCPKG)
+                # vcpkg-specific modern CMake approach
+                find_package(glslang CONFIG REQUIRED)
+                find_package(SPIRV-Tools CONFIG REQUIRED)
+                target_link_libraries(xLights PRIVATE 
+                    glslang::glslang
+                    glslang::glslang-default-resource-limits
+                    SPIRV-Tools::SPIRV-Tools-opt
+                    SPIRV-Tools::SPIRV-Tools
+                )
+                message(STATUS "Vulkan Toolchain: Found via vcpkg CONFIG packages")
+            else()
+                # Point to local Vulkan SDK
+                target_include_directories(xLights PRIVATE "$ENV{VULKAN_SDK}/include")
+                target_link_directories(xLights PRIVATE "$ENV{VULKAN_SDK}/lib")
+                
+                # Link missing libraries to resolve LNK errors
+                target_link_libraries(xLights PRIVATE 
+                    glslang
+                    glslang-default-resource-limits
+                    SPIRV-Tools-opt
+                    SPIRV-Tools
+                )
+            endif()
+        else()
+            # The native-Wayland Vulkan surface helper calls into GDK/GTK
+            # (gdk_wayland_* live in libgdk-3); the Xlib helper needs nothing extra.
+            find_package(PkgConfig QUIET)
+            if(PkgConfig_FOUND)
+                pkg_check_modules(GTK3 QUIET gtk+-3.0)
+                if(GTK3_FOUND)
+                    target_include_directories(xLights PRIVATE ${GTK3_INCLUDE_DIRS})
+                    target_link_libraries(xLights PRIVATE ${GTK3_LIBRARIES})
+                endif()
+            endif()
+            # glslang from the distro (glslang-dev, which pulls in spirv-tools:
+            # the packaged glslang is built with the optimizer enabled, so
+            # libglslang.a has unresolved spvtools refs without it).
+            foreach(_gl glslang-default-resource-limits SPIRV glslang MachineIndependent GenericCodeGen OSDependent SPIRV-Tools-opt SPIRV-Tools)
+                find_library(GLSLANG_${_gl}_LIB NAMES ${_gl})
+                if(GLSLANG_${_gl}_LIB)
+                    target_link_libraries(xLights PRIVATE ${GLSLANG_${_gl}_LIB})
+                endif()
+            endforeach()
+        endif()
+    endif()
+
+    # Compile the .comp compute kernels into the SPIR-V headers the vulkan/
+    # sources #include.  These are generated (gitignored), not committed —
+    # glslc is a build tool here, like ispc for the .ispc kernels.
+    find_program(GLSLC_EXECUTABLE glslc HINTS $ENV{VULKAN_SDK}/Bin $ENV{VULKAN_SDK}/bin)
+    if(NOT GLSLC_EXECUTABLE)
+        message(FATAL_ERROR
+            "glslc not found — required to build the Vulkan compute backend.\n"
+            "Install it (Ubuntu/Debian: apt-get install glslc; or the Vulkan SDK)\n"
+            "or reconfigure with -DXLIGHTS_USE_VULKAN=OFF.")
+    endif()
+    file(GLOB _vulkan_comp CONFIGURE_DEPENDS
+        ${CMAKE_SOURCE_DIR}/src-core/effects/vulkan/shaders/*.comp
+        ${CMAKE_SOURCE_DIR}/src-core/effects/vulkan/shaders/*.vert
+        ${CMAKE_SOURCE_DIR}/src-core/effects/vulkan/shaders/*.frag
+        ${CMAKE_SOURCE_DIR}/src-core/graphics/vulkan/shaders/*.vert
+        ${CMAKE_SOURCE_DIR}/src-core/graphics/vulkan/shaders/*.frag)
+    # Windows has no bash by default — run the PowerShell counterpart there.
+    # Both scripts honor the GLSLC env var (CMake's find_program result) and emit
+    # the same *.spv.h headers.
+    if(WIN32)
+        add_custom_target(vulkan_shaders
+            COMMAND ${CMAKE_COMMAND} -E env "GLSLC=${GLSLC_EXECUTABLE}"
+                    powershell -NoProfile -ExecutionPolicy Bypass
+                    -File ${CMAKE_SOURCE_DIR}/build_scripts/msw/compile_vulkan_shaders.ps1
+            SOURCES ${_vulkan_comp}
+            COMMENT "Compiling Vulkan compute and graphics shaders to SPIR-V headers")
+    else()
+        add_custom_target(vulkan_shaders
+            COMMAND ${CMAKE_COMMAND} -E env "GLSLC=${GLSLC_EXECUTABLE}"
+                    bash ${CMAKE_SOURCE_DIR}/build_scripts/compile_vulkan_shaders.sh
+            SOURCES ${_vulkan_comp}
+            COMMENT "Compiling Vulkan compute and graphics shaders to SPIR-V headers")
+    endif()
+    add_dependencies(xLights vulkan_shaders)
+endif()
+
+# ─── zlib ───────────────────────────────────────────────────────────────────
+if(NOT XLIGHTS_USE_VCPKG)
+    # Prefer z.lib (plain static MSVC build, no ASM deps).
+    # zlibwapi.lib ships without its companion gvmat64.obj / inffas8664.obj
+    # ASM objects and causes LNK2001 on x64 MSVC — keep it as last resort.
+    find_library(ZLIB_LIB NAMES z zlib zlibstatic zlibwapi
+        HINTS ${XL_WIN_LIB_HINTS} /usr/lib /usr/local/lib)
+    if(ZLIB_LIB)
+        set(ZLIB_LINK_TARGET ${ZLIB_LIB})
+    else()
+        set(ZLIB_LINK_TARGET "")
+    endif()
+else()
+    find_package(ZLIB REQUIRED)
+    set(ZLIB_LINK_TARGET ZLIB::ZLIB)
+endif()
+
+# Suppress static-CRT conflict that a /GL-compiled zlibwapi.lib can trigger.
+if(MSVC AND NOT XLIGHTS_USE_VCPKG)
+    target_link_options(xLights PRIVATE
+        $<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMT>
+        $<$<CONFIG:Debug>:/NODEFAULTLIB:LIBCMTD>)
+endif()
+
+# ─── Link libraries ─────────────────────────────────────────────────────────
+if(FFMPEG_LIBRARY_DIRS)
+    target_link_directories(xLights PRIVATE ${FFMPEG_LIBRARY_DIRS})
+endif()
+target_link_libraries(xLights PRIVATE
+    ${wxWidgets_LIBRARIES}
+    ${FFMPEG_LIBS}
+    ${SDL2_LINK_TARGET}
+    ${ZSTD_LINK_TARGET}
+    ${ZLIB_LINK_TARGET}
+    ${LUA_LIB}
+)
+# curl is optional: MSVC-compatible .lib may not be present in the vendored tree.
+if(CURL_LINK_TARGET)
+    target_link_libraries(xLights PRIVATE ${CURL_LINK_TARGET})
+endif()
+
+# ─── WebP ───────────────────────────────────────────────────────────────────
+# Required for wxWidgets WebP image support (wxUSE_WEBP is defined above).
+# Try cmake config first (vcpkg provides WebP::webp and WebP::webpdemux targets).
+find_package(WebP QUIET CONFIG)
+if(WebP_FOUND AND TARGET WebP::webp AND TARGET WebP::webpdemux)
+    target_link_libraries(xLights PRIVATE WebP::webp WebP::webpdemux)
+    message(STATUS "WebP found via cmake CONFIG package")
+else()
+    # Manual fallback — vendored on Windows, system on Linux.
+    if(WIN32)
+        find_library(WEBP_LIB NAMES libwebp webp
+            HINTS ${XL_WIN_LIB_HINTS}
+            PATHS /usr/lib /usr/local/lib
+            NO_DEFAULT_PATH)
+        if(NOT WEBP_LIB)
+            find_library(WEBP_LIB NAMES libwebp webp)
+        endif()
+        find_library(WEBPDEMUX_LIB NAMES libwebpdemux webpdemux
+            HINTS ${XL_WIN_LIB_HINTS}
+            PATHS /usr/lib /usr/local/lib
+            NO_DEFAULT_PATH)
+        if(NOT WEBPDEMUX_LIB)
+            find_library(WEBPDEMUX_LIB NAMES libwebpdemux webpdemux)
+        endif()
+    else()
+        find_library(WEBP_LIB NAMES webp
+            PATHS /usr/lib /usr/local/lib)
+        find_library(WEBPDEMUX_LIB NAMES webpdemux
+            PATHS /usr/lib /usr/local/lib)
+    endif()
+
+    if(WEBP_LIB AND WEBPDEMUX_LIB)
+        target_link_libraries(xLights PRIVATE ${WEBP_LIB} ${WEBPDEMUX_LIB})
+        message(STATUS "WebP found via vendored libs: ${WEBP_LIB}, ${WEBPDEMUX_LIB}")
+    else()
+        if(XLIGHTS_USE_VCPKG)
+            message(FATAL_ERROR "XLIGHTS_USE_VCPKG=ON but WebP not found. Run: vcpkg install libwebp")
+        else()
+            message(WARNING "libwebp or libwebpdemux not found — WebP image support may fail to link")
+        endif()
+    endif()
+endif()
+
+# OpenGL backend — native desktop GL.
+target_link_libraries(xLights PRIVATE OpenGL::GL)
+if(WIN32)
+    target_link_libraries(xLights PRIVATE glu32)
+elseif(UNIX AND NOT APPLE)
+    # EGL is the Wayland pbuffer fallback in GLContextManager (GLX handles X11).
+    # Xrandr is the per-display refresh/VRR probe in xlDisplayInfo.
+    target_link_libraries(xLights PRIVATE GL GLU EGL Xrandr)
+endif()
+
+# vcpkg FFmpeg ships avfilter with vsrc_gfxcapture_winrt compiled against the
+# static CRT (/MT) regardless of triplet, because it uses C++/WinRT.
+# Suppress the conflicting static-CRT default lib so unresolved symbols fall
+# through to the dynamic CRT (MSVCP140[D].dll) that xLights links against.
+if(MSVC AND XLIGHTS_USE_VCPKG)
+    target_link_options(xLights PRIVATE
+        $<$<CONFIG:Debug>:/NODEFAULTLIB:LIBCMTD>
+        $<$<NOT:$<CONFIG:Debug>>:/NODEFAULTLIB:LIBCMT>
+    )
+endif()
+
+# libxlsxwriter and minizip - no cmake config package, so find_library.  Both
+# come from the dependency bundle on Windows/macOS and from the distro
+# (libxlsxwriter-dev / libminizip-dev) on Linux.
+find_library(XLSXWRITER_LIB NAMES xlsxwriter xlsxwriterd HINTS ${XL_WIN_LIB_HINTS})
+if(XLSXWRITER_LIB)
+    target_link_libraries(xLights PRIVATE ${XLSXWRITER_LIB})
+elseif(XLIGHTS_USE_VCPKG)
+    message(FATAL_ERROR "XLIGHTS_USE_VCPKG=ON but libxlsxwriter not found. Run: vcpkg install libxlsxwriter")
+endif()
+
+find_library(MINIZIP_LIB NAMES minizip HINTS ${XL_WIN_LIB_HINTS})
+if(MINIZIP_LIB)
+    target_link_libraries(xLights PRIVATE ${MINIZIP_LIB})
+else()
+    message(FATAL_ERROR "minizip not found (Linux: apt install libminizip-dev)")
+endif()
+
+# LiquidFun (not in vcpkg — always use vendored)
+if(WIN32)
+    find_library(LIQUIDFUN_LIB_RELEASE NAMES liquidfun
+        HINTS ${XL_WIN_LIB_HINTS} ${XL_DEPS}/liquidfun)
+    find_library(LIQUIDFUN_LIB_DEBUG NAMES liquidfund liquidfun
+        HINTS ${XL_WIN_LIB_HINTS} ${XL_DEPS}/liquidfun)
+    if(LIQUIDFUN_LIB_RELEASE)
+        target_link_libraries(xLights PRIVATE
+            optimized ${LIQUIDFUN_LIB_RELEASE}
+            debug     ${LIQUIDFUN_LIB_DEBUG})
+    endif()
+else()
+    find_library(LIQUIDFUN_LIB NAMES liquidfun
+        HINTS ${XL_LIB}/linux ${CMAKE_SOURCE_DIR}/lib/linux)
+    if(LIQUIDFUN_LIB)
+        target_link_libraries(xLights PRIVATE ${LIQUIDFUN_LIB})
+    endif()
+endif()
+
+if(WIN32 OR (UNIX AND NOT APPLE))
+    if(WIN32)
+        set(KLM_FETCH powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/ci_scripts/fetch_dependencies.ps1")
+        set(KLM_LIB_HINTS ${XL_WIN_LIB_HINTS})
+    else()
+        set(KLM_FETCH bash "${CMAKE_SOURCE_DIR}/ci_scripts/fetch_klightmapper.sh")
+        set(KLM_LIB_HINTS ${XL_LIB}/linux)
+    endif()
+    execute_process(COMMAND ${KLM_FETCH}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        RESULT_VARIABLE KLM_FETCH_RC)
+    if(NOT KLM_FETCH_RC EQUAL 0)
+        message(FATAL_ERROR "KLightMapper: required dependency fetch failed (rc=${KLM_FETCH_RC}). "
+                            "Check network access to github.com/KulpLights/KLightMapper.")
+    endif()
+    # The fetch just staged the files; drop any stale NOTFOUND cache before locating.
+    unset(KLM_LIB CACHE)
+    unset(KLM_INC CACHE)
+    find_library(KLM_LIB NAMES klightmapper HINTS ${KLM_LIB_HINTS})
+    find_path(KLM_INC NAMES klm/scan_api.h
+        HINTS ${XL_INC}/klightmapper ${XL_DEPS}/klightmapper/include)
+    if(NOT KLM_LIB OR NOT KLM_INC)
+        message(FATAL_ERROR "KLightMapper: lib/headers missing after fetch (lib=${KLM_LIB} inc=${KLM_INC}).")
+    endif()
+    message(STATUS "KLightMapper: ${KLM_LIB}")
+    target_include_directories(xLights PRIVATE ${KLM_INC})
+    target_link_libraries(xLights PRIVATE ${KLM_LIB})
+endif()
+
+# hidapi
+if(XLIGHTS_USE_VCPKG)
+    find_package(hidapi CONFIG REQUIRED)
+    target_link_libraries(xLights PRIVATE hidapi::hidapi)
+endif()
+
+# Platform link extras
+if(WIN32)
+    target_link_libraries(xLights PRIVATE ws2_32 winmm comctl32 rpcrt4
+                                          mfuuid propsys wmcodecdspuuid
+                                          iphlpapi)
+    if(NOT XLIGHTS_USE_VCPKG)
+        # bundle import libraries named by #pragma comment(lib, ...)
+        target_link_directories(xLights PRIVATE ${XL_WIN_LIB_HINTS})
+    endif()
+elseif(UNIX AND NOT APPLE)
+    target_link_libraries(xLights PRIVATE dl pthread)
+    # ALSA — use pkg-config only on Linux where it is always available
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ALSA QUIET alsa)
+        if(ALSA_FOUND)
+            target_link_libraries(xLights PRIVATE ${ALSA_LIBRARIES})
+            target_include_directories(xLights PRIVATE ${ALSA_INCLUDE_DIRS})
+        endif()
+        # avahi-compat-libdns_sd — provides <dns_sd.h>, the same DNS-SD API
+        # Discovery.cpp already targets via __has_include(<dns_sd.h>). Without
+        # it, BonjourData's ctor/dtor/handleEvents compile to empty bodies and
+        # WLED controllers are never auto-discovered (mDNS-only).
+        pkg_check_modules(DNSSD QUIET avahi-compat-libdns_sd)
+        if(DNSSD_FOUND)
+            target_link_libraries(xLights PRIVATE ${DNSSD_LIBRARIES})
+            target_include_directories(xLights PRIVATE ${DNSSD_INCLUDE_DIRS})
+        endif()
+    endif()
+    # libusb for uDMX (detected earlier, before add_executable)
+    if(LIBUSB_FOUND)
+        target_include_directories(xLights PRIVATE ${LIBUSB_INCLUDE_DIRS})
+        target_link_libraries(xLights PRIVATE ${LIBUSB_LIBRARIES})
+    endif()
+endif()
+
+# ─── Stem separation backends ───────────────────────────────────────────────
+# XLIGHTS_CMAKE_BUILD is defined globally above, so #pragma comment(lib,...)
+# in StemSeparator.cpp is already suppressed — no per-block define needed.
+#
+# Usage:
+#   cmake -DXLIGHTS_USE_ORT=ON               # ONNX Runtime (vcpkg: onnxruntime[directml])
+#   cmake -DXLIGHTS_USE_OPENVINO=ON          # OpenVINO Runtime — stem separation only
+#   cmake -DXLIGHTS_USE_OPENVINO_GENAI=ON    # OpenVINO Runtime + GenAI:
+#                                            #   stem separation, image generation (SD),
+#                                            #   speech-to-text with alignment (Whisper)
+#
+# XLIGHTS_USE_OPENVINO_GENAI implies XLIGHTS_USE_OPENVINO; you do not need both.
+#
+# Prerequisites for XLIGHTS_USE_OPENVINO_GENAI:
+#   vcpkg install openvino openvino-genai      (or install OpenVINO 2024.4+)
+#   Models must be exported with optimum-cli:
+#     optimum-cli export openvino --model stabilityai/stable-diffusion-v1-5 sd-v1-5-ov/
+#     optimum-cli export openvino --model openai/whisper-base whisper-base-ov/
+#   Paths are configured in xLights > Preferences > Services > OpenVINO (local).
+
+option(XLIGHTS_USE_ORT           "Enable ONNX Runtime stem separation"                  ON)
+option(XLIGHTS_USE_OPENVINO      "Enable OpenVINO stem separation"                      OFF)
+option(XLIGHTS_USE_OPENVINO_GENAI "Enable OpenVINO GenAI: image gen + speech-to-text"   OFF)
+
+if(XLIGHTS_USE_ORT)
+    find_package(onnxruntime CONFIG
+        HINTS
+            "${CMAKE_SOURCE_DIR}/include/onnxruntime"
+            "${CMAKE_SOURCE_DIR}/include/onnxruntime-win-x64-gpu-1.25.0"
+    )
+    if(onnxruntime_FOUND)
+        target_link_libraries(xLights PRIVATE onnxruntime::onnxruntime)
+        message(STATUS "Stem separation: ONNX Runtime (cmake package)")
+    else()
+        find_path(ORT_INCLUDE_DIR onnxruntime_cxx_api.h
+            HINTS
+                "${CMAKE_SOURCE_DIR}/include/onnxruntime"
+                "${CMAKE_SOURCE_DIR}/include/onnxruntime-win-x64-gpu-1.25.0/include"
+        )
+        find_library(ORT_LIB onnxruntime
+            HINTS
+                "${CMAKE_SOURCE_DIR}/lib/windows64"
+                "${CMAKE_SOURCE_DIR}/include/onnxruntime-win-x64-gpu-1.25.0/lib"
+        )
+        if(ORT_INCLUDE_DIR AND ORT_LIB)
+            target_include_directories(xLights PRIVATE ${ORT_INCLUDE_DIR})
+            target_link_libraries(xLights PRIVATE ${ORT_LIB})
+            message(STATUS "Stem separation: ONNX Runtime (vendored at ${ORT_LIB})")
+        else()
+            message(FATAL_ERROR
+                "XLIGHTS_USE_ORT=ON but onnxruntime not found.\n"
+                "Run ci_scripts/fetch_dependencies.ps1, or install via vcpkg: vcpkg install onnxruntime[directml]\n"
+                "Or set ORT_INCLUDE_DIR and ORT_LIB manually.")
+        endif()
+    endif()
+    target_compile_definitions(xLights PRIVATE HAVE_ORT)
+endif()
+
+if(XLIGHTS_USE_OPENVINO OR XLIGHTS_USE_OPENVINO_GENAI)
+    # OpenVINO Runtime is required for stem separation and as a base for GenAI.
+    # Install via vcpkg: vcpkg install "openvino[cpu,auto,ir,onnx]"
+    find_package(OpenVINO REQUIRED COMPONENTS Runtime)
+    target_link_libraries(xLights PRIVATE openvino::runtime)
+    target_compile_definitions(xLights PRIVATE HAVE_OPENVINO)
+
+    if(XLIGHTS_USE_OPENVINO_GENAI)
+        # OpenVINOGenAI is a separate package from the core OpenVINO Runtime.
+        # Install via the overlay port: vcpkg install openvino-genai
+        #   (requires vcpkg-configuration.json to point at ports/ overlay directory)
+        # Or install via the official OpenVINO toolkit installer / pip install openvino-genai.
+        find_package(OpenVINOGenAI REQUIRED)
+        target_link_libraries(xLights PRIVATE openvino::genai)
+        target_compile_definitions(xLights PRIVATE HAVE_OPENVINO_GENAI)
+        message(STATUS "OpenVINO: Runtime + GenAI enabled (stem separation, image gen, speech-to-text)")
+    else()
+        message(STATUS "Stem separation: OpenVINO Runtime enabled")
+    endif()
+endif()
+
+
+# ─── Windows post-build: copy DLLs and resources to output dir ──────────────
+# Mirrors the PostBuildEvent in xLights/xLights.vcxproj.
+if(WIN32)
+    # Use safe_copy_dlls.cmake so the copy is a no-op when the build output
+    # directory is the same as the source bin/ directory (happens on CI when
+    # Ninja builds directly into bin/).  Plain `copy` fails with "cannot copy
+    # file onto itself" in that case.
+    set(_SAFE_COPY "${CMAKE_SOURCE_DIR}/cmake/safe_copy_dlls.cmake")
+    add_custom_command(TARGET xLights POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            "-DSRC_DIR=${CMAKE_SOURCE_DIR}/bin"
+            "-DDST_DIR=$<TARGET_FILE_DIR:xLights>"
+            "-DGLOB_PAT=*.dll"
+            -P "${_SAFE_COPY}"
+        COMMAND ${CMAKE_COMMAND}
+            "-DSRC_DIR=${CMAKE_SOURCE_DIR}/bin64"
+            "-DDST_DIR=$<TARGET_FILE_DIR:xLights>"
+            "-DGLOB_PAT=*.dll"
+            -P "${_SAFE_COPY}"
+        COMMAND ${CMAKE_COMMAND}
+            "-DSRC_DIR=${CMAKE_SOURCE_DIR}/bin"
+            "-DDST_DIR=$<TARGET_FILE_DIR:xLights>"
+            "-DGLOB_PAT=*.cfg"
+            -P "${_SAFE_COPY}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/dictionaries"
+            "$<TARGET_FILE_DIR:xLights>/dictionaries"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/effectmetadata"
+            "$<TARGET_FILE_DIR:xLights>/effectmetadata"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/meshobjects"
+            "$<TARGET_FILE_DIR:xLights>/meshobjects"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/prompts"
+            "$<TARGET_FILE_DIR:xLights>/prompts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/html"
+            "$<TARGET_FILE_DIR:xLights>/html"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/resources/controllers"
+            "$<TARGET_FILE_DIR:xLights>/controllers"
+        COMMENT "Copying DLLs and resources to output directory"
+    )
+endif()
+
+# ─── Install ────────────────────────────────────────────────────────────────
+include(GNUInstallDirs)
+install(TARGETS xLights DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY resources/ DESTINATION ${CMAKE_INSTALL_DATADIR}/xLights)

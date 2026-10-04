@@ -1,0 +1,69 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "effectpanels/JsonEffectPanel.h"
+#include "shared/controls/BulkEditControls.h"
+
+#include <string>
+
+class Model;
+class SubBufferPanel;
+class wxButton;
+class wxCheckBox;
+class wxSizer;
+
+class BufferPanel : public JsonEffectPanel {
+public:
+    BufferPanel(wxWindow* parent, wxWindowID id = wxID_ANY,
+                const wxPoint& pos = wxDefaultPosition,
+                const wxSize& size = wxDefaultSize);
+    ~BufferPanel() override = default;
+
+    wxString GetBufferString();
+    void SetDefaultControls(const Model* model, bool optionbased = false);
+    void ValidateWindow() override;
+
+    void UpdateBufferStyles(const Model* model);
+    void UpdateCamera(const Model* model);
+
+    // Exposed so the SubModelsDialog / other code can still use the subBuffer
+    // widget if needed. Populated in BuildSubBufferRow.
+    SubBufferPanel* subBufferPanel = nullptr;
+
+protected:
+    wxWindow* CreateCustomControl(wxWindow* parentWin, wxSizer* sizer,
+                                   const nlohmann::json& prop, int cols) override;
+
+private:
+    // Custom row builders
+    wxWindow* BuildResetPanelRow(wxWindow* parentWin, wxSizer* sizer);
+    wxWindow* BuildSubBufferRow(wxWindow* parentWin, wxSizer* sizer);
+    wxWindow* BuildRotoZoomPresetRow(wxWindow* parentWin, wxSizer* sizer);
+
+    // Handlers
+    void OnResetBufferPanelClick(wxCommandEvent& event);
+    void OnBufferStyleChoiceSelect(wxCommandEvent& event);
+    void OnBufferTransformSelect(wxCommandEvent& event);
+    void OnPresetSelect(wxCommandEvent& event);
+
+    // Cached pointers
+    wxCheckBox* _resetBufferPanelCheck = nullptr;
+    BulkEditChoice* _rotoZoomPresetChoice = nullptr;
+
+    std::string _defaultCamera = "2D";
+    // Tracks the BufferStyle in effect *before* the current OnBufferStyleChoiceSelect
+    // call, so it can tell "switching into a camera style from a non-camera style"
+    // (apply the group's Default Camera) apart from "toggling between two camera
+    // styles" (preserve whatever camera the user already picked).
+    std::string _prevBufferStyle = "Default";
+    bool _mg = false;
+};

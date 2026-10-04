@@ -1,0 +1,162 @@
+#ifndef FPPCONNECTDIALOG_H
+#define FPPCONNECTDIALOG_H
+
+#include <wx/progdlg.h>
+#include <list>
+#include <set>
+
+//(*Headers(FPPConnectDialog)
+#include <wx/button.h>
+#include <wx/checkbox.h>
+#include <wx/choice.h>
+#include <wx/dialog.h>
+#include <wx/panel.h>
+#include <wx/scrolwin.h>
+#include <wx/sizer.h>
+#include <wx/splitter.h>
+#include <wx/stattext.h>
+//*)
+
+#include <wx/treelist.h>
+#include <wx/dataview.h>
+#include "controllers/FPP.h"
+#include <tuple>
+
+class FPPUploadProgressDialog;
+class OutputManager;
+class wxProgressDialog;
+class xLightsFrame;
+
+
+class FPPConnectDialog: public wxDialog
+{
+    void SaveSettings(bool onlyInsts = false);
+    void ApplySavedHostSettings();
+    wxString Fixitup(wxString val);
+    wxString HostSettingKey(const FPP* inst);
+
+    // Shared close path for OnClose() and OnCancelButtonClick(): defers the
+    // close while an upload is in progress instead of tearing this dialog
+    // down out from under the nested Upload Progress modal. Returns true if
+    // the dialog was actually closed (EndDialog called), false if deferred.
+    bool RequestClose(int rc);
+
+	public:
+
+		FPPConnectDialog(wxWindow* parent, OutputManager* outputManager, const std::string& targetIp = "", wxWindowID id=wxID_ANY,const wxPoint& pos=wxDefaultPosition,const wxSize& size=wxDefaultSize);
+		virtual ~FPPConnectDialog();
+
+		//(*Declarations(FPPConnectDialog)
+		wxButton* AddFPPButton;
+		wxButton* Button_Upload;
+		wxButton* ReDiscover;
+		wxCheckBox* KeepWinOpen;
+		wxChoice* ChoiceFilter;
+		wxChoice* ChoiceFolder;
+		wxFlexGridSizer* FPPInstanceSizer;
+		wxPanel* CheckListBoxHolder;
+		wxPanel* Panel1;
+		wxScrolledWindow* FPPInstanceList;
+		wxSplitterWindow* SplitterWindow1;
+		wxStaticText* Selected_Label;
+		wxStaticText* ShowDirLabel;
+		wxStaticText* StaticText1;
+		wxStaticText* StaticText2;
+		//*)
+
+        wxTreeListCtrl* CheckListBox_Sequences;
+
+	protected:
+
+		//(*Identifiers(FPPConnectDialog)
+		static const wxWindowID ID_SCROLLEDWINDOW1;
+		static const wxWindowID ID_STATICTEXT1;
+		static const wxWindowID ID_CHOICE_FILTER;
+		static const wxWindowID ID_STATICTEXT2;
+		static const wxWindowID ID_CHOICE_FOLDER;
+		static const wxWindowID ID_STATICTEXT3;
+		static const wxWindowID ID_STATICTEXT4;
+		static const wxWindowID ID_PANEL2;
+		static const wxWindowID ID_PANEL1;
+		static const wxWindowID ID_SPLITTERWINDOW1;
+		static const wxWindowID ID_BUTTON1;
+		static const wxWindowID ID_BUTTON2;
+		static const wxWindowID ID_CHECKBOX1;
+		static const wxWindowID ID_BUTTON_Upload;
+		//*)
+
+        std::list<FPP*> instances;
+        OutputManager* _outputManager;
+        std::string _targetIp;
+        xLightsFrame* _frame = nullptr;
+
+        // Tracks whether the nested Upload Progress modal is currently running so
+        // OnClose() can avoid tearing this dialog down out from under it (which
+        // left the main frame permanently disabled with no visible dialog left
+        // to dismiss it).
+        bool _uploadInProgress = false;
+        bool _closeRequestedDuringUpload = false;
+        FPPUploadProgressDialog* _uploadProgressDialog = nullptr;
+
+	private:
+
+		//(*Handlers(FPPConnectDialog)
+		void OnButton_UploadClick(wxCommandEvent& event);
+		void OnClose(wxCloseEvent& event);
+		void OnCancelButtonClick(wxCommandEvent& event);
+		void SequenceListPopup(wxTreeListEvent& event);
+		void OnAddFPPButtonClick(wxCommandEvent& event);
+        void OnFPPReDiscoverClick(wxCommandEvent& event);
+		void OnChoiceFolderSelect(wxCommandEvent& event);
+		void OnChoiceFilterSelect(wxCommandEvent& event);
+		void HostSortMenu(wxContextMenuEvent& event);
+		void OnHostSortClick(wxCommandEvent& event);
+        void OnIPSortClick(wxCommandEvent& event);
+		void UploadPopupMenu(wxContextMenuEvent& event);
+		void OnUploadPopupClick(wxCommandEvent& event);
+		void CapePopupMenu(wxContextMenuEvent& event);
+		void OnCapePopupClick(wxCommandEvent& event);
+        void MediaPopupMenu(wxContextMenuEvent& event);
+        void OnMediaPopupClick(wxCommandEvent& event);
+		//*)
+
+        void LoadSequencesFromFolder(wxString const& dir) const;
+        void LoadSequencesFromFolder(wxString const& dir, std::set<wxString>& knownPaths) const;
+        void AddSequenceListItem(const wxString& fseqPath, const std::string& media, std::set<wxString>& knownPaths) const;
+        void LoadSequences();
+        void PopulateFPPInstanceList(wxProgressDialog *prgs = nullptr);
+        void AddInstanceRow(const FPP &inst);
+        wxPanel *AddInstanceHeader(const std::string &h, const std::string &tt = std::string());
+        void OnInstanceListPaint(wxPaintEvent& event);
+
+        void GetFolderList(const wxString& folder);
+    
+        void OnPopup(wxCommandEvent &event);
+    
+        bool GetCheckValue(const std::string &col);
+        std::string GetChoiceValue(const std::string &col);
+        int GetChoiceValueIndex(const std::string &col);
+
+        void SetChoiceValueIndex(const std::string &col, int i);
+        void SetCheckValue(const std::string &col, bool b);
+
+		wxString SequenceDisplayName(const wxString& filePath) const;
+		void DisplayDateModified(const wxString& filePath, wxTreeListItem &index) const;
+
+		void UpdateSeqCount();
+        uint32_t GetSelectedSeqCount();
+        void OnSequenceListToggled(wxDataViewEvent& event);
+
+        void doUpload(FPPUploadProgressDialog *prgs, std::vector<bool> doUpload);
+        void PromptForOutdatedModels(FPPUploadProgressDialog *prgs, const std::vector<bool>& doUpload, std::vector<int>& modelsMode);
+        std::vector<int> SplitIP(const wxString& ip) const; 
+
+        void SequenceSelector(const std::string regexKey);
+        void SelectIPsWithSubnet();
+
+		[[nodiscard]] std::tuple<int, FSEQFile::CompressionType, bool> DecodeFSEQVersionAndCompression(const std::string& selection) const;
+
+		DECLARE_EVENT_TABLE()
+};
+
+#endif

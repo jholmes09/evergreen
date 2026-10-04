@@ -1,0 +1,241 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "TreeEffect.h"
+
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+#include "Parallel.h"
+
+#include "ispc/TreeFunctions.ispc.h"
+
+// Max pixels_per_branch the ISPC/Metal kernels support: their color tables are
+// fixed-size arrays of this length (see MAX_TREE_ISPC_PPB in the kernel).
+static constexpr int MAX_TREE_ISPC_PPB = 512;
+
+#include "../../include/tree-16.xpm"
+#include "../../include/tree-24.xpm"
+#include "../../include/tree-32.xpm"
+#include "../../include/tree-48.xpm"
+#include "../../include/tree-64.xpm"
+
+// Fallback defaults (used until OnMetadataLoaded replaces them with Tree.json values).
+int TreeEffect::sBranchesDefault = 3;
+int TreeEffect::sSpeedDefault = 10;
+bool TreeEffect::sShowLightsDefault = false;
+
+TreeEffect::TreeEffect(int id) : RenderableEffect(id, "Tree", tree_16, tree_24, tree_32, tree_48, tree_64)
+{
+    //ctor
+}
+
+TreeEffect::~TreeEffect()
+{
+    //dtor
+}
+
+void TreeEffect::OnMetadataLoaded()
+{
+    sBranchesDefault = GetIntDefault("Tree_Branches", sBranchesDefault);
+    sSpeedDefault = GetIntDefault("Tree_Speed", sSpeedDefault);
+    sShowLightsDefault = GetBoolDefault("Tree_ShowLights", sShowLightsDefault);
+}
+
+void TreeEffect::Render(Effect *effect, const SettingsMap &SettingsMap, RenderBuffer &buffer) {
+    int Branches = SettingsMap.GetInt("SLIDER_Tree_Branches", sBranchesDefault);
+    int tspeed = SettingsMap.GetInt("SLIDER_Tree_Speed", sSpeedDefault);
+    bool showlights = SettingsMap.GetBool("CHECKBOX_Tree_ShowLights", sShowLightsDefault);
+    
+    int effectState = (buffer.curPeriod - buffer.curEffStartPer) * tspeed * buffer.frameTimeInMs / 50;
+    
+    int x,y,i,r,ColorIdx,pixels_per_branch;
+    int maxFrame,mod,branch,row,b,f_mod,m,frame;
+    int number_garlands,s_odd_row,odd_even;
+    float V,H;
+    
+    number_garlands=1;
+    xlColor color;
+    if(Branches<1)  Branches=1;
+    pixels_per_branch=(int)(0.5+buffer.BufferHt/Branches);
+    if(pixels_per_branch<1) pixels_per_branch=1;
+    
+    maxFrame=(Branches+1) * buffer.BufferWi;
+    if(effectState>0 && maxFrame>0) frame = (effectState/4)%maxFrame;
+    else frame=1;
+
+    // ISPC-accelerated path (the CPU path). Every per-pixel decision is integer math,
+    // so the color tables are precomputed here with the exact scalar double math and
+    // the kernel output is byte-identical to the scalar loop below. Only buffers whose
+    // pixels_per_branch exceeds the kernel's fixed color-table size fall through to the
+    // scalar tail (BufferWi > 0 also guards the divide-by-width in the setup below).
+    if (pixels_per_branch <= MAX_TREE_ISPC_PPB && buffer.BufferWi > 0) {
+        ispc::TreeISPCData tdata;
+        tdata.width = buffer.BufferWi;
+        tdata.height = buffer.BufferHt;
+        tdata.ppb = pixels_per_branch;
+        tdata.frame = frame;
+        tdata.branch_row = (effectState / buffer.BufferWi) % Branches;
+        tdata.f_mod = (effectState / 4) % buffer.BufferWi;
+        tdata.showlights = showlights ? 1 : 0;
+        for (mod = 1; mod <= pixels_per_branch; mod++) {
+            V = 1 - (1.0 * mod / pixels_per_branch) * 0.70;
+            buffer.palette.GetColor(0, color);
+            if (buffer.allowAlpha) {
+                color.alpha = 255.0 * V;
+            } else {
+                HSVValue hsv = color.asHSV();
+                hsv.value = V;
+                color = hsv;
+            }
+            tdata.bgColors[mod - 1].v[0] = color.red;
+            tdata.bgColors[mod - 1].v[1] = color.green;
+            tdata.bgColors[mod - 1].v[2] = color.blue;
+            tdata.bgColors[mod - 1].v[3] = color.alpha;
+        }
+        for (r = 0; r < 5; r++) {
+            H = r / 4.0;
+            HSVValue hsv;
+            hsv.hue = H;
+            hsv.saturation = 1.0;
+            hsv.value = 1.0;
+            color = hsv;
+            tdata.lightColors[r].v[0] = color.red;
+            tdata.lightColors[r].v[1] = color.green;
+            tdata.lightColors[r].v[2] = color.blue;
+            tdata.lightColors[r].v[3] = color.alpha;
+        }
+        if (buffer.dmx_buffer) {
+            // DMX fixtures need the colour routed through SetPixel()
+            ispc::uint8_t4 single = {};
+            ispc::TreeEffectISPC(&tdata, 0, 1, &single);
+            buffer.SetPixel(0, 0, xlColor(single.v[0], single.v[1], single.v[2], single.v[3]));
+            return;
+        }
+
+        // Clamp to the real allocation: GetPixelCount() can be < BufferWi*BufferHt
+        // for a variable sub-buffer, and the ISPC kernel writes unguarded.
+        int max = std::min<int>(buffer.GetPixelCount(), buffer.BufferWi * buffer.BufferHt);
+        constexpr int treeBlockSize = 4096;
+        int blocks = max / treeBlockSize + 1;
+        parallel_for(0, blocks, [&tdata, &buffer, max](int block) {
+            int start = block * treeBlockSize;
+            int end = start + treeBlockSize;
+            if (end > max) end = max;
+            ispc::TreeEffectISPC(&tdata, start, end, (ispc::uint8_t4*)buffer.GetPixels());
+        });
+        return;
+    }
+
+    // Scalar tail — reached only when pixels_per_branch > MAX_TREE_ISPC_PPB, which the
+    // fixed-size kernel color tables cannot hold (very tall buffers with few branches).
+    i=0;
+
+    for (y=0; y<buffer.BufferHt; y++) // For my 20x120 megatree, BufferHt =120
+    {
+        for (x=0; x<buffer.BufferWi; x++) // BufferWi=20 in the above example
+        {
+            if(pixels_per_branch>0) mod=y%pixels_per_branch;
+            else mod=0;
+            if(mod==0) mod=pixels_per_branch;
+            V=1-(1.0*mod/pixels_per_branch)*0.70;
+            i++;
+            
+            ColorIdx=0;
+            buffer.palette.GetColor(ColorIdx, color); // Now go and get the hsv value for this ColorIdx
+            if (buffer.allowAlpha) {
+                color.alpha = 255.0 * V;
+            } else {
+                HSVValue hsv = color.asHSV();
+                hsv.value = V; // we have now set the color for the background tree
+                color = hsv;
+            }
+            
+            //   $orig_rgbval=$rgb_val;
+            branch = (int)((y-1)/pixels_per_branch);
+            row = pixels_per_branch-mod; // now row=0 is bottom of branch, row=1 is one above bottom
+            //  mod = which pixel we are in the branch
+            //	mod=1,row=pixels_per_branch-1   top picrl in branch
+            //	mod=2, second pixel down into branch
+            //	mod=pixels_per_branch,row=0  last pixel in branch
+            //
+            //	row = 0, the $p is in the bottom row of tree
+            //	row =1, the $p is in second row from bottom
+            b = (int) ((effectState)/buffer.BufferWi)%Branches; // what branch we are on based on frame #
+            //
+            //	b = 0, we are on bottom row of tree during frames 1 to BufferWi
+            //	b = 1, we are on second row from bottom, frames = BufferWi+1 to 2*BufferWi
+            //	b = 2, we are on third row from bottom, frames - 2*BufferWi+1 to 3*BufferWi
+            f_mod = (effectState/4)%buffer.BufferWi;
+            //   if(f_mod==0) f_mod=BufferWi;
+            //	f_mod is  to BufferWi-1 on each row
+            //	f_mod == 0, left strand of this row
+            //	f_mod==BufferWi, right strand of this row
+            //
+            m=(x%6);
+            if(m==0) m=6;  // use $m to indicate where we are in horizontal pattern
+            // m=1, 1sr strand
+            // m=2, 2nd strand
+            // m=6, last strand in 6 strand pattern
+            
+            
+            
+            r=branch%5;
+            H = r/4.0;
+            
+            odd_even=b%2;
+            s_odd_row = buffer.BufferWi-x+1;
+            
+            if(branch<=b && x<=frame && // for branches below or equal to current row
+               (((row==3 || (number_garlands==2 && row==6)) && (m==1 || m==6))
+                ||
+                ((row==2 || (number_garlands==2 && row==5)) && (m==2 || m==5))
+                ||
+                ((row==1 || (number_garlands==2 && row==4)) && (m==3 || m==4))
+                ))
+
+                if (showlights)
+                {
+                    if ((odd_even == 0 && x <= f_mod) || (odd_even == 1 && s_odd_row <= f_mod))
+                    {
+                        HSVValue hsv;
+                        hsv.hue = H;
+                        hsv.saturation = 1.0;
+                        hsv.value = 1.0;
+                        color = hsv;
+                    }
+                }
+            //	if(branch>b)
+            //	{
+            //		return $rgb_val; // for branches below current, dont dont blank anything out
+            //	}
+            //	else if(branch==b)
+            //	{
+            //		if(odd_even ==0 && x>f_mod)
+            //		{
+            //			$rgb_val=$orig_rgbval;// we are even row ,counting from bottom as zero
+            //		}
+            //		if(odd_even ==1 && s_odd_row>f_mod)
+            //		{
+            //			$rgb_val=$orig_rgbval;// we are even row ,counting from bottom as zero
+            //		}
+            //	}
+            //if($branch>$b) $rgb_val=$orig_rgbval; // erase rows above our current row.
+            
+            
+            // Yes, so now decide on what color it should be
+            
+            
+            //  we left the Hue and Saturation alone, we are just modifiying the Brightness Value
+            buffer.SetPixel(x,y,color); // Turn pixel on
+            
+        }
+    }
+}

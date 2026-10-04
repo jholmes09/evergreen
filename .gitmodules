@@ -1,0 +1,34 @@
+[submodule "dependencies/liquidfun"]
+	path = dependencies/liquidfun
+	url = https://github.com/google/liquidfun.git
+[submodule "dependencies/midifile"]
+	path = dependencies/midifile
+	url = https://github.com/craigsapp/midifile.git
+[submodule "macOS"]
+	path = macOS
+	url = https://github.com/xLightsSequencer/xLights-macOS.git
+	branch = main
+[submodule "dependencies/pybind11"]
+	path = dependencies/pybind11
+	url = https://github.com/pybind/pybind11.git
+	branch = stable
+[submodule "dependencies/nanosvg"]
+	path = dependencies/nanosvg
+	url = https://github.com/wxWidgets/nanosvg.git
+	branch = wx
+[submodule "dependencies/pugixml"]
+	path = dependencies/pugixml
+	url = https://github.com/zeux/pugixml
+[submodule "dependencies/spdlog"]
+	path = dependencies/spdlog
+	url = https://github.com/gabime/spdlog.git
+	branch = v1.x
+[submodule "dependencies/Vulkan-Headers"]
+	path = dependencies/Vulkan-Headers
+	url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "dependencies/volk"]
+	path = dependencies/volk
+	url = https://github.com/zeux/volk.git
+[submodule "dependencies/VulkanMemoryAllocator"]
+	path = dependencies/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git

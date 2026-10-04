@@ -1,0 +1,184 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <map>
+#include <string>
+#include <vector>
+#include <mutex>
+#include <atomic>
+
+#include "ObjectManager.h"
+#include "ModelSetManager.h"
+#include <pugixml.hpp>
+
+class Model;
+class OutputManager;
+class RenderContext;
+class UICallbacks;
+
+// How a replaced model's group memberships are reconciled against the source
+// (donor) model's. Shared by the desktop Replace-Model dialog and the iPad
+// ReplaceModelSheet so both behave identically.
+enum class ReplaceGroupMode {
+    NoChange = 0,          // leave each replaced model's own groups untouched
+    ReplaceWithSource,     // replaced model ends up in exactly the source's direct groups
+    MergeSourceIntoTarget  // replaced model keeps its groups and gains the source's
+};
+
+#ifdef GetObject
+#undef GetObject  // Windows wingdi.h defines GetObject as GetObjectW
+#endif
+
+class ModelManager : public ObjectManager
+{
+    public:
+        ModelManager(OutputManager* outputManager, RenderContext* rc = nullptr);
+        ModelManager(const ModelManager& mm) = delete;
+        ModelManager& operator=(const ModelManager& mm) = delete;
+        ModelManager() = delete;
+
+        virtual ~ModelManager();
+
+        OutputManager* GetOutputManager() const { return _outputManager; }
+        Model *operator[](const std::string &name) const;
+        Model *GetModel(const std::string &name) const;
+        bool IsModelValid(const Model* m) const;
+        virtual BaseObject *GetObject(const std::string &name) const override;
+
+        bool RecalcStartChannels() const;
+        uint32_t GetLastChannel() const;
+        void DisplayStartChannelCalcWarning() const;
+        bool ReworkStartChannel() const;
+
+        bool Rename(const std::string &oldName, const std::string &newName);
+        bool RenameSubModel(const std::string &oldName, const std::string &newName);
+        bool RenameInListOnly(const std::string &oldName, const std::string &newName);
+        bool IsModelOverlapping(const Model* model) const;
+        bool IsModelShadowing(const Model* m) const;
+        std::list<std::string> GetModelsShadowing(const Model* m) const;
+        void AddModel(Model* m);
+        void ReplaceModel(const std::string &name, Model* nm);
+        bool Delete(const std::string &name);
+        std::string GenerateModelName(const std::string& candidateModelName) const;
+        void ResetModelGroups() const;
+        std::string GetLastModelOnPort(const std::string& controllerName, int port, const std::string& excludeModel, const std::string& protocol) const;
+        std::string GetLastModelOnPort(const std::string& controllerName, int port, const std::string& excludeModel, const std::string& protocol, int smartReceiver) const;
+        void ReplaceIPInStartChannels(const std::string& oldIP, const std::string& newIP);
+        void AddModelGroups(pugi::xml_node n, const std::string& name, bool& merge, bool& ask);
+        void LoadModels(pugi::xml_node modelNode, int previewW, int previewH);
+        bool LoadGroups(pugi::xml_node groupNode, int previewW, int previewH);
+        bool ModelHasNoDependencyOnNoController(Model* m, std::list<std::string>& visited) const;
+
+        bool RenameController(const std::string& oldName, const std::string& newName);
+        bool DeleteController(const std::string& name);
+
+        std::vector<std::string> GetLayoutGroupNames() const;
+
+        void clear();
+        void clearUIObjects();
+
+        std::map<std::string, Model*>::const_iterator begin() const;
+        std::map<std::string, Model*>::const_iterator end() const;
+        unsigned int size() const;
+
+        //Make sure the Model is deleted when done with
+        Model *CreateModel(pugi::xml_node node, int previewW = 0, int previewH = 0) const;
+        Model *CreateDefaultModel(const std::string &type, const std::string &startChannel = "1") const;
+        RenderContext* GetRenderContext() const { return _renderContext; }
+        UICallbacks* GetUICallbacks() const override;
+        OutputModelManager* GetOutputModelManager() const override;
+        bool IsLowDefinitionRender() const;
+        bool IsValidControllerModelChain(Model* m, std::string& tip) const;
+        Model *createAndAddModel(pugi::xml_node node, int previewW, int previewH);
+        std::string GetModelsOnChannels(uint32_t start, uint32_t end, int perLine) const;
+        std::vector<std::string> GetGroupsContainingModel(const Model* model) const;
+        // Reconcile the group memberships of one or more just-replaced models
+        // against a source (donor) model, per `mode`. Operates on DIRECT
+        // membership including submodel entries ("Source/Strand1"), skips
+        // base-folder groups, and scans the group list once for the whole
+        // batch. Callers persist via their normal reload/dirty path.
+        void ReconcileReplacedModelGroups(const std::string& sourceName, const std::vector<std::string>& replacedNames, ReplaceGroupMode mode);
+        std::vector<std::string> GetGroupsContainingModelOrSubmodel(const Model* model) const;
+        std::vector<Model*> GetModelGroups(const Model* model) const;
+        std::string GenerateNewStartChannel(const std::string& lastModel = "") const;
+
+        int GetPreviewWidth() const { return previewWidth; }
+        int GetPreviewHeight() const { return previewHeight; }
+        // Both return true if the base rgb effects file loaded and the merge ran (even if nothing
+        // changed); false only if the base file could not be loaded. Optional 'changed' reports
+        // whether any model/group content was actually modified.
+        bool MergeFromBase(const std::string& baseShowDir, bool prompt, bool& acceptAll, bool& rejectAll, bool* changed = nullptr);
+        static bool MergeBaseXml(const std::string& baseShowDir, pugi::xml_node localModelsNode, pugi::xml_node localGroupsNode, bool* changed = nullptr);
+        std::string GetLastGeneratedModelName() const { return lastGeneratedModelName; }
+
+        // Ruler state for model import (tracks whether dimensions were applied via ruler)
+        void ClearUsedRuler() { _usedRuler = false; }
+        void SetUsedRuler() { _usedRuler = true; }
+        bool UsedRuler() const { return _usedRuler; }
+
+        std::map<std::string, Model *> GetModels() const { return models; }
+
+        // Bumped on every structural mutation (add / replace / delete /
+        // clear) and by NoteModelPointersChanged below. The render tree folds
+        // this into its change-count gate and ModelGroup re-resolves its
+        // cached vectors off it, so a freed Model* can never survive in
+        // either — see RenderEngine::BuildRenderTree and
+        // ModelGroup::EnsureModelsCurrent. Atomic because models load in
+        // parallel.
+        unsigned int GetModelGeneration() const { return _modelGeneration.load(); }
+
+        // Every Model* this manager has handed out must be treated as stale.
+        // Submodels are owned and freed by their parent Model, not by the
+        // map, so a submodel rebuild is invisible to the mutation sites above
+        // even though GetModel("Parent/Sub") hands those pointers out and
+        // model groups cache them.
+        void NoteModelPointersChanged() const { _modelGeneration++; }
+
+        // Model Sets - persistent translation-only links between models.
+        // See plans/layout-group-move-lock.md and ModelSetManager.h.
+        ModelSetManager& GetSetManager() { return _setManager; }
+        const ModelSetManager& GetSetManager() const { return _setManager; }
+
+    private:
+
+    // Every Model this manager owns is freed through here. Callers are
+    // supposed to drain the renderer before mutating the model list, but that
+    // is a convention spread over dozens of call sites and AbortRender is
+    // best-effort anyway - most sites discard the bool it returns and free on a
+    // timeout. A render job that already holds the pointer then reads freed
+    // memory (crash sig 38b2cfbce1, in RenderTreeData on a pool thread). So the
+    // free is gated here instead: with a render in flight the model is parked
+    // rather than deleted, turning every missed abort into a bounded leak plus
+    // a log line. Parked models are freed by the next mutation that finds the
+    // renderer idle, and unconditionally at destruction.
+    void FreeModel(Model* m);
+    void DrainParkedModels();
+
+    OutputManager* _outputManager = nullptr;
+    RenderContext* _renderContext = nullptr;
+    bool _usedRuler = false;
+    int previewWidth = 0;
+    int previewHeight = 0;
+    std::map<std::string, Model *> models;
+    mutable std::recursive_mutex _modelMutex;
+    std::atomic<bool> _modelsLoading;
+    mutable std::atomic<unsigned int> _modelGeneration{ 0 };
+    mutable std::string lastGeneratedModelName = "";
+    std::vector<Model*> _parkedModels;
+    mutable std::mutex _parkedModelMutex;
+    // Set by the destructor: nothing can be rendering any more, and the
+    // RenderContext this is a member of is itself part-way through teardown,
+    // so stop consulting it and just free.
+    bool _destroying = false;
+    ModelSetManager _setManager;
+};
+

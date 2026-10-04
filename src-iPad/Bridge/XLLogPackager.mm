@@ -1,0 +1,405 @@
+#import "XLLogPackager.h"
+#import "XLCrashCapture.h"
+#import "XLSequenceDocument.h"
+
+#import <UIKit/UIKit.h>
+#import <sys/sysctl.h>
+#import <sys/utsname.h>
+#import <mach/mach.h>
+
+#include <list>
+#include <string>
+
+#include <spdlog/spdlog.h>
+
+#include "utils/Parallel.h"
+#include "utils/RangeWorkPool.h"
+#include "utils/ShowGuid.h"
+#include "utils/ShowRedactor.h"
+#include "utils/TraceLog.h"
+#include "utils/UtilFunctions.h"
+#include "utils/xlCrashCapture.h"
+
+namespace {
+
+NSString* DeviceModelIdentifier() {
+    struct utsname systemInfo;
+    uname(&systemInfo);
+    return [NSString stringWithCString:systemInfo.machine
+                              encoding:NSUTF8StringEncoding];
+}
+
+NSString* FreeDiskSpaceString() {
+    NSError* err = nil;
+    NSDictionary* attrs = [[NSFileManager defaultManager]
+        attributesOfFileSystemForPath:NSHomeDirectory() error:&err];
+    if (err || !attrs) return @"unknown";
+    long long free = [attrs[NSFileSystemFreeSize] longLongValue];
+    return [NSByteCountFormatter stringFromByteCount:free
+                                          countStyle:NSByteCountFormatterCountStyleFile];
+}
+
+NSString* PhysicalMemoryString() {
+    return [NSByteCountFormatter
+        stringFromByteCount:[NSProcessInfo processInfo].physicalMemory
+                 countStyle:NSByteCountFormatterCountStyleMemory];
+}
+
+void CopyTreeIntoStaging(NSFileManager* fm,
+                         NSString* srcDir,
+                         NSString* destDir,
+                         NSPredicate* _Nullable filter) {
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:srcDir isDirectory:&isDir] || !isDir) return;
+
+    NSDirectoryEnumerator* en = [fm enumeratorAtPath:srcDir];
+    NSString* relative;
+    while ((relative = [en nextObject])) {
+        if (filter && ![filter evaluateWithObject:relative]) continue;
+        NSString* src = [srcDir stringByAppendingPathComponent:relative];
+        BOOL childIsDir = NO;
+        [fm fileExistsAtPath:src isDirectory:&childIsDir];
+        if (childIsDir) continue;
+        NSString* dst = [destDir stringByAppendingPathComponent:relative];
+        [fm createDirectoryAtPath:[dst stringByDeletingLastPathComponent]
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:nil];
+        [fm copyItemAtPath:src toPath:dst error:nil];
+    }
+}
+
+NSString* DeviceInfoText() {
+    NSDictionary* info = [[NSBundle mainBundle] infoDictionary];
+    NSMutableString* s = [NSMutableString string];
+    [s appendFormat:@"App version: %@ (build %@)\n",
+        info[@"CFBundleShortVersionString"] ?: @"?",
+        info[@"CFBundleVersion"] ?: @"?"];
+    [s appendFormat:@"OS: %@ %@\n",
+        [UIDevice currentDevice].systemName,
+        [UIDevice currentDevice].systemVersion];
+    [s appendFormat:@"Device model: %@\n", DeviceModelIdentifier()];
+    [s appendFormat:@"Device name: %@\n", [UIDevice currentDevice].name];
+    [s appendFormat:@"Locale: %@\n", [NSLocale currentLocale].localeIdentifier];
+    [s appendFormat:@"Physical memory: %@\n", PhysicalMemoryString()];
+    [s appendFormat:@"Free disk: %@\n", FreeDiskSpaceString()];
+    [s appendFormat:@"Active processors: %lu\n",
+        (unsigned long)[NSProcessInfo processInfo].activeProcessorCount];
+    std::string cpuBrand = GetCPUBrand();
+    if (!cpuBrand.empty()) {
+        [s appendFormat:@"CPU: %s\n", cpuBrand.c_str()];
+    }
+    [s appendFormat:@"CPU cores: physical=%d logical=%d\n",
+        GetPhysicalCoreCount(), GetLogicalCoreCount()];
+    for (const std::string& gpu : GetGPUDescriptions()) {
+        [s appendFormat:@"GPU: %s\n", gpu.c_str()];
+    }
+    UIScreen* screen = [UIScreen mainScreen];
+    CGRect b = screen.bounds;
+    [s appendFormat:@"Display: %.0fx%.0f points, scale %.1f (%.0fx%.0f pixels)\n",
+        b.size.width, b.size.height, screen.scale,
+        b.size.width * screen.scale, b.size.height * screen.scale];
+    [s appendFormat:@"Thermal state: %ld\n",
+        (long)[NSProcessInfo processInfo].thermalState];
+    [s appendFormat:@"Captured: %@\n", [NSDate date]];
+    return s;
+}
+
+NSString* ThreadsText() {
+    std::string status = "Parallel Job Pool:\n";
+    status += ParallelForPool().GetStatus();
+
+    // The dashboard's "breadcrumbs" come from these, and they are what turns a
+    // stack into a reproducible report - the desktop has shipped them in
+    // threads.txt for a while, the iPad was dropping them on the floor.
+    //
+    // Every thread's, not GetTraceMessages' calling-thread-only view: the
+    // desktop calls that from inside its fatal-exception hook, which runs on the
+    // thread that faulted, but packaging here runs on whatever thread the
+    // uploader is on - one that has never logged a breadcrumb - so the
+    // per-thread lookup missed and this section shipped empty every time.
+    status += "\nThread traces:\n";
+    std::list<std::string> traceMessages;
+    TraceLog::GetAllTraceMessages(traceMessages);
+    for (auto const& a : traceMessages) {
+        status += a;
+        status += "\n";
+    }
+    return [NSString stringWithUTF8String:status.c_str()];
+}
+
+} // namespace
+
+// Internal helper. `document` may be nil. `includeUserContent` controls
+// whether the show folder XML and open sequence are copied in.
+// `destDir` is the final directory where the zip should live (caller's
+// choice — NSTemporaryDirectory for share-sheet, Library/Logs/PendingUpload
+// for auto-upload). Returns the resulting zip URL or nil.
+static NSURL* BuildLogZip(XLSequenceDocument* _Nullable document,
+                          BOOL includeUserContent,
+                          NSURL* destDir,
+                          NSString* baseNameStem,
+                          NSError** outError) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+
+    NSDateFormatter* fmt = [[NSDateFormatter alloc] init];
+    // Without en_US_POSIX, a 12-hour region rewrites HH to hh plus a localised
+    // AM/PM marker, putting non-ASCII bytes in the zip name.
+    fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    fmt.dateFormat = @"yyyyMMdd-HHmmss";
+    fmt.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+    NSString* stamp = [fmt stringFromDate:[NSDate date]];
+    NSString* baseName = [NSString stringWithFormat:@"%@-%@", baseNameStem, stamp];
+
+    NSURL* tmpDir = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
+    NSURL* stagingDir = [tmpDir URLByAppendingPathComponent:baseName isDirectory:YES];
+    [fm removeItemAtURL:stagingDir error:nil];
+    if (![fm createDirectoryAtURL:stagingDir
+        withIntermediateDirectories:YES
+                         attributes:nil
+                              error:outError]) {
+        return nil;
+    }
+
+    NSString* libraryPath = NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
+    NSString* logsDir = [libraryPath stringByAppendingPathComponent:@"Logs"];
+
+    // 1. Log files (xLights.log + rotated siblings — but not the
+    //    Diagnostics subdirectory, which we copy separately so it
+    //    keeps its own folder in the zip).
+    NSPredicate* logFilter = [NSPredicate predicateWithBlock:
+        ^BOOL(NSString* path, NSDictionary*) {
+            if ([path hasPrefix:@"Diagnostics"]) return NO;
+            if ([path hasPrefix:@"Sessions"]) return NO;
+            return [path.lastPathComponent hasPrefix:@"xLights"];
+        }];
+    CopyTreeIntoStaging(fm, logsDir, stagingDir.path, logFilter);
+
+    // 2. MetricKit JSON payloads. For the auto-upload path, snapshot
+    //    the list before copying so we can delete exactly those files
+    //    after the zip is durable in PendingUpload/. Otherwise the
+    //    JSONs accumulate forever and ship in every subsequent zip,
+    //    inflating crash counts on the server (the same payload gets
+    //    re-uploaded under each later build's filename).
+    NSString* diagnosticsSrc = [logsDir stringByAppendingPathComponent:@"Diagnostics"];
+    NSString* diagnosticsDst = [stagingDir.path stringByAppendingPathComponent:@"Diagnostics"];
+    NSArray<NSString*>* diagnosticsToPrune = nil;
+    if (!includeUserContent) {
+        diagnosticsToPrune = [[fm contentsOfDirectoryAtPath:diagnosticsSrc
+                                                      error:nil] copy];
+    }
+    CopyTreeIntoStaging(fm, diagnosticsSrc, diagnosticsDst, nil);
+
+    // 3. Show folder XML. Verbatim for the share-sheet package, which the user
+    //    asked for and can inspect; redacted for the automatic upload, which
+    //    leaves without anyone seeing that particular report. Being able to open
+    //    a submitted report as a show folder is the most useful thing the
+    //    desktop reports carry, and a redacted copy still opens - it keeps the
+    //    structure, the names and every cross-reference, and rewrites only the
+    //    absolute paths and addresses.
+    if (document.showFolderPath.length > 0) {
+        NSString* showStaging = [stagingDir.path stringByAppendingPathComponent:@"show"];
+        [fm createDirectoryAtPath:showStaging
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:nil];
+        for (NSString* name in @[@"xlights_networks.xml", @"xlights_rgbeffects.xml"]) {
+            NSString* src = [document.showFolderPath stringByAppendingPathComponent:name];
+            if (![fm fileExistsAtPath:src]) {
+                continue;
+            }
+            NSString* dst = [showStaging stringByAppendingPathComponent:name];
+            if (includeUserContent) {
+                [fm copyItemAtPath:src toPath:dst error:nil];
+                continue;
+            }
+            bool const isNetworks = [name isEqualToString:@"xlights_networks.xml"];
+            ShowRedactor::Stats stats;
+            if (ShowRedactor::RedactFileToFile(src.UTF8String, dst.UTF8String, isNetworks, &stats)) {
+                spdlog::info("Redacted {} for upload: {} path(s), {} address(es)",
+                             name.UTF8String, stats.paths, stats.addresses);
+            } else {
+                // Never fall back to copying the original: a redaction that
+                // failed is exactly when the unredacted file must not ship.
+                spdlog::warn("Could not redact {}; omitting it from the upload", name.UTF8String);
+                [fm removeItemAtPath:dst error:nil];
+            }
+        }
+    }
+    if (includeUserContent) {
+        if (document.isSequenceLoaded && document.currentSequencePath.length > 0) {
+            NSString* seqPath = document.currentSequencePath;
+            if ([fm fileExistsAtPath:seqPath]) {
+                NSString* dst = [stagingDir.path
+                    stringByAppendingPathComponent:seqPath.lastPathComponent];
+                [fm copyItemAtPath:seqPath toPath:dst error:nil];
+            }
+        }
+    }
+
+    // 3b. Launch-phase timing + show size. Both are counts/durations only —
+    //     no names, paths or user content — so they ride the automatic upload
+    //     as well as the full payload. They are what make a slow-launch report
+    //     attributable: MetricKit says a launch was slow, these say which
+    //     phase and how big the show was.
+    for (NSString* sidecar in @[@"xlLaunchTiming.txt",
+                                @"xlLaunchTiming.prev.txt",
+                                @"xlShowStats.txt"]) {
+        NSString* src = [logsDir stringByAppendingPathComponent:sidecar];
+        if ([fm fileExistsAtPath:src]) {
+            [fm copyItemAtPath:src
+                        toPath:[stagingDir.path stringByAppendingPathComponent:sidecar]
+                         error:nil];
+        }
+    }
+
+    // 4. Sidecar text files.
+    [DeviceInfoText() writeToFile:[stagingDir.path stringByAppendingPathComponent:@"device-info.txt"]
+                       atomically:YES
+                         encoding:NSUTF8StringEncoding
+                            error:nil];
+    [ThreadsText() writeToFile:[stagingDir.path stringByAppendingPathComponent:@"threads.txt"]
+                    atomically:YES
+                      encoding:NSUTF8StringEncoding
+                         error:nil];
+
+    // Every thread's stack right now. After a crash this describes the new
+    // session rather than the dead one (xLightsCrash.prev.txt carries that),
+    // but it is what makes a hang or a runaway-CPU report actionable - those
+    // never crash, so there is no other moment to catch them at.
+    std::string allThreads = xlCrashCapture::BuildAllThreadsReport();
+    if (!allThreads.empty()) {
+        [[NSString stringWithUTF8String:allThreads.c_str()]
+            writeToFile:[stagingDir.path stringByAppendingPathComponent:@"all-threads.txt"]
+             atomically:YES
+               encoding:NSUTF8StringEncoding
+                  error:nil];
+    }
+
+    // 4b. The same report.json the desktop crash handler writes: the metadata
+    //     a consumer would otherwise have to recover by parsing the upload
+    //     filename. `platform` in particular is a token this code chooses,
+    //     never a name the OS or the toolkit picks and is free to change.
+    {
+        NSDateFormatter* iso = [[NSDateFormatter alloc] init];
+        iso.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        iso.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss'Z'";
+        iso.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+        NSDictionary* info = [NSBundle mainBundle].infoDictionary ?: @{};
+        std::string showGuid;
+        if (document.showFolderPath.length > 0) {
+            showGuid = ShowGuid::ReadFromShowFolder(document.showFolderPath.UTF8String);
+        }
+#if TARGET_CPU_ARM64
+        NSString* arch = @"arm64";
+#elif TARGET_CPU_X86_64
+        NSString* arch = @"x86_64";
+#else
+        NSString* arch = @"unknown";
+#endif
+        NSDictionary* meta = @{
+            @"schema": @1,
+            @"app": @"xLights-iPad",
+            @"platform": @"ipad",
+            @"version": (info[@"CFBundleShortVersionString"] ?: @""),
+            @"build": (info[@"CFBundleVersion"] ?: @""),
+            @"arch": arch,
+            @"device": DeviceModelIdentifier(),
+            @"os_version": [[UIDevice currentDevice] systemVersion],
+            // The share-sheet package is the user asking for their own logs;
+            // the staged one leaves on its own after a crash, hang or spike.
+            @"session_type": includeUserContent ? @"package" : @"diagnostics",
+            @"show_guid": [NSString stringWithUTF8String:showGuid.c_str()],
+            @"timestamp_utc": [iso stringFromDate:[NSDate date]],
+        };
+        NSData* json = [NSJSONSerialization dataWithJSONObject:meta
+                                                       options:NSJSONWritingPrettyPrinted
+                                                         error:nil];
+        [json writeToFile:[stagingDir.path stringByAppendingPathComponent:@"report.json"]
+               atomically:YES];
+    }
+
+    // 5. Zip via NSFileCoordinator. .forUploading hands back a
+    //    temporary zipped copy of the directory; copy it into the
+    //    caller's chosen destination directory.
+    [fm createDirectoryAtURL:destDir
+   withIntermediateDirectories:YES
+                    attributes:nil
+                         error:nil];
+
+    __block NSURL* finalZip = nil;
+    __block NSError* blockErr = nil;
+    NSError* coordErr = nil;
+    NSFileCoordinator* coord = [[NSFileCoordinator alloc] init];
+    [coord coordinateReadingItemAtURL:stagingDir
+                              options:NSFileCoordinatorReadingForUploading
+                                error:&coordErr
+                           byAccessor:^(NSURL* zippedURL) {
+        NSURL* dst = [destDir URLByAppendingPathComponent:
+            [NSString stringWithFormat:@"%@.zip", baseName]];
+        [fm removeItemAtURL:dst error:nil];
+        NSError* copyErr = nil;
+        if ([fm copyItemAtURL:zippedURL toURL:dst error:&copyErr]) {
+            finalZip = dst;
+        } else {
+            blockErr = copyErr;
+        }
+    }];
+
+    [fm removeItemAtURL:stagingDir error:nil];
+
+    // The JSONs are now durable inside `finalZip`; PendingUpload/
+    // is retried on every launch until the server returns 200. Delete
+    // the source files so a later MetricKit delivery doesn't re-ship
+    // them under a new build-tagged filename.
+    if (finalZip && diagnosticsToPrune) {
+        for (NSString* name in diagnosticsToPrune) {
+            [fm removeItemAtPath:[diagnosticsSrc stringByAppendingPathComponent:name]
+                           error:nil];
+        }
+        // Same reasoning as the JSONs above: the crash record is durable inside
+        // the zip now, so drop the source or every later bundle reships it and
+        // one crash is counted once per upload.
+        [fm removeItemAtPath:[logsDir stringByAppendingPathComponent:
+                                          XLCrashCapture.pendingRecordFileName]
+                       error:nil];
+    }
+
+    if (coordErr) {
+        if (outError) *outError = coordErr;
+        return nil;
+    }
+    if (blockErr && outError) {
+        *outError = blockErr;
+    }
+    return finalZip;
+}
+
+@implementation XLLogPackager
+
++ (nullable NSURL*)packageLogsForDocument:(nullable XLSequenceDocument*)document
+                                    error:(NSError* _Nullable* _Nullable)outError {
+    NSURL* tmpDir = [NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES];
+    return BuildLogZip(document,
+                       /*includeUserContent=*/YES,
+                       tmpDir,
+                       @"xLights-logs",
+                       outError);
+}
+
++ (nullable NSURL*)stagePendingUploadWithError:(NSError* _Nullable* _Nullable)outError {
+    NSString* libraryPath = NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
+    NSURL* pendingDir = [NSURL fileURLWithPath:
+        [[libraryPath stringByAppendingPathComponent:@"Logs"]
+                stringByAppendingPathComponent:@"PendingUpload"]
+                                   isDirectory:YES];
+    return BuildLogZip(/*document=*/nil,
+                       /*includeUserContent=*/NO,
+                       pendingDir,
+                       @"xLights-diag",
+                       outError);
+}
+
+@end

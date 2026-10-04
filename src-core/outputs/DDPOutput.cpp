@@ -1,0 +1,552 @@
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+// Based on the protocol as described at http://www.3waylabs.com/ddp/
+
+
+#include "DDPOutput.h"
+#include <cassert>
+#include "OutputManager.h"
+#include "UtilFunctions.h"
+#include "../models/OutputModelManager.h"
+#include "ControllerEthernet.h"
+#include "../utils/ip_utils.h"
+
+#include <log.h>
+#include <chrono>
+#include <thread>
+
+#ifndef EXCLUDEDISCOVERY
+#include "discovery/Discovery.h"
+#endif
+
+#pragma region Static Variables
+bool DDPOutput::__initialised = false;
+#pragma endregion
+
+#pragma region Private Functions
+void DDPOutput::OpenDatagram() {
+
+    
+
+    if (_datagram != nullptr) return;
+
+    _datagram = new sockets::UDPSocket();
+    if (_datagram == nullptr) {
+        spdlog::error("Error creating DDP datagram object for {}.", _ip);
+        _ok = false;
+    }
+
+    if (!_datagram->Bind(GetForceLocalIP(), 0, false)) {
+        spdlog::error("Error initialising DDP datagram for {}: {}", _ip, _datagram->LastError());
+        delete _datagram;
+        _datagram = nullptr;
+        _ok = false;
+    }
+}
+#pragma endregion
+
+#pragma region Constructors and Destructors
+DDPOutput::DDPOutput(pugi::xml_node node, bool isActive) : IPOutput(node, isActive) {
+
+    _fulldata = nullptr;
+    _channelsPerPacket = node.attribute("ChannelsPerPacket").as_int(0);
+    _keepChannelNumbers = node.attribute("KeepChannelNumbers").as_int(0);
+    _sequenceNum = 0;
+    _datagram = nullptr;
+    memset(_data, 0, sizeof(_data));
+}
+
+DDPOutput::DDPOutput() : IPOutput() {
+
+    _universe = 64001;
+    _fulldata = nullptr;
+    _channelsPerPacket = 1440;
+    _channels = 512;
+    _sequenceNum = 0;
+    _datagram = nullptr;
+    _keepChannelNumbers = true;
+    memset(_data, 0, sizeof(_data));
+}
+
+DDPOutput::DDPOutput(const DDPOutput& from) :
+    IPOutput(from)
+{
+    _fulldata = nullptr;
+    _channelsPerPacket = from._channelsPerPacket;
+    _keepChannelNumbers = from._keepChannelNumbers;
+    _sequenceNum = 0;
+    _datagram = nullptr;
+    memset(_data, 0, sizeof(_data));
+}
+
+DDPOutput::~DDPOutput() {
+
+    if (_datagram != nullptr) delete _datagram;
+    if (_fulldata != nullptr) delete _fulldata;
+}
+
+pugi::xml_node DDPOutput::Save(pugi::xml_node parent) {
+
+    pugi::xml_node node = parent.append_child("network");
+
+    node.append_attribute("ChannelsPerPacket") = _channelsPerPacket;
+    node.append_attribute("KeepChannelNumbers") = _keepChannelNumbers ? "1" : "0";
+    IPOutput::SaveAttr(node);
+
+    return node;
+}
+#pragma endregion
+
+#pragma region Static Functions
+void DDPOutput::SendSync(const std::string& localIP) {
+
+    
+    static uint8_t syncdata[DDP_SYNCPACKET_LEN];
+    static std::string syncremoteIp;
+    static sockets::UDPSocket* syncdatagram = nullptr;
+
+    if (!__initialised) {
+        spdlog::debug("Initialising DDP Sync.");
+
+        __initialised = true;
+        memset(syncdata, 0x00, sizeof(syncdata));
+        syncdata[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_PUSH;
+        syncdata[2] = 0x80;
+        syncdata[3] = DDP_ID_DISPLAY;
+
+        if (syncdatagram != nullptr) {
+            delete syncdatagram;
+        }
+
+        syncdatagram = new sockets::UDPSocket();
+        if (syncdatagram == nullptr) {
+            spdlog::error("Error creating DDP sync datagram object.");
+            return;
+        }
+
+        if (!syncdatagram->Bind(localIP, 0, false) || !syncdatagram->SetBroadcast(true)) {
+            spdlog::error("Error initialising DDP sync datagram: {}", syncdatagram->LastError());
+            delete syncdatagram;
+            syncdatagram = nullptr;
+            return;
+        }
+
+        // broadcast ... this is not really in line with the spec
+        // I should use the net mask but i cant find a good way to do that
+        //syncremoteAddr.BroadcastAddress();
+        syncremoteIp = "255.255.255.255";
+        spdlog::debug("DDP Sync broadcasting to {}.", syncremoteIp);
+    }
+
+    if (syncdatagram != nullptr) {
+        syncdatagram->SendTo(syncremoteIp, DDP_PORT, syncdata, DDP_SYNCPACKET_LEN);
+    }
+}
+
+#ifndef EXCLUDEDISCOVERY
+nlohmann::json DDPOutput::Query(const std::string& ip, uint8_t type, const std::string& localIP) {
+    
+
+    nlohmann::json val;
+
+    uint8_t packet[DDP_DISCOVERPACKET_LEN];
+    memset(&packet, 0x00, sizeof(packet));
+
+    packet[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_QUERY;
+    packet[3] = type;
+
+    auto datagram = std::make_unique<sockets::UDPSocket>();
+    if (!datagram->Open()) {
+        spdlog::error("Error opening DDP query datagram.");
+        return val;
+    }
+
+    if (!localIP.empty()) {
+        if (!datagram->Bind(localIP, 0, false)) {
+            spdlog::error("Error binding DDP query datagram to {}: {}", localIP, datagram->LastError());
+            return val;
+        }
+     } else {
+        if (!datagram->Bind("", 0, false)) {
+            spdlog::error("Error binding DDP query datagram.");
+            return val;
+        }
+     }
+
+    spdlog::debug("DDP query using {}", localIP.empty() ? "any address" : localIP.c_str());
+    spdlog::info("DDP sending query packet.");
+
+    datagram->SendTo(ip, DDP_PORT, packet, DDP_DISCOVERPACKET_LEN);
+    spdlog::info("DDP sent query packet. Sleeping for 1 second.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    uint8_t response[1024];
+
+    int lastread = 1;
+
+    while (lastread > 0) {
+        auto sw_start = std::chrono::steady_clock::now();
+        spdlog::debug("Trying to read DDP query response packet.");
+        memset(&response, 0x00, sizeof(response));
+        if (!datagram->WaitForData(2000)) {
+            lastread = 0;
+        } else {
+            lastread = datagram->ReceiveFrom(response, sizeof(response));
+        }
+
+        if (lastread > 10) {
+            spdlog::debug(" Read done. {} bytes {}ms", lastread, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - sw_start).count());
+
+            if (response[3] == type) {
+                spdlog::debug(" Valid response.");
+                spdlog::debug((const char*)&response[10]);
+                try {
+                    val = nlohmann::json::parse(std::string(reinterpret_cast<char*>(&response[10])));
+                 } catch (std::exception& e) {
+                    spdlog::error("DDP Query JSON Parse error {}", e.what());
+                 }
+             }
+         }
+        spdlog::info("DDP Query Done looking for response.");
+     }
+
+    spdlog::info("DDP Query Finished.");
+
+    return val;
+}
+#endif
+
+void DDPOutput::PrepareDiscovery(Discovery &discovery) {
+
+    
+
+    discovery.AddBroadcast(DDP_PORT, [&discovery](uint8_t *response, int len, const std::string &fromIP) {
+        
+        if (response[0] & DDP_FLAGS1_QUERY) {
+            //getting my own QUERY request, ignore
+            return;
+        }
+        if (response[3] == DDP_ID_STATUS) {
+            spdlog::debug(" Valid DDP Status Response.");
+            spdlog::debug((const char*)&response[10]);
+
+            std::string ip = fromIP;
+            DiscoveredData *dd = discovery.FindByIp(ip);
+            if (dd == nullptr) {
+                ControllerEthernet *controller = new ControllerEthernet(discovery.GetOutputManager(), false);
+                controller->SetProtocol(OUTPUT_DDP);
+                spdlog::debug("   IP {}", (const char*)ip.c_str());
+                controller->SetIP(ip);
+                controller->SetId(1);
+                controller->EnsureUniqueId();
+                controller->SetName("DDP_" + ip);
+                dd = discovery.AddController(controller);
+            }
+            ControllerEthernet* controller = dd->controller;
+
+            if (controller == nullptr){
+                spdlog::warn("Unsupported DDP controller");
+            }
+            else {
+                try {
+                    nlohmann::json val = nlohmann::json::parse(std::string(reinterpret_cast<char*>(&response[10])));
+                    if (val.contains("status")) {
+                        std::string name = "";
+                        if (val["status"].contains("man")) {
+                            name = val["status"]["man"].get<std::string>();
+                            dd->SetVendor(name);
+                        }
+                        if (val["status"].contains("mod")) {
+                            if (name != "") {
+                                name += "-";
+                            }
+                            name +=
+                                val["status"]["mod"].get<std::string>();
+                            dd->SetModel(
+                                val["status"]["mod"].get<std::string>());
+                        }
+                        if (val["status"].contains("ver")) {
+                            if (name != "") {
+                                name += "-";
+                            }
+                            name +=
+                                val["status"]["ver"].get<std::string>();
+                            dd->version =
+                                val["status"]["ver"].get<std::string>();
+                        }
+                        dd->description = name;
+                        controller->SetDescription(name);
+                    }
+                } catch (const std::exception&) {
+                }  
+            }
+            uint8_t packet[DDP_DISCOVERPACKET_LEN];
+            memset(&packet, 0x00, sizeof(packet));
+            packet[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_QUERY;
+            packet[3] = DDP_ID_CONFIG;
+            // send a unicast CONFIG request in case it doesn't respond to config
+            // on the broadcast
+            discovery.SendData(DDP_PORT, ip, packet, DDP_DISCOVERPACKET_LEN);
+        } else if (response[3] == DDP_ID_CONFIG) {
+            spdlog::debug(" Valid DDP Config Response.");
+            spdlog::debug((const char*)&response[10]);
+
+            std::string ip = fromIP;
+            DiscoveredData *dd = discovery.FindByIp(ip);
+            if (dd == nullptr) {
+                ControllerEthernet *controller = new ControllerEthernet(discovery.GetOutputManager(), false);
+                controller->SetProtocol(OUTPUT_DDP);
+                spdlog::debug("   IP {}", (const char*)ip.c_str());
+                controller->SetIP(ip);
+                controller->SetId(1);
+                controller->EnsureUniqueId();
+                controller->SetName("DDP_" + ip);
+                dd = discovery.AddController(controller);
+            }
+            ControllerEthernet* controller = dd->controller;
+            controller->SetProtocol(OUTPUT_DDP);
+            if (controller == nullptr){
+                spdlog::warn("Unsupported DDP controller");
+            }
+            else {
+                try {
+                    nlohmann::json val = nlohmann::json::parse(std::string(reinterpret_cast<char*>(&response[10])));
+
+                    if (val.contains("config") && val["config"].contains("ports")) {
+                        int channels = 0;
+                        auto ports = val["config"]["ports"];
+                        for (size_t i = 0; i < ports.size(); i++) {
+                            auto ts =
+                                strtol(
+                                    val["config"]["ports"][i]["ts"].get<std::string>().c_str(), nullptr, 10) +
+                                1;
+                            auto l =
+                                strtol(
+                                    val["config"]["ports"][i]["l"].get<std::string>().c_str(), nullptr, 10);
+                            channels += ts * l * 3;
+                        }
+                        controller->GetOutputs().front()->SetChannels(
+                            channels);
+                    } else {
+                        controller->GetOutputs().front()->SetChannels(512);
+                    }
+                } catch (const std::exception&) {
+                }                
+            }
+        } else {
+            // non discovery response packet
+            spdlog::info("DDP Discovery strange packet received.");
+        }
+    });
+
+    spdlog::info("Sending DDP Discovery.");
+    uint8_t packet[DDP_DISCOVERPACKET_LEN];
+    memset(&packet, 0x00, sizeof(packet));
+    packet[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_QUERY;
+    packet[3] = DDP_ID_STATUS;
+    discovery.SendBroadcastData(DDP_PORT, packet, DDP_DISCOVERPACKET_LEN);
+    packet[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_QUERY;
+    packet[3] = DDP_ID_CONFIG;
+    discovery.SendBroadcastData(DDP_PORT, packet, DDP_DISCOVERPACKET_LEN);
+}
+#pragma endregion
+
+#pragma region Getters and Setters
+std::string DDPOutput::GetLongDescription() const {
+    std::string res = "";
+
+    if (!_enabled) res += "INACTIVE ";
+    res += "DDP {" + GetUniverseString() + "} ";
+    res += "(" + std::to_string(GetStartChannel()) + "-" + std::to_string(GetEndChannel()) + ") ";
+
+    return res;
+}
+#pragma endregion
+
+#pragma region Start and Stop
+bool DDPOutput::Open() {
+
+    
+
+    if (!_enabled) return true;
+    if (_ip == "") return false;
+    if (!ip_utils::IsIPValid(GetResolvedIP())) return false;
+
+    if (_fulldata != nullptr) delete _fulldata;
+    _fulldata = (uint8_t*)malloc(_channels);
+    if (_fulldata == nullptr) {
+        spdlog::error("Problem allocating {} memory for DDP output '{}'.", _channels, GetIP());
+        _ok = false;
+        return false;
+    }
+    AllOff();
+
+    _ok = IPOutput::Open();
+    
+    if (_fppProxyOutput) {
+        return _ok;
+    }
+
+    memset(_data, 0x00, sizeof(_data));
+
+    _data[2] = 0;
+    _data[3] = DDP_ID_DISPLAY;
+    _sequenceNum = 1;
+
+    OpenDatagram();
+
+    _remoteIp = GetResolvedIP();
+
+    return _ok;
+}
+
+void DDPOutput::Close() {
+
+    if (_datagram != nullptr) {
+        delete _datagram;
+        _datagram = nullptr;
+    }
+    if (_fulldata != nullptr) {
+        free(_fulldata);
+        _fulldata = nullptr;
+    }
+    IPOutput::Close();
+}
+#pragma endregion
+
+#pragma region Frame Handling
+void DDPOutput::StartFrame(long msec) {
+
+    
+
+    if (!_enabled) return;
+    if (_fppProxyOutput) {
+        _fppProxyOutput->StartFrame(msec);
+    } else if (_datagram == nullptr && OutputManager::IsRetryOpen()) {
+        OpenDatagram();
+        if (_ok) {
+            spdlog::debug("DDPOutput: Open retry successful");
+        }
+    }
+
+    _timer_msec = msec;
+}
+
+void DDPOutput::EndFrame(int suppressFrames) {
+
+    if (!_enabled || _suspend || _tempDisable) return;
+    if (_fppProxyOutput) {
+        _fppProxyOutput->EndFrame(suppressFrames);
+        return;
+    }
+    if (_datagram == nullptr) return;
+
+    if (_changed || NeedToOutput(suppressFrames)) {
+        int32_t index = 0;
+        int32_t chan = _keepChannelNumbers ? (_startChannel - 1) : 0;
+        int32_t tosend = _channels;
+
+        while (tosend > 0) {
+            int32_t thissend = (tosend < _channelsPerPacket) ? tosend : _channelsPerPacket;
+
+            if (__initialised) {
+                // sync packet will boadcast later
+                _data[0] = DDP_FLAGS1_VER1;
+            }
+            else {
+                if (tosend == thissend) {
+                    _data[0] = DDP_FLAGS1_VER1 | DDP_FLAGS1_PUSH;
+                }
+                else {
+                    _data[0] = DDP_FLAGS1_VER1;
+                }
+            }
+
+            _data[1] = (_data[1] & 0xF0) + _sequenceNum;
+
+            _data[4] = (chan & 0xFF000000) >> 24;
+            _data[5] = (chan & 0xFF0000) >> 16;
+            _data[6] = (chan & 0xFF00) >> 8;
+            _data[7] = (chan & 0xFF);
+
+            _data[8] = (thissend & 0xFF00) >> 8;
+            _data[9] = thissend & 0x00FF;
+
+            memcpy(&_data[10], _fulldata + index, thissend);
+
+            _datagram->SendTo(_remoteIp, DDP_PORT, &_data[0], DDP_PACKET_LEN - (1440 - thissend));
+            _sequenceNum = _sequenceNum == 15 ? 1 : _sequenceNum + 1;
+
+            tosend -= thissend;
+            index += thissend;
+            chan += thissend;
+        }
+        FrameOutput();
+    } else {
+        SkipFrame();
+    }
+}
+#pragma endregion
+
+#pragma region Data Setting
+void DDPOutput::SetOneChannel(int32_t channel, unsigned char data) {
+
+    if (!_enabled) return;
+
+    if (_fppProxyOutput) {
+        _fppProxyOutput->SetOneChannel(channel, data);
+        return;
+    }
+    if (_fulldata == nullptr) return;
+
+    if ((channel < _channels) && (*(_fulldata + channel) != data)) {
+        *(_fulldata + channel) = data;
+        _changed = true;
+    }
+}
+
+void DDPOutput::SetManyChannels(int32_t channel, unsigned char* data, size_t size) {
+
+    if (!_enabled) return;
+
+    if (_fppProxyOutput) {
+        _fppProxyOutput->SetManyChannels(channel, data, size);
+        return;
+    }
+    if (_fulldata == nullptr) return;
+    if (channel < 0 || channel >= _channels) return;
+
+    size_t chs = (std::min)((int32_t)size, _channels - channel);
+
+    if (memcmp(_fulldata + channel, data, chs) == 0) {
+        // nothing changed
+    } else {
+        memcpy(_fulldata + channel, data, chs);
+        _changed = true;
+    }
+}
+
+void DDPOutput::AllOff() {
+
+    if (!_enabled) return;
+
+    if (_fppProxyOutput) {
+        _fppProxyOutput->AllOff();
+        return;
+    }
+    if (_fulldata == nullptr) return;
+    memset(_fulldata, 0x00, _channels);
+    _changed = true;
+}
+#pragma endregion
+

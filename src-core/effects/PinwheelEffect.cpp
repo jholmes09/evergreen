@@ -1,0 +1,366 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "PinwheelEffect.h"
+
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+
+#include "../../include/pinwheel-16.xpm"
+#include "../../include/pinwheel-24.xpm"
+#include "../../include/pinwheel-32.xpm"
+#include "../../include/pinwheel-48.xpm"
+#include "../../include/pinwheel-64.xpm"
+#include <log.h>
+
+#include "Parallel.h"
+
+#include "ispc/PinwheelFunctions.ispc.h"
+
+int PinwheelEffect::sArmsDefault = 3;
+int PinwheelEffect::sArmSizeDefault = 100;
+int PinwheelEffect::sArmSizeMin = 0;
+int PinwheelEffect::sArmSizeMax = 400;
+int PinwheelEffect::sTwistDefault = 0;
+int PinwheelEffect::sTwistMin = -360;
+int PinwheelEffect::sTwistMax = 360;
+int PinwheelEffect::sThicknessDefault = 0;
+int PinwheelEffect::sThicknessMin = 0;
+int PinwheelEffect::sThicknessMax = 100;
+int PinwheelEffect::sSpeedDefault = 10;
+int PinwheelEffect::sSpeedMin = 0;
+int PinwheelEffect::sSpeedMax = 50;
+int PinwheelEffect::sOffsetDefault = 0;
+int PinwheelEffect::sOffsetMin = 0;
+int PinwheelEffect::sOffsetMax = 360;
+std::string PinwheelEffect::sStyleDefault = "New Render Method";
+bool PinwheelEffect::sRotationDefault = true;
+std::string PinwheelEffect::s3DDefault = "None";
+int PinwheelEffect::sXCDefault = 0;
+int PinwheelEffect::sXCMin = -100;
+int PinwheelEffect::sXCMax = 100;
+int PinwheelEffect::sYCDefault = 0;
+int PinwheelEffect::sYCMin = -100;
+int PinwheelEffect::sYCMax = 100;
+
+PinwheelEffect::PinwheelEffect(int id) : RenderableEffect(id, "Pinwheel", pinwheel_16, pinwheel_24, pinwheel_32, pinwheel_48, pinwheel_64)
+{
+    //ctor
+}
+
+PinwheelEffect::~PinwheelEffect()
+{
+    //dtor
+}
+
+void PinwheelEffect::OnMetadataLoaded()
+{
+    sArmsDefault = GetIntDefault("Pinwheel_Arms", sArmsDefault);
+    sArmSizeDefault = GetIntDefault("Pinwheel_ArmSize", sArmSizeDefault);
+    sArmSizeMin = (int)GetMinFromMetadata("Pinwheel_ArmSize", sArmSizeMin);
+    sArmSizeMax = (int)GetMaxFromMetadata("Pinwheel_ArmSize", sArmSizeMax);
+    sTwistDefault = GetIntDefault("Pinwheel_Twist", sTwistDefault);
+    sTwistMin = (int)GetMinFromMetadata("Pinwheel_Twist", sTwistMin);
+    sTwistMax = (int)GetMaxFromMetadata("Pinwheel_Twist", sTwistMax);
+    sThicknessDefault = GetIntDefault("Pinwheel_Thickness", sThicknessDefault);
+    sThicknessMin = (int)GetMinFromMetadata("Pinwheel_Thickness", sThicknessMin);
+    sThicknessMax = (int)GetMaxFromMetadata("Pinwheel_Thickness", sThicknessMax);
+    sSpeedDefault = GetIntDefault("Pinwheel_Speed", sSpeedDefault);
+    sSpeedMin = (int)GetMinFromMetadata("Pinwheel_Speed", sSpeedMin);
+    sSpeedMax = (int)GetMaxFromMetadata("Pinwheel_Speed", sSpeedMax);
+    sOffsetDefault = GetIntDefault("Pinwheel_Offset", sOffsetDefault);
+    sOffsetMin = (int)GetMinFromMetadata("Pinwheel_Offset", sOffsetMin);
+    sOffsetMax = (int)GetMaxFromMetadata("Pinwheel_Offset", sOffsetMax);
+    sStyleDefault = GetStringDefault("Pinwheel_Style", sStyleDefault);
+    sRotationDefault = GetBoolDefault("Pinwheel_Rotation", sRotationDefault);
+    s3DDefault = GetStringDefault("Pinwheel_3D", s3DDefault);
+    sXCDefault = GetIntDefault("PinwheelXC", sXCDefault);
+    sXCMin = (int)GetMinFromMetadata("PinwheelXC", sXCMin);
+    sXCMax = (int)GetMaxFromMetadata("PinwheelXC", sXCMax);
+    sYCDefault = GetIntDefault("PinwheelYC", sYCDefault);
+    sYCMin = (int)GetMinFromMetadata("PinwheelYC", sYCMin);
+    sYCMax = (int)GetMaxFromMetadata("PinwheelYC", sYCMax);
+}
+bool PinwheelEffect::needToAdjustSettings(const std::string& version)
+{
+    return IsVersionOlder("2026.06", version) || RenderableEffect::needToAdjustSettings(version);
+}
+
+void PinwheelEffect::adjustSettings(const std::string& version, Effect* effect, bool removeDefaults)
+{
+    if (RenderableEffect::needToAdjustSettings(version)) {
+        RenderableEffect::adjustSettings(version, effect, removeDefaults);
+    }
+    if (IsVersionOlder("2026.06", version)) {
+        SettingsMap& settings = effect->GetSettings();
+        if (!settings.Contains("E_CHOICE_Pinwheel_Style")) {
+            settings["E_CHOICE_Pinwheel_Style"] = "Old Render Method";
+        }
+    }
+}
+
+PinwheelEffect::Pinwheel3DType PinwheelEffect::to3dType(const std::string& pinwheel_3d) {
+    if (pinwheel_3d == "3D") {
+        return PW_3D;
+    } else if (pinwheel_3d == "3D Inverted") {
+        return PW_3D_Inverted;
+    } else if (pinwheel_3d == "Sweep") {
+        return PW_SWEEP;
+    }
+    return PW_3D_NONE;
+}
+
+void PinwheelEffect::Render(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+    const std::string& pinwheel_style = SettingsMap["CHOICE_Pinwheel_Style"];
+    if (pinwheel_style == "New Render Method") {
+        RenderNewMethod(effect, SettingsMap, buffer);
+    } else {
+        RenderOldMethod(effect, SettingsMap, buffer);
+    }
+}
+void PinwheelEffect::RenderNewMethod(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+    float oset = buffer.GetEffectTimeIntervalPosition();
+
+    int pinwheel_arms = SettingsMap.GetInt("SLIDER_Pinwheel_Arms", sArmsDefault);
+    if (pinwheel_arms == 0) {
+        //shouldn't happen, but just in case
+        return;
+    }
+    PinwheelData data(pinwheel_arms);
+
+    data.pinwheel_twist = GetValueCurveInt("Pinwheel_Twist", sTwistDefault, SettingsMap, oset, sTwistMin, sTwistMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pinwheel_thickness = GetValueCurveInt("Pinwheel_Thickness", sThicknessDefault, SettingsMap, oset, sThicknessMin, sThicknessMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    data.pinwheel_rotation = SettingsMap.GetBool("CHECKBOX_Pinwheel_Rotation", sRotationDefault);
+    const std::string& pinwheel_3d = SettingsMap["CHOICE_Pinwheel_3D"];
+    data.xc_adj = GetValueCurveInt("PinwheelXC", sXCDefault, SettingsMap, oset, sXCMin, sXCMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    data.yc_adj = GetValueCurveInt("PinwheelYC", sYCDefault, SettingsMap, oset, sYCMin, sYCMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pinwheel_armsize = GetValueCurveInt("Pinwheel_ArmSize", sArmSizeDefault, SettingsMap, oset, sArmSizeMin, sArmSizeMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pspeed = GetValueCurveInt("Pinwheel_Speed", sSpeedDefault, SettingsMap, oset, sSpeedMin, sSpeedMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    data.poffset = GetValueCurveInt("Pinwheel_Offset", sOffsetDefault, SettingsMap, oset, sOffsetMin, sOffsetMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+
+    data.pos = (float)((buffer.curPeriod - buffer.curEffStartPer) * pspeed * buffer.frameTimeInMs) / (float)sSpeedMax;
+    data.degrees_per_arm = 1;
+    if (pinwheel_arms > 0) data.degrees_per_arm = 360 / pinwheel_arms;
+    float armsize = (pinwheel_armsize / 100.0);
+    
+    data.pw3dType = to3dType(pinwheel_3d);
+    
+    HSVValue hsv;
+    for (int i = 0; i < data.pinwheel_arms; i++) {
+        data.colorarray[i] = (i + 1) % buffer.GetColorCount();
+        data.colorIsSpacial[i] = buffer.palette.IsSpatial(data.colorarray[i]);
+        if (data.colorIsSpacial[i]) {
+            data.hasSpacial = true;
+        }
+        buffer.palette.GetColor(data.colorarray[i], data.colorsAsColor[i]);
+        buffer.palette.GetHSV(data.colorarray[i], data.colorsAsHSV[i]);
+    }
+    
+    int xc = (int)(ceil(std::hypot(buffer.BufferWi, buffer.BufferHt) / 2));
+    data.xc_adj = (data.xc_adj * buffer.BufferWi) / 200;
+    data.yc_adj = (data.yc_adj * buffer.BufferHt) / 200;
+    
+    data.max_radius = xc * armsize;
+    if (pinwheel_thickness == 0) pinwheel_thickness = 1;
+    data.tmax = (pinwheel_thickness / 100.0) * data.degrees_per_arm;
+    
+    // Force single visible line in case width is narrower than visible
+    float pi_180 = (float)M_PI / 180.0f;
+    for (int a = 0; a < pinwheel_arms; a++) {
+        int ColorIdx = a;
+        bool isSpacial = data.colorIsSpacial[ColorIdx];
+        hsv = data.colorsAsHSV[ColorIdx];
+        xlColor color = xlColor(hsv);
+        
+        int angle = (a * data.degrees_per_arm);
+        if (data.pinwheel_rotation == 1) { // do we have CW rotation
+            angle = (270 - angle) + data.pos + data.poffset;
+        } else {
+            angle = angle - 90 - data.pos - data.poffset;
+        }
+        
+        if (data.max_radius != 0) {
+            int t2 = (int)angle % data.degrees_per_arm;
+            float round = (float)t2 / data.tmax;
+            for (float r = 0; r <= data.max_radius; r += 0.5) {
+                int degrees_twist = (r / data.max_radius) * data.pinwheel_twist;
+                int x = floor((int)(r * buffer.cos((angle + degrees_twist) * pi_180)) + data.xc_adj + buffer.BufferWi / 2);
+                int y = floor((int)(r * buffer.sin((angle + degrees_twist) * pi_180)) + data.yc_adj + buffer.BufferHt / 2);
+                if (isSpacial) {
+                    buffer.palette.GetSpatialColor(data.colorarray[ColorIdx], data.xc_adj + buffer.BufferWi / 2, data.yc_adj + buffer.BufferHt / 2,
+                                                   x, y, round, data.max_radius, color);
+                }
+                buffer.SetPixel(x, y, color);
+            }
+        }
+    }
+    
+    // Draw actual pinwheel arms
+    if (data.max_radius != 0) {
+        RenderNewArms(buffer, data);
+    }
+}
+void PinwheelEffect::RenderNewArms(RenderBuffer& buffer, PinwheelData &data) {
+    ispc::PinwheelData rdata;
+    rdata.width = buffer.BufferWi;
+    rdata.height = buffer.BufferHt;
+    rdata.pinwheel_arms = data.pinwheel_arms;
+    rdata.xc_adj = data.xc_adj;
+    rdata.yc_adj = data.yc_adj;
+    rdata.degrees_per_arm = data.degrees_per_arm;
+    rdata.pinwheel_twist = data.pinwheel_twist;
+    rdata.max_radius= data.max_radius;
+    rdata.poffset = data.poffset;
+    rdata.pw3dType = data.pw3dType;
+    rdata.pinwheel_rotation = data.pinwheel_rotation;
+    rdata.tmax = data.tmax;
+    rdata.pos = data.pos;
+    rdata.allowAlpha = buffer.allowAlpha;
+    rdata.numColors = data.colorsAsColor.size();
+    rdata.colorarray = &data.colorarray[0];
+    
+    std::vector<ispc::float3> colorsAsHSV(rdata.numColors);
+    std::vector<uint8_t> colorIsSpacial(rdata.numColors);
+    for (int x = 0; x < (int)rdata.numColors; x++) {
+        colorsAsHSV[x] = {(float)data.colorsAsHSV[x].hue, (float)data.colorsAsHSV[x].saturation, (float)data.colorsAsHSV[x].value};
+        colorIsSpacial[x] = data.colorIsSpacial[x] ? 1 : 0;
+    }
+    rdata.colorsAsColor = (ispc::uint8_t4*)&data.colorsAsColor[0];
+    rdata.colorsAsHSV = &colorsAsHSV[0];
+    rdata.colorIsSpacial = &colorIsSpacial[0];
+    rdata.bufferData = (void*)&buffer;
+    
+    // Clamp to the real allocation: GetPixelCount() can be < BufferWi*BufferHt
+    // for a variable sub-buffer, and the ISPC kernel writes unguarded.
+    int max = std::min<int>(buffer.GetPixelCount(), buffer.BufferHt * buffer.BufferWi);
+    constexpr int bfBlockSize = 4096;
+    int blocks = max / bfBlockSize + 1;
+    parallel_for(0, blocks, [&rdata, &buffer, max](int y) {
+        int start = y * bfBlockSize;
+        int end = start + bfBlockSize;
+        if (end > max) {
+            end = max;
+        }
+        PinwheelEffectStyle0(rdata, start, end, (ispc::uint8_t4 *)buffer.GetPixels());
+    });
+}
+void PinwheelEffect::RenderOldMethod(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+    float oset = buffer.GetEffectTimeIntervalPosition();
+
+    int pinwheel_arms = SettingsMap.GetInt("SLIDER_Pinwheel_Arms", sArmsDefault);
+    int pinwheel_twist = GetValueCurveInt("Pinwheel_Twist", sTwistDefault, SettingsMap, oset, sTwistMin, sTwistMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pinwheel_thickness = GetValueCurveInt("Pinwheel_Thickness", sThicknessDefault, SettingsMap, oset, sThicknessMin, sThicknessMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pinwheel_rotation = SettingsMap.GetBool("CHECKBOX_Pinwheel_Rotation", sRotationDefault);
+    const std::string& pinwheel_3d = SettingsMap["CHOICE_Pinwheel_3D"];
+    int xc_adj = GetValueCurveInt("PinwheelXC", sXCDefault, SettingsMap, oset, sXCMin, sXCMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int yc_adj = GetValueCurveInt("PinwheelYC", sYCDefault, SettingsMap, oset, sYCMin, sYCMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pinwheel_armsize = GetValueCurveInt("Pinwheel_ArmSize", sArmSizeDefault, SettingsMap, oset, sArmSizeMin, sArmSizeMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int pspeed = GetValueCurveInt("Pinwheel_Speed", sSpeedDefault, SettingsMap, oset, sSpeedMin, sSpeedMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int poffset = GetValueCurveInt("Pinwheel_Offset", sOffsetDefault, SettingsMap, oset, sOffsetMin, sOffsetMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+
+    double pos = (double)((buffer.curPeriod - buffer.curEffStartPer) * pspeed * buffer.frameTimeInMs) / (double)sSpeedMax;
+    int degrees_per_arm = 1;
+    if (pinwheel_arms > 0) degrees_per_arm = 360 / pinwheel_arms;
+    float armsize = (pinwheel_armsize / 100.0);
+    
+    Pinwheel3DType pw3dType = to3dType(pinwheel_3d);
+    
+    // Old Render Method
+    size_t colorcnt = buffer.GetColorCount();
+
+    int xc = (int)(std::max(buffer.BufferWi, buffer.BufferHt) / 2);
+
+    for (int a = 1; a <= pinwheel_arms; a++) {
+        int ColorIdx = a % colorcnt;
+
+        int base_degrees;
+        if (pinwheel_rotation == 1) {
+            base_degrees = (a - 1) * degrees_per_arm + pos + poffset; // yes
+        } else {
+            base_degrees = (a - 1) * degrees_per_arm - pos + poffset; // no, we are CCW
+        }
+
+        float tmax = (pinwheel_thickness / 100.0) * degrees_per_arm / 2.0;
+        for (float t = base_degrees - tmax; t <= base_degrees + tmax; t++) {
+            Draw_arm(buffer, t, xc * armsize, pinwheel_twist, xc_adj, yc_adj, ColorIdx, pw3dType, (t - base_degrees + tmax) / (2 * tmax + 1));
+        }
+    }
+}
+
+void PinwheelEffect::adjustColor(PinwheelEffect::Pinwheel3DType pw3dType, xlColor& color, HSVValue& hsv, bool allowAlpha, float round) {
+    switch (pw3dType) {
+    case PW_3D:
+        if (allowAlpha) {
+            color.alpha = 255.0 - 255.0 * std::abs(round - 0.5) / 0.5;
+        } else {
+            hsv.value = 1.0 - hsv.value * std::abs(round - 0.5) / 0.5;
+            color = hsv;
+        }
+        break;
+    case PW_3D_Inverted:
+        if (allowAlpha) {
+            color.alpha = 255.0 * std::abs(round - 0.5) / 0.5;
+        } else {
+            hsv.value = hsv.value * std::abs(round - 0.5) / 0.5;
+            color = hsv;
+        }
+        break;
+    case PW_SWEEP:
+        if (allowAlpha) {
+            color.alpha = (int)(255.0 * round);
+        } else {
+            hsv.value = (float)hsv.value * round;
+            color = hsv;
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void PinwheelEffect::Draw_arm(RenderBuffer& buffer,
+    int base_degrees, int max_radius, int pinwheel_twist,
+    int xc_adj, int yc_adj, int colorIdx, PinwheelEffect::Pinwheel3DType pw3dType, float round)
+{
+    //
+    float pi_180 = (float)M_PI / 180.0f;
+
+    int xc = buffer.BufferWi / 2;
+    int yc = buffer.BufferHt / 2;
+    xc = xc + ((xc_adj * xc) / 100); // xc_adj is from -100 to 100
+    yc = yc + ((yc_adj * yc) / 100);
+
+    bool isSpatial = buffer.palette.IsSpatial(colorIdx);
+    xlColor color;
+    HSVValue hsv;
+    if (!isSpatial) {
+        buffer.palette.GetColor(colorIdx, color);
+        hsv = color.asHSV();
+        adjustColor(pw3dType, color, hsv, buffer.allowAlpha, round);
+    }
+
+    if (max_radius != 0) {
+        for (float r = 0.0f; r <= max_radius; r += 0.5f) {
+            int degrees_twist = (r / max_radius) * pinwheel_twist;
+            int degrees = base_degrees + degrees_twist;
+            float phi = degrees * pi_180;
+            int x = r * buffer.cos(phi) + xc;
+            int y = r * buffer.sin(phi) + yc;
+
+            if (isSpatial) {
+                buffer.palette.GetSpatialColor(colorIdx, xc, yc, x, y, round, max_radius, color);
+                hsv = color.asHSV();
+                adjustColor(pw3dType, color, hsv, buffer.allowAlpha, round);
+            }
+            buffer.SetPixel(x, y, color);
+        }
+    }
+}

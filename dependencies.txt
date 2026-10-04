@@ -1,0 +1,231 @@
+This file documents the dependencies xLights has on third party libraries. Eventually I would like to get Conan.io 
+or some equivalent dependency manager implemented to manage these dependencies ... but in lieu of that a more complete set of
+documentation and some cleaning up of our repository seems in order.
+
+Library:     wxWidgets
+Usage:       Platform independence
+Link:        https://www.wxwidgets.org/
+Source:      https://github.com/wxWidgets/wxWidgets
+We use a fork with patches from: https://github.com/xLightsSequencer/wxWidgets
+Version:     Latest Tag [wxWidgets 3.2.x plus a few patches]
+License:     wxWindows Library License
+Strategy:    Windows: prebuilt in the dependency bundle. Set WXWIDGETS_ROOT to override with a local build. macOS uses the bundle; Linux builds it via the Makefile.
+
+Library:     libcurl
+Usage:       HTTPS
+Link:        https://curl.haxx.se/libcurl/
+Source:      https://github.com/curl/curl
+Last Pulled: Feb13, 2019
+Version:     7.80.0 [latest available as at Nov 2021 is 7.80.0]
+License:     MIT Style but more complex
+Strategy:    Windows and macOS use the dependency bundle; Linux uses the system package.
+
+Library:     kiss_fft
+Usage:       FFT for audio analysis
+Link:        https://sourceforge.net/projects/kissfft/
+Source:      https://sourceforge.net/p/kissfft/code/ci/default/tree/
+Last Pulled: ?
+Version:     ? [latest available as at Jan 2021 is 1.3.0 released Jul 2012]
+Licence:     BSD
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     libavcodec/ffmpeg
+Usage:       Audio and Video processing
+Link:        https://www.ffmpeg.org/
+Source:      https://github.com/FFmpeg/FFmpeg
+Last Pulled: April 10, 2024 - Windows binaries directly from https://www.gyan.dev/ffmpeg/builds/
+Version:     6.1.1
+License:     LGPL
+Strategy:    Windows and macOS use the dependency bundle; Linux uses the system package.
+
+Library:     SDL
+Usage:       Audio playback
+Link:        https://www.libsdl.org/
+Source:      http://hg.libsdl.org/SDL
+Last Pulled: 23/6/2018
+Version:     2.0.8 [latest available as at Jan 2021 is 2.0.14]
+License:     zlib
+Strategy:    Windows and macOS use the dependency bundle; Linux uses the system package.
+
+Library:     Vamp-host SDK
+Usage:       Audio analysis
+Link:        http://vamp-plugins.org/develop.html
+Source:      https://code.soundsoftware.ac.uk/projects/vamp-plugin-sdk/repository
+Last Pulled: ?
+Version:     ?
+License:     New BSD
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     LiquidFun/Box2D
+Usage:       Liquid Effect
+Link:        http://google.github.io/liquidfun/
+Source:      https://github.com/google/liquidfun
+Last Pulled: ?
+Version:     1.1.0 [latest available as at Jan 2021 is 1.1.0 released July 2014]
+License:     ?
+Strategy:    Windows and macOS use the dependency bundle; Linux links the prebuilt lib/linux archive.
+
+Library:     wxJSON
+Usage:       xSchedule JSON message processing
+Link:        http://luccat.users.sourceforge.net/wxjson/
+Source:      http://svn.code.sf.net/p/wxcode/code/trunk/wxCode/components/wxjson/
+Last Pulled: ?
+Version:     ? [latest available as at Jan 2021 is 1.2 released Dec 2009]
+License:     wxWindows Library License
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     wxHTTPServer
+Usage:       xSchedule web server
+Link:        https://sourceforge.net/projects/wxhttpserver/
+Source:      https://sourceforge.net/p/wxhttpserver/code/HEAD/tree/
+Last Pulled: ?
+Version:     ? [latest available as at Jan 2021 seems to be April 2014]
+License:     GPL2
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     wxMIDI
+Usage:       Talking to midi devices
+Link:        http://wxcode.sourceforge.net/docs/wxmidi/
+Source:      https://sourceforge.net/projects/wxcode/files/Components/wxMidi/
+Last Pulled: Jan 2018
+Version:     2.0 [latest available as at Jan 2021 is 2.0 released Jan 2013]
+License:     ?
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     PortMIDI
+Usage:       Underlying library used by wxMIDI
+Link:        http://portmedia.sourceforge.net/portmidi/
+Source:      https://sourceforge.net/projects/portmedia/files/portmidi/
+Last Pulled: Jan 2018
+Version:     217 [latest available as at Jan 2021 is 217 released Oct 2010]
+License:     ?
+Strategy:    No longer used. The prebuilt Windows library was removed with the other vendored binaries; nothing in any build references it.
+
+Library:     MIDI
+Usage:       MIDI file reading for Piano effect
+Link:        http://midifile.sapp.org/
+Source:      https://github.com/craigsapp/midifile
+Last Pulled: ?
+Version:     ? [As at Jan 2021 this seems to have been last updated Jun 2020 ... I doubt we have this change included]
+License:     freeBSD
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     GLM
+Usage:       ?
+Link:        https://glm.g-truc.net/0.9.8/index.html
+Source:      https://github.com/g-truc/glm
+Last Pulled: ?
+Version:     ? [as at Jan 2021 latest version seems to be 0.9.9.8 which was released Apr 2020 ... I doubt we have this change included]
+License:     MIT License
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     Joachim Buermann Serial Port Access Code
+Usage:       Serial port access
+Link:        http://wxcode.sourceforge.net/showcomp.php?name=wxCtb
+Source:      
+Last Pulled: 
+Version:     
+License:     
+Strategy:    Code has been incorportated into Serial.cpp and heavily modified. It is not being kept up to date with source.
+
+Library:     Rene Nyffenegger Base64 Encode/Decode
+Usage:       Base64 coding
+Link:        http://renenyffenegger.ch/notes/development/Base64/Encoding-and-decoding-base-64-with-cpp
+Source:      
+Last Pulled: 
+Version:     
+License:     
+Strategy:    Code has been incorportated into UtilFunctions.cpp.
+
+Library:     Frank Thilo MD5 Hash
+Usage:       MD5 Hash
+Link:        http://www.zedwood.com/article/cpp-md5-function
+Source:      
+Last Pulled: 
+Version:     
+License:     
+Strategy:    Windows: Source files are included in the xLights repository and it is compiled into xLights statically.
+
+Library:     wxLED
+Usage:       UI element used in xFade
+Link:        http://wxcode.sourceforge.net/showcomp.php?name=wxLed
+Source:      https://forums.wxwidgets.org/download/file.php?id=263&sid=1921744d7ea05034b7406984acb0578e
+Last Pulled:
+Version:
+License:
+Strategy:    Source files are included in xLights repository and it is compiled into xFade statically
+
+Library:     libzstd
+Usage:       read/write of v2 FSEQ files
+Link:        https://github.com/facebook/zstd
+Source:      https://github.com/facebook/zstd
+Last Pulled:
+Version:	 [latest version available as at Dec 2023 is 1.5.5]
+License:     BSD
+Strategy:    Windows and macOS use the dependency bundle; Linux uses the system package
+
+Library:     zlib
+Usage:       read/write of v2 FSEQ files
+Link:        http://zlib.net/
+Source:      https://github.com/madler/zlib
+Last Pulled:
+Version:     1.2.11 [Latest version as at Jan 2021 is 1.2.11 released Jan 2017]
+License:     zlib
+Strategy:    Windows uses the dependency bundle; macOS and Linux use the system zlib
+
+Library:     libltc
+Usage:       generate and consume SMTPE timecode
+Link:        https://github.com/x42/libltc
+Source:      https://github.com/x42/libltc
+Last Pulled: 2022-02-26
+Version:     1.3.1+ [Latest version as at Jan 2021 is 1.3.1 released Apr 2019]
+License:     GNU Lesser GPL2
+Strategy:    No longer used. The submodule declaration and the prebuilt Windows library were both removed; nothing in any build references it.
+
+Library:     libxlsxwriter
+Usage:       write SpreadSheet files
+Link:        https://github.com/jmcnamara/libxlsxwriter
+Source:      https://github.com/jmcnamara/libxlsxwriter
+Last Pulled:
+Version:	 [latest version available as at Jan 2022 is 1.1.4 released Oct 2021]
+License:     BSD
+Strategy:    Windows and macOS use the dependency bundle; Linux builds the submodule. Note xLights also uses its bundled minizip for zip/unzip.
+
+Library:     WS2812FX & WLED & FastLED
+Usage:       Single strand effect FX
+Link:        https://github.com/Aircoookie/WLED
+Source:      https://github.com/Aircoookie/WLED
+Last Pulled:
+Version:	 January 2021
+License:     MIT
+Strategy:    FX.cpp and FX.h created as a merge of all dependent functions across libraries. To the degree possible the actual effect
+             algorithms are unchanged.
+
+Library:     hidapi
+Usage:       3D mouse support
+Link:        https://github.com/libusb/hidapi
+Source:      https://github.com/libusb/hidapi
+Last Pulled:
+Version:	 0.11.2
+License:     BSD/GPLv3
+Strategy:    Windows and macOS use the dependency bundle; Linux uses the system package.
+
+Library:     nanosvg
+Usage:       SVG Parser
+Link:        https://github.com/wxWidgets/nanosvg
+Source:      https://github.com/wxWidgets/nanosvg
+Last Pulled: 
+Version:     [latest version available as at April 2024]
+License:     zlib License
+Strategy:    Use WXs version to match their dependency, Header added to repository. Header only library
+
+Library:     libwebp
+Usage:       WebP image format support (required by wxWidgets)
+Link:        https://developers.google.com/speed/webp
+Source:      https://chromium.googlesource.com/webm/libwebp
+Last Pulled: 
+Version:     [Pre-compiled libraries in lib/windows64]
+License:     BSD-style License
+Strategy:    Windows: Precompiled libraries (libwebp.lib, libwebpdemux.lib) are included in the xLights repository.
+             CMake will prefer vcpkg if available (cmake -DXLIGHTS_USE_VCPKG=ON), otherwise uses vendored libs.
+             vcpkg install: vcpkg install libwebp

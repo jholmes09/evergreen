@@ -1,0 +1,803 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <source_location>
+
+//(*Headers(LayoutPanel)
+#include <wx/panel.h>
+class wxButton;
+class wxCheckBox;
+class wxChoice;
+class wxFlexGridSizer;
+class wxNotebook;
+class wxNotebookEvent;
+class wxScrollBar;
+class wxSplitterEvent;
+class wxSplitterWindow;
+class wxStaticText;
+//*)
+
+#include "shared/utils/wxCheckedListCtrl.h"
+#include <wx/srchctrl.h>
+#include <wx/regex.h>
+#include <wx/treelist.h>
+#include <wx/treectrl.h>
+#include <wx/dataview.h>
+#include <glm/glm.hpp>
+#include <pugixml.hpp>
+
+#include "models/handles/Handles.h"
+#include "models/handles/DragSession.h"
+#include "models/handles/SpaceMouseSession.h"
+
+#include "setup/ControllerConnectionDialog.h"
+#include "shared/utils/xlPropertyGrid.h"
+#include <wx/aui/aui.h>
+
+#include <algorithm>
+#include <memory>
+#include <optional>
+#include <sstream>
+#include <vector>
+#include <list>
+#include <map>
+#include <set>
+
+#include "shared/utils/wxFilterQuery.h"
+
+class xLightsFrame;
+class ModelPreview;
+class BaseObject;
+class Model;
+class ModelSet;
+class ModelGroup;
+class ModelPropertyAdapter;
+class ViewObjectPropertyAdapter;
+class ModelGroupPanel;
+class ViewObjectPanel;
+class ControllerListPanel;
+class ViewObject;
+class wxListEvent;
+class wxMouseEvent;
+class wxBitmapButton;
+class wxPropertyGrid;
+class wxPropertyGridEvent;
+class NewModelBitmapButton;
+class wxImageFileProperty;
+class wxScrolledWindow;
+class LayoutGroup;
+class impTreeItemData;
+class Motion3DEvent;
+
+wxDECLARE_EVENT(EVT_LISTITEM_CHECKED, wxCommandEvent);
+
+// Wrapper that owns a pugi::xml_document and exposes its root as a pugi::xml_node.
+// Keeps the document alive as long as this object exists.
+struct OwnedXmlNode {
+    std::shared_ptr<pugi::xml_document> _doc;
+    pugi::xml_node node() const { return _doc ? _doc->document_element() : pugi::xml_node(); }
+    operator pugi::xml_node() const { return node(); }
+    explicit operator bool() const { return _doc && _doc->document_element(); }
+};
+
+class CopyPasteBaseObject
+{
+    bool _ok = false;
+	bool _viewObject = false;
+    std::shared_ptr<pugi::xml_document> _xmlDoc;
+
+public:
+    CopyPasteBaseObject(const std::string& in);
+    CopyPasteBaseObject();
+    virtual ~CopyPasteBaseObject() = default;
+    bool IsOk() const { return _ok; }
+	bool IsViewObject() const { return _viewObject; }
+    OwnedXmlNode GetBaseObjectXml() const {
+        if (!_xmlDoc)
+            return {};
+        // Return a deep copy so callers can modify without affecting the stored XML
+        auto copy = std::make_shared<pugi::xml_document>();
+        copy->append_copy(_xmlDoc->document_element());
+        return {copy};
+    }
+    void SetBaseObject(BaseObject* model);
+    std::string Serialise() const;
+};
+
+class LayoutPanel: public wxPanel
+{
+    std::string _lastSelProp = ""; // last selected property
+
+    public:
+
+		LayoutPanel(wxWindow* parent, xLightsFrame *xlights, wxPanel* sequencer);
+		virtual ~LayoutPanel();
+
+		friend class ViewObjectPanel;
+
+		//(*Declarations(LayoutPanel)
+		wxButton* ButtonSavePreview;
+		wxCheckBox* CheckBoxOverlap;
+		wxCheckBox* CheckBox_3D;
+		wxChoice* ChoiceLayoutGroups;
+		wxFlexGridSizer* PreviewGLSizer;
+		wxFlexGridSizer* ToolSizer;
+		wxFlexGridSizer* TopBarSizer;
+		wxNotebook* Notebook_Objects;
+		wxPanel* FirstPanel;
+		wxPanel* LeftPanel;
+		wxPanel* PanelModels;
+		wxPanel* PanelObjects;
+		wxPanel* PreviewGLPanel;
+		wxPanel* SecondPanel;
+		wxScrollBar* ScrollBarLayoutHorz;
+		wxScrollBar* ScrollBarLayoutVert;
+		wxSplitterWindow* ModelSplitter;
+		wxSplitterWindow* SplitterWindow2;
+		wxStaticText* StaticText1;
+		//*)
+
+		wxStaticText* LabelDirectoriesFooter = nullptr;
+		wxBitmapButton* ButtonOpenShowFolder = nullptr;
+		void UpdateDirectoriesFooter();
+
+		// Full-tab "Loading show..." overlay shown while SetDir() synchronously
+		// rebuilds the model/controller trees and preview for a new show -
+		// that rebuild scales with show size and used to happen off-screen
+		// before Layout became the default tab; the overlay at least gives
+		// the user feedback that something is happening instead of a frozen window.
+		void ShowLoadingOverlay(const wxString& message);
+		void HideLoadingOverlay();
+
+		wxPanel* PanelGroups = nullptr;
+		wxPanel* PanelControllers = nullptr;
+
+		// Pages are identified by their window, not their label: the labels are
+		// translated, and the 3D Objects page is added/removed at runtime so
+		// positions are not stable either.
+		enum class ObjectsPage { Models, Groups, Controllers, Objects, Unknown };
+		int FindNotebookPage(ObjectsPage page) const;
+		ObjectsPage CurrentObjectsPage() const;
+		ControllerListPanel* GetControllerListPanel() const { return controllers_panel; }
+		bool IsControllersPageActive() const;
+		bool IsObjectEditable(const ViewObject* view_object) const;
+		ViewObject* SelectSingleViewObject(int x, int y);
+		void UpdateSettingsPaneForPage();
+		void UpdateControllerObjectContext();
+
+    private:
+
+		wxScrolledWindow* ViewObjectWindow = nullptr;
+		wxScrolledWindow* ModelGroupWindow = nullptr;
+        wxPanel* ModelPanelContainer = nullptr;
+        wxPanel* SettingsPaneContainer = nullptr;   // "ModelSettings" pane window: propertyEditor / ModelGroupWindow / controllerProps
+        void ShowSettingsPropGrid();
+        wxPanel* _loadingOverlay = nullptr;
+        wxStaticText* _loadingOverlayLabel = nullptr;
+        wxAuiManager* layout_mgr = nullptr;
+        wxString _savedFloatingPerspective;
+        int _savedSashPos = -1;
+        bool _auiInitialized = false;
+        void UpdateLayoutSplitter();
+        void ReapplyPaneAttributes();
+        void DockPanesOnMissingDisplays();
+        int LeftPanelMinWidth() const; // 18% of splitter width, floor kMinPaneWidth
+		wxTreeListCtrl* TreeListViewModels = nullptr;
+        wxDataViewModel* TreeListMiewInternalModel = nullptr;
+        wxTreeListCtrl* TreeListViewGroups = nullptr;
+        wxDataViewModel* TreeListGroupsInternalModel = nullptr;
+        bool ctrlFPressed = false;
+        bool ctrlshiftFPressed = false;
+
+	protected:
+
+		//(*Identifiers(LayoutPanel)
+		static const wxWindowID ID_PANEL4;
+		static const wxWindowID ID_PANEL_Objects;
+		static const wxWindowID ID_NOTEBOOK_OBJECTS;
+		static const wxWindowID ID_PANEL3;
+		static const wxWindowID ID_PANEL2;
+		static const wxWindowID ID_SPLITTERWINDOW1;
+		static const wxWindowID ID_CHECKBOX_3D;
+		static const wxWindowID ID_CHECKBOXOVERLAP;
+		static const wxWindowID ID_BUTTON_SAVE_PREVIEW;
+		static const wxWindowID ID_PANEL5;
+		static const wxWindowID ID_STATICTEXT1;
+		static const wxWindowID ID_CHOICE_PREVIEWS;
+		static const wxWindowID ID_SCROLLBAR1;
+		static const wxWindowID ID_SCROLLBAR2;
+		static const wxWindowID ID_PANEL1;
+		static const wxWindowID ID_SPLITTERWINDOW2;
+		//*)
+
+        static const long ID_TREELISTVIEW_MODELS;
+        static const long ID_TREELISTVIEW_GROUPS;
+        static const long ID_TEXTCTRL_MODEL_FILTER;
+        static const long ID_TEXTCTRL_GROUP_FILTER;
+        static const long ID_PREVIEW_REPLACEMODEL;
+        static const long ID_PREVIEW_RESET;
+        static const long ID_PREVIEW_MODELS_NOT_ON_CONTROLLER;
+        static const long ID_PREVIEW_ALIGN;
+        static const long ID_PREVIEW_MODEL_NODELAYOUT;
+        static const long ID_PREVIEW_MODEL_LOCK;
+        static const long ID_PREVIEW_MODEL_UNLOCK;
+        static const long ID_PREVIEW_MODEL_UNLINKFROMBASE;
+        static const long ID_PREVIEW_MODEL_EXPORTASCUSTOM;
+        static const long ID_PREVIEW_MODEL_EXPORTASCUSTOM3D;
+        static const long ID_PREVIEW_MODEL_CREATEGROUP;
+        static const long ID_PREVIEW_MODEL_LINKASSET;
+        static const long ID_PREVIEW_MODEL_ADDTOSET;
+        static const long ID_PREVIEW_MODEL_REMOVEFROMSET;
+        static const long ID_PREVIEW_MODEL_DELETESET;
+        static const long ID_PREVIEW_MODEL_RENAMESET;
+        static const long ID_PREVIEW_MODEL_MANAGESET;
+        static const long ID_PREVIEW_MODEL_WIRINGVIEW;
+        static const long ID_PREVIEW_MODEL_WIRETOCLOSESTCONTROLLER;
+        static const long ID_PREVIEW_MODEL_ASPECTRATIO;
+        static const long ID_PREVIEW_MODEL_EXPORTXLIGHTSMODEL;
+        static const long ID_PREVIEW_BULKEDIT;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERCONNECTION;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERNAME;
+        static const long ID_PREVIEW_BULKEDIT_SETACTIVE;
+        static const long ID_PREVIEW_BULKEDIT_SETINACTIVE;
+        static const long ID_PREVIEW_BULKEDIT_SMARTREMOTE;
+        static const long ID_PREVIEW_BULKEDIT_TAGCOLOUR;
+        static const long ID_PREVIEW_BULKEDIT_PIXELSIZE;
+        static const long ID_PREVIEW_BULKEDIT_PIXELSTYLE;
+        static const long ID_PREVIEW_BULKEDIT_TRANSPARENCY;
+        static const long ID_PREVIEW_BULKEDIT_BLACKTRANSPARENCY;
+        static const long ID_PREVIEW_BULKEDIT_SHADOWMODELFOR;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERDIRECTION;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERSTARTNULLNODES;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERENDNULLNODES;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERGAMMA;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERBRIGHTNESS;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERCOLOURORDER;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERGROUPCOUNT;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERPROTOCOL;
+        static const long ID_PREVIEW_BULKEDIT_CONTROLLERCONNECTIONINCREMENT;
+        static const long ID_PREVIEW_BULKEDIT_SMARTREMOTETYPE;
+        static const long ID_PREVIEW_BULKEDIT_PREVIEW;
+        static const long ID_PREVIEW_BULKEDIT_DIMMINGCURVES;
+        static const long ID_PREVIEW_BULKEDIT_ROTATEX;
+        static const long ID_PREVIEW_BULKEDIT_ROTATEY;
+        static const long ID_PREVIEW_BULKEDIT_ROTATEZ;
+        static const long ID_PREVIEW_ALIGN_TOP;
+        static const long ID_PREVIEW_ALIGN_BOTTOM;
+        static const long ID_PREVIEW_ALIGN_GROUND;
+        static const long ID_PREVIEW_ALIGN_LEFT;
+        static const long ID_PREVIEW_ALIGN_RIGHT;
+        static const long ID_PREVIEW_ALIGN_H_CENTER;
+        static const long ID_PREVIEW_ALIGN_V_CENTER;
+        static const long ID_PREVIEW_ALIGN_D_CENTER;
+        static const long ID_PREVIEW_ALIGN_FRONT;
+        static const long ID_PREVIEW_ALIGN_BACK;
+        static const long ID_PREVIEW_DISTRIBUTE;
+        static const long ID_PREVIEW_H_DISTRIBUTE;
+        static const long ID_PREVIEW_V_DISTRIBUTE;
+        static const long ID_PREVIEW_D_DISTRIBUTE;
+        static const long ID_PREVIEW_RESIZE;
+        static const long ID_PREVIEW_RESIZE_SAMEWIDTH;
+        static const long ID_PREVIEW_RESIZE_SAMEHEIGHT;
+        static const long ID_PREVIEW_RESIZE_SAMESIZE;
+        static const long ID_PREVIEW_RESIZE_SAMEDEPTH;
+        static const long ID_PREVIEW_DELETE_ACTIVE;
+        static const long ID_PREVIEW_RENAME_ACTIVE;
+        static const long ID_PREVIEW_MODEL_ADDPOINT;
+        static const long ID_PREVIEW_MODEL_DELETEPOINT;
+        static const long ID_PREVIEW_MODEL_ADDCURVE;
+        static const long ID_PREVIEW_MODEL_DELCURVE;
+        static const long ID_PREVIEW_MODEL_SET_SEGMENTS;
+        static const long ID_PREVIEW_SAVE_LAYOUT_IMAGE;
+        static const long ID_PREVIEW_PRINT_LAYOUT_IMAGE;
+        static const long ID_PREVIEW_SAVE_VIEWPOINT;
+        static const long ID_PREVIEW_VIEWPOINT_DEFAULT;
+        static const long ID_PREVIEW_VIEWPOINT_DEFAULT_RESTORE;
+        static const long ID_PREVIEW_VIEWPOINT2D;
+        static const long ID_PREVIEW_VIEWPOINT3D;
+        static const long ID_PREVIEW_DELETEVIEWPOINT2D;
+        static const long ID_PREVIEW_DELETEVIEWPOINT3D;
+        // Base IDs for viewpoint camera menu items (camera index added to base)
+        static const long ID_PREVIEW_CAMERA_LOAD_BASE = 18000;
+        static const long ID_PREVIEW_CAMERA_DELETE_BASE = 18500;
+        static const long ID_PREVIEW_IMPORTMODELSFROMRGBEFFECTS;
+        static const long ID_PREVIEW_IMPORT_MODELS_FROM_LORS5;
+        static const long ID_ADD_OBJECT_IMAGE;
+        static const long ID_ADD_OBJECT_GRIDLINES;
+        static const long ID_ADD_OBJECT_TERRIAN;
+        static const long ID_ADD_OBJECT_RULER;
+        static const long ID_ADD_OBJECT_MESH;
+        static const long ID_ADD_DMX_MOVING_HEAD;
+        static const long ID_ADD_DMX_GENERAL;
+        static const long ID_ADD_DMX_MOVING_HEAD_ADV;
+        static const long ID_ADD_DMX_SERVO;
+        static const long ID_ADD_DMX_SERVO_3D;
+        static const long ID_ADD_DMX_SKULL;
+        static const long ID_ADD_DMX_FLOODLIGHT;
+        static const long ID_ADD_DMX_FLOODAREA;
+        static const long ID_PREVIEW_MODEL_CAD_EXPORT;
+        static const long ID_PREVIEW_LAYOUT_DXF_EXPORT;
+        static const long ID_PREVIEW_EXPORT_FACESSTATESSUBMODELS;
+        static const long ID_PREVIEW_FLIP_HORIZONTAL;
+        static const long ID_PREVIEW_FLIP_VERTICAL;
+        static const long ID_PREVIEW_SWAP_START_END;
+        static const long ID_SET_CENTER_OFFSET;
+
+	public:
+
+		//(*Handlers(LayoutPanel)
+		void OnPreviewLeftUp(wxMouseEvent& event);
+		void OnPreviewMouseLeave(wxMouseEvent& event);
+		void OnPreviewLeftDown(wxMouseEvent& event);
+		void OnPreviewLeftDClick(wxMouseEvent& event);
+		void OnPreviewRightDown(wxMouseEvent& event);
+		void OnPreviewMouseMove(wxMouseEvent& event);
+		void OnPreviewMouseMove3D(wxMouseEvent& event);
+		void OnPreviewMouseWheel(wxMouseEvent& event);
+		void OnPreviewMouseWheelDown(wxMouseEvent& event);
+		void OnPreviewMouseWheelUp(wxMouseEvent& event);
+		void OnPreviewMagnify(wxMouseEvent& event);
+		void OnPreviewModelPopup(wxCommandEvent &event);
+		void OnCheckBoxOverlapClick(wxCommandEvent& event);
+		void OnButtonSavePreviewClick(wxCommandEvent& event);
+		void OnPropertyGridChange(wxPropertyGridEvent& event);
+		void OnPropertyGridChanging(wxPropertyGridEvent& event);
+		void SetNamePropertyInvalid(wxPGProperty* prop, bool invalid);
+		void OnModelSplitterSashPosChanged(wxSplitterEvent& event);
+		void OnSplitterWindowSashPosChanged(wxSplitterEvent& event);
+		void OnNewModelTypeButtonClicked(wxCommandEvent& event);
+		void OnCharHook(wxKeyEvent& event);
+		void OnChar(wxKeyEvent& event);
+		void OnChoiceLayoutGroupsSelect(wxCommandEvent& event);
+		void OnCheckBox_3DClick(wxCommandEvent& event);
+		void OnPreviewRotateGesture(wxRotateGestureEvent& event);
+		void OnPreviewZoomGesture(wxZoomGestureEvent& event);
+		void OnNotebook_ObjectsPageChanged(wxNotebookEvent& event);
+		//*)
+
+        void OnPreviewMotion3DButtonEvent(wxCommandEvent &event);
+        void OnPreviewMotion3D(Motion3DEvent &event);
+        void OnPropertyGridSelection(wxPropertyGridEvent& event);
+        void OnPropertyGridItemCollapsed(wxPropertyGridEvent& event);
+        void OnPropertyGridItemExpanded(wxPropertyGridEvent& event);
+        void OnPropertyGridRightClick(wxPropertyGridEvent& event);
+        void OnPropertyGridContextMenu(wxCommandEvent& event);
+        void OnModelFilterTextChanged(wxCommandEvent& event);
+        void OnModelFilterCancelBtn(wxCommandEvent& event);
+        void OnGroupFilterTextChanged(wxCommandEvent& event);
+        void OnGroupFilterCancelBtn(wxCommandEvent& event);
+        void DockAll();
+        void ResetToDefaults();
+        void HideFloatingPanes();
+        void RestoreFloatingPanes();
+        wxString GetLayoutPerspective();
+        void ApplyLayoutPerspective(const wxString& perspective);
+        void UpdateModelButtonSizes();
+        void OnLayoutPaneClose(wxAuiManagerEvent& event);
+        void DockAndRefresh(bool setModelListHeight);
+        void SaveLayoutPerspective();
+        void SaveModelsListColumns();
+
+		DECLARE_EVENT_TABLE()
+
+        void DoCopy(wxCommandEvent& event);
+        void DoCut(wxCommandEvent& event);
+        void DoPaste(wxCommandEvent& event);
+        void DoUndo(wxCommandEvent& event);
+        void RemoveSelectedModelsFromGroup();
+        void DeleteSelectedModels();
+		void DeleteSelectedObject();
+        void DeleteSelectedGroups();
+        void LockSelectedModels(bool lock);
+        void UnlinkSelectedModels();
+        void PreviewSaveImage();
+        void PreviewPrintImage();
+        void ImportModelsFromRGBEffects();
+        void ImportModelsFromLORS5();
+
+    public:
+        // True while FinalizeModel is on the stack. FinalizeModel pumps the event
+        // loop in several places while the model set is half-built, so anything
+        // reachable from that pump that walks models or the property grid must
+        // stand down until it returns.
+        static bool IsFinalizingModel();
+        bool IsNewModel(Model* m) const;
+        void ClearUndo() { undoBuffer.clear(); }
+        bool SaveEffects();
+        void UpdatePreview();
+        void SelectBaseObject(const std::string & name, bool highlight_tree = true);
+        void SelectBaseObject(BaseObject *base_object, bool highlight_tree = true);
+        void FocusModelTree();
+        void SelectModel(const std::string & name, bool highlight_tree = true);
+        void SelectModelGroupModels(ModelGroup* m, std::list<ModelGroup*>& processed);
+        void SelectModel(Model *model, bool highlight_tree = true);
+        void UnSelectAllModels(bool addBkgProps = true );
+        // Drop the model selection (preview and tree) without touching view
+        // objects, so a selected controller box keeps its selection.
+        void UnSelectModelsOnly();
+        // Begin the click-to-place import flow for a known .xmodel file (e.g. the
+        // temp model a KLightMapper scan produces). Selects the "Import Custom"
+        // tool and presets the path so the next layout click drops the model —
+        // the same placement path as importing/downloading a model.
+        void BeginImportModelFromFile(const std::string& xmodelPath);
+        void showBackgroundProperties();
+        void SelectAllModels();
+        void SetupPropGrid(BaseObject *model);
+        void AddPreviewChoice(const std::string &name);
+        ModelPreview* GetMainPreview() const {return modelPreview;}
+        bool GetBackgroundScaledForSelectedPreview();
+        int GetBackgroundBrightnessForSelectedPreview();
+        int GetBackgroundAlphaForSelectedPreview();
+        const std::string& GetCurrentLayoutGroup() const {return currentLayoutGroup;}
+        void Reset();
+        void SyncCurrentLayoutGroupFromStored();
+        void SetDirtyHiLight(bool dirty, std::source_location loc = std::source_location::current());
+        std::string GetCurrentPreview() const;
+        void SetDisplay2DBoundingBox(bool bb);
+        void SetDisplay2DGridSpacing(bool grid, long spacing);
+        void SetDisplay2DCenter0(bool bb);
+        void ReloadModelList();
+        void refreshModelList();
+        void refreshObjectList();
+        void resetPropertyGrid();
+        void updatePropertyGrid();
+        void ClearSelectedModelGroup();
+
+        void ModelGroupUpdated(ModelGroup *group);
+        bool HandleLayoutKeyBinding(wxKeyEvent& event);
+
+        void OnListCharHook(wxKeyEvent& event);
+        ModelGroup* GetSelectedModelGroup() const;
+    
+        int calculateNodeCountOfSelected();
+
+    protected:
+        struct TreeSortState {
+            unsigned col = 0;
+            bool ascending = true;
+            bool sorted = false;
+        };
+        void FreezeTreeListView(wxTreeListCtrl* tree, wxDataViewModel* internalModel, TreeSortState& sortState);
+        void ThawTreeListView(wxTreeListCtrl* tree, wxDataViewModel* internalModel, const std::list<wxTreeListItem> &toExpand, const TreeSortState& sortState);
+        void SetTreeListViewItemText(wxTreeListCtrl* tree, wxTreeListItem &item, int col, const wxString &txt);
+
+        void SaveTreeListColumns(wxTreeListCtrl* tree, const std::string& configKey);
+        std::string TreeModelName(const Model* model, bool fullname);
+        NewModelBitmapButton* AddModelButton(const std::string &type, const char *imageData[]);
+        void UpdateModelsForPreview(const std::string &group, LayoutGroup* layout_grp, std::vector<Model *> &prev_models, bool filtering );
+        void CreateModelGroupFromSelected();
+        void AddSelectedToExistingGroups();
+        void RemoveSelectedFromExistingGroups();
+        void BulkEditControllerName();
+        void BulkEditActive(bool active);
+        void BulkEditTagColour();
+        void BulkEditGroupTagColor();
+        void BulkEditPixelSize();
+        void BulkEditPixelStyle();
+        void BulkEditTransparency();
+        void BulkEditBlackTranparency();   
+        void BulkEditShadowModelFor();
+        void BulkEditControllerConnection(int type);
+        void BulkEditControllerPreview();
+        void BulkEditGroupControllerPreview();
+        void BulkEditDimmingCurves();
+        void BulkEditRotateX();
+        void BulkEditRotateY();
+        void BulkEditRotateZ();
+        void BulkEditRotateAxis(char axis);
+        void ReplaceModel();
+        void EditSubModelAlias();
+        void ShowNodeLayout();
+        void EditSubmodels();
+        void EditFaces();
+        void EditStates();
+        void EditModelData();
+        void ShowWiring();
+        void WireToClosestControllerOpenPort();
+        void ExportModelAsCAD();
+        void ExportLayoutDXF();
+        void ExportFacesStatesSubModels();
+        bool IsAllSelectedModelsArePixelProtocol() const;
+        void AddSingleModelOptionsToBaseMenu(wxMenu &menu);
+        void AddBulkEditOptionsToMenu(wxMenu* bulkEditMenu);
+        void AddModelSetOptionsToMenu(wxMenu& menu);
+        void DoLinkAsSet();
+        void DoAddSelectedToSet(const std::string& setName);
+        void DoRemoveSelectedFromSet();
+        void DoDeleteSet();
+        void DoRenameSet();
+        void DoManageSet();
+        // Returns models present in the current selection (canvas + tree).
+        std::vector<Model*> GetSelectedModelsForSetActions() const;
+        void TranslateModelSet(ModelSet* s, float delta, float (BaseObject::*getter)(), void (BaseObject::*setter)(float));
+        bool AlignSetAware(Model* model, float target, float (BaseObject::*getter)(), void (BaseObject::*setter)(float), std::set<ModelSet*>& doneSets, std::set<ModelSet*>& blockedSets);
+        void ReportBlockedSets(const std::set<ModelSet*>& blockedSets, const wxString& operation);
+        void AddAlignOptionsToMenu(wxMenu* mnuAlign);
+        void AddDistributeOptionsToMenu(wxMenu* mnuDistribute);
+        void AddResizeOptionsToMenu(wxMenu* mnuResize);
+        Model* SelectSingleModel(int x,int y);
+        Model* FindNearestModel3D(const wxMouseEvent& event);
+        bool SelectMultipleModels(int x,int y);
+        void SelectAllInBoundingRect(bool models_and_objects);
+        void HighlightAllInBoundingRect(bool models_and_objects);
+        void SetSelectedModelToGroupSelected();
+        void Nudge(int key);
+
+        int FindModelsClicked(int x,int y, std::vector<int> &found);
+        void GetMouseLocation(int x, int y, glm::vec3& ray_origin, glm::vec3& ray_direction);
+        void SetMouseStateForModels(bool value);
+
+        bool ModelMatchesFilter(Model* model) const;
+        bool GroupMatchesFilter(Model* model) const;
+        int ModelsSelectedCount() const;
+        int ViewObjectsSelectedCount() const;
+        int GetSelectedModelIndex() const;
+        Model* GetModelFromTreeItem(wxTreeListItem treeItem);
+        wxTreeListItem GetTreeItemFromModel(Model* model);
+        std::vector<Model*> GetSelectedModelsFromGroup(wxTreeListItem groupItem, bool nested = true);
+        std::vector<Model*> GetSelectedModelsForEdit(bool incSubModels = false);
+        void SetTreeModelSelected(Model* model, bool isPrimary);
+        void SetTreeGroupModelsSelected(Model* model, bool isPrimary);
+        void SetTreeSubModelSelected(Model* model, bool isPrimary);
+        void CheckModelForOverlaps(Model* model);
+        std::vector<std::list<std::string>> GetSelectedTreeModelPaths();
+        std::list<std::string> GetTreeItemPath(wxTreeListItem item);
+        wxTreeListItem GetTreeItemBranch(wxTreeListItem parent, std::string branchName);
+        void ReselectTreeModels(std::vector<std::list<std::string>> modelPaths);
+        void SelectModelInTree(Model* modelToSelect, bool preserveFilter = false);
+        void SelectBaseObjectInTree(BaseObject* baseObjectToSelect);
+        void UnSelectModelInTree(Model* modelToUnSelect);
+        void UnSelectBaseObjectInTree(BaseObject* baseObjectToUnSelect);
+        void UnSelectAllModelsInTree();
+        std::list<BaseObject*> GetSelectedBaseObjects() const;
+        void PreviewModelAlignWithGround();
+        void PreviewModelAlignTops();
+        void PreviewModelAlignBottoms();
+        void PreviewModelAlignLeft();
+        void PreviewModelAlignRight();
+        void PreviewModelAlignFronts();
+        void PreviewModelAlignBacks();
+        void PreviewModelAlignHCenter();
+        void PreviewModelAlignVCenter();
+        void PreviewModelAlignDCenter();
+        void PreviewModelHDistribute();
+        void PreviewModelVDistribute();
+        void PreviewModelDDistribute();
+        void PreviewModelResize(bool sameWidth, bool sameHeight, bool sameDepth);
+        void PreviewModelFlipV();
+        void PreviewModelFlipH();
+        Model *CreateNewModel(const std::string &type) const;
+
+        bool _firstTreeLoadModels = true;
+        bool _firstTreeLoadGroups = true;
+        bool m_dragging = false;
+        bool m_creating_bound_rect = false;
+        int m_bound_start_x = 0;
+        int m_bound_start_y = 0;
+        int m_bound_end_x = 0;
+        int m_bound_end_y = 0;
+        bool m_3d_lasso_shift_continuous = false;  // shift was still held when last 3D lasso ended
+        bool m_3d_lasso_fresh_start = false;       // current 3D lasso clears prior selection
+        // Hover state: the handle the cursor is currently over.
+        // Cleared (nullopt) when the cursor is not on any handle.
+        std::optional<handles::Id> m_over_handle;
+        // Trailing-vertex counter for polyline create. Distinct from
+        // `m_over_handle` because the two have disjoint lifetimes and
+        // need different representations. Init -1 (NO_HANDLE).
+        int m_polyline_create_handle = -1;
+        bool m_moving_handle = false;
+        // Set by ProcessLeftMouseClick3D on every call to reflect whether
+        // *this* click's ray actually hit the CentreCycle handle (the orange
+        // marker at a model's centre) -- as opposed to
+        // GetActiveHandleId()==CentreCycle, which stays true afterward since
+        // CentreCycle is the default active handle whenever nothing more
+        // specific is active. OnPreviewLeftDClick reads this right after
+        // simulating the click to decide whether to suppress the edit dialog.
+        bool m_lastClickWasCentreCycle = false;
+        bool m_wheel_down = false;
+        bool m_polyline_active = false;
+        bool m_pending_deselect_click = false;
+        int m_previous_mouse_x = 0;
+        int m_previous_mouse_y = 0;
+		int mPointSize = 2;
+        int mHitTestNextSelectModelIndex = 0;
+        int mNumGroups = 0;
+        bool mPropGridActive = true;
+        wxTreeListItems selectedTreeGroups;
+        wxTreeListItems selectedTreeModels;
+        wxTreeListItems selectedTreeSubModels;
+
+        xlPropertyGrid *propertyEditor = nullptr;
+        bool updatingProperty = false;
+        BaseObject *selectedBaseObject = nullptr;
+        std::unique_ptr<ModelPropertyAdapter> _propertyAdapter;
+        std::unique_ptr<ViewObjectPropertyAdapter> _viewObjectAdapter;
+        BaseObject *highlightedBaseObject = nullptr;
+        wxTreeListItem selectedPrimaryTreeItem = nullptr;
+        bool selectionLatched = false;
+        // Previous hover state, used to detect transitions so
+        // MouseOverHandle is only called on change.
+        std::optional<handles::Id> over_handle;
+        glm::vec3 last_centerpos = {0,0,0};
+        glm::vec3 last_worldrotate = {0,0,0};
+        glm::vec3 last_worldscale = {0,0,0};
+
+        // descriptor-based drag session. Non-null while a
+        // new-API drag is in progress; legacy `MoveHandle3D` path
+        // is bypassed in mouse-move/up when this is set.
+        std::unique_ptr<handles::DragSession> m_dragSession;
+
+        // SpaceMouse 6-DOF session. Held across consecutive
+        // EVT_MOTION3D frames so per-frame Apply() calls accumulate
+        // on the same handle. Reset whenever selection changes or
+        // SpaceMouse goes idle (we'll drop it when no events arrive
+        // for one frame — see OnPreviewMotion3D).
+        std::unique_ptr<handles::SpaceMouseSession> m_spaceMouseSession;
+        BaseObject* m_spaceMouseTarget = nullptr;
+
+        void clearPropGrid();
+        bool stringPropsVisible = false;
+        bool controllerConnectionVisible = true;
+        bool appearanceVisible = false;
+        bool sizeVisible = false;
+        bool dimensionsVisible = false;
+        bool colSizesSet = false;
+        bool layersVisible = false;
+        std::vector<NewModelBitmapButton*> buttons;
+        NewModelBitmapButton *selectedButton = nullptr;
+        NewModelBitmapButton *obj_button = nullptr;
+        std::string _lastXlightsModel = "";
+        std::string selectedDmxModelType;
+        Model *_newModel = nullptr;
+        ModelGroupPanel *model_grp_panel = nullptr;
+        ViewObjectPanel *objects_panel = nullptr;
+        ControllerListPanel* controllers_panel = nullptr;
+        wxWindow* controllerProps = nullptr;
+        std::string currentLayoutGroup = "Default";
+        LayoutGroup* pGrp = nullptr;
+
+        std::string lastModelName;
+
+        class UndoStep {
+        public:
+            std::string type;
+            std::string model;
+            std::string key;
+            std::string data;
+            std::string models;
+            std::string objects;
+        };
+        std::vector<UndoStep> undoBuffer;
+        void CreateUndoPoint(const std::string &type, const std::string &model, const std::string &key = "", const std::string &data = "");
+        // Pushes one "All" undo point the first time it is called and flips
+        // `taken`. Model Set handlers prompt part-way through their mutation
+        // loops, so the snapshot has to wait until a change is actually about
+        // to happen or a cancel would leave an empty undo step behind.
+        void CreateSetUndoPointOnce(bool& taken, const std::string& modelName);
+
+        // Returns true only if selectedBaseObject is currently a live pointer in
+        // either AllModels (incl. submodels) or AllObjects. Performs pointer-address
+        // comparison only, never dereferences selectedBaseObject - so it is safe to
+        // call when the cached pointer may already be dangling (e.g. after a modal
+        // dialog cancelled mid-edit and tore down the model it was editing). When it
+        // returns false the caller should treat the selection as cleared.
+        bool IsSelectedBaseObjectValid() const;
+    public:
+        xLightsFrame *xlights = nullptr;
+        void UpdateModelList(bool full_refresh);
+        void UpdateModelList(bool full_refresh, std::vector<Model*> &modelList);
+        void RefreshLayout();
+        void RenderLayout();
+        std::string GetSelectedModelName() const;
+        bool Is3d() const;
+        void Set3d(bool is3d);
+        xlPropertyGrid* GetPropertyEditor() const { return propertyEditor; }
+
+    private:
+        struct TreeChanColumns {
+            int startChan = 1;
+            int endChan = 2;
+            int contConn = 3;
+        };
+        TreeChanColumns modelsTreeCols;
+        TreeChanColumns groupsTreeCols;
+
+        ModelPreview *modelPreview = nullptr;
+        wxImage *background = nullptr;
+        wxString backgroundFile = "";
+        wxString previewBackgroundFile;
+        bool previewBackgroundScaled = false;
+        int previewBackgroundBrightness = 100;
+        int previewBackgroundAlpha = 100;
+        wxPanel* main_sequencer = nullptr;
+        wxVector<wxBitmapBundle> m_imageList;
+
+        bool editing_models = true;
+        bool is_3d = false;
+        bool m_mouse_down = false;
+        BaseObject* last_selection = nullptr;
+        BaseObject* last_highlight = nullptr;
+        int m_last_mouse_x = 0;
+        int m_last_mouse_y = 0;
+        bool mouse_state_set = false;
+
+        void OnSelectionChanged(wxTreeListEvent& event);
+        void HandleSelectionChanged();
+        void OnItemContextMenu(wxTreeListEvent& event);
+
+        static const long ID_MNU_REMOVE_MODEL_FROM_GROUP;
+        static const long ID_MNU_DELETE_MODEL;
+        static const long ID_MNU_DELETE_MODEL_GROUP;
+        static const long ID_MNU_DELETE_EMPTY_MODEL_GROUPS;
+        static const long ID_MNU_DELETE_ALL_ALIASES;
+        static const long ID_MNU_RENAME_MODEL_GROUP;
+        static const long ID_MNU_CLONE_MODEL_GROUP;
+        static const long ID_MNU_MAKESCVALID;
+        static const long ID_MNU_MAKEALLSCVALID;
+        static const long ID_MNU_MAKEALLSCNOTOVERLAPPING;
+        static const long ID_MNU_ADD_MODEL_GROUP;
+        static const long ID_MNU_ADD_TO_EXISTING_GROUPS;
+        static const long ID_MNU_REMOVE_FROM_EXISTING_GROUPS;
+        static const long ID_MNU_BULKEDIT_GROUP_TAGCOLOR;
+        static const long ID_MNU_BULKEDIT_GROUP_PREVIEW;
+        static const long ID_MNU_EDIT_SUBMODEL_ALIAS;
+        void OnModelsPopup(wxCommandEvent& event);
+        LayoutGroup* GetLayoutGroup(const std::string& name);
+		const wxString& GetBackgroundImageForSelectedPreview();
+        void SwitchChoiceToCurrentLayoutGroup();
+        void DeleteCurrentPreview();
+        void RenameCurrentPreview();
+        void ShowPropGrid(bool show);
+        void SetCurrentLayoutGroup(const std::string& group);
+        void FinalizeModel();
+        void SelectBaseObject3D();
+        void ProcessLeftMouseClick3D(wxMouseEvent& event);
+        wxTreeListCtrl* CreateTreeListCtrl(long style, wxPanel* panel, long id, const wxString& windowName, const std::string& colOrderKey, const wxString& nameColTitle, TreeChanColumns& cols);
+        int AddModelToTree(wxTreeListCtrl* tree, const TreeChanColumns& cols, Model *model, wxTreeListItem* parent, bool expanded, std::list<wxTreeListItem> &toExpand, int nativeOrder, bool fullName = false);
+        void refreshOneModelList(wxTreeListCtrl* tree, wxDataViewModel* internalModel, const TreeChanColumns& cols);
+        wxTreeListCtrl* ActiveModelTree() const;
+        void RenameModelInTree(Model* model, const std::string& new_name);
+        void DisplayAddObjectPopup();
+        void OnAddObjectPopup(wxCommandEvent& event);
+        void AddObjectButton(wxMenu& mnu, const long id, const std::string &name, const char *icon[]);
+        void DisplayAddDmxPopup();
+        void OnAddDmxPopup(wxCommandEvent& event);
+        void SelectViewObject(ViewObject *v, bool highlight_tree = true);
+        std::string ImportModelsFromPreview(std::list<impTreeItemData*> models, wxString const& layoutGroup, std::set<std::string> const& importing, bool includeEmptyGroups, float srcPerUnit = 0.0f);
+        std::string FindNextModelNameAfterDelete(const wxArrayString& deletedNames) const;
+        int GetColumnIndex(const std::string& name) const;
+        wxSearchCtrl* ModelFilterCtrl = nullptr;
+        wxString _filterString;
+        wxFilterQuery _filterQuery;
+
+        wxSearchCtrl* GroupFilterCtrl = nullptr;
+        wxString _groupFilterString;
+        wxFilterQuery _groupFilterQuery;
+
+        static bool MatchesFilter(Model* model, const wxString& filterString, const wxFilterQuery& query);
+
+        class ModelListComparator : public wxTreeListItemComparator
+        {
+        public:
+            ModelListComparator() { xlights = nullptr; };
+            virtual ~ModelListComparator() {};
+            virtual int Compare(wxTreeListCtrl *treelist, unsigned column, wxTreeListItem first, wxTreeListItem second) override;
+            int SortElementsFunction(wxTreeListCtrl *treelist, wxTreeListItem item1, wxTreeListItem item2, unsigned sortColumn);
+            void SetFrame(xLightsFrame* frame) {xlights = frame;}
+       private:
+            xLightsFrame* xlights = nullptr;
+        };
+        ModelListComparator comparator;
+
+        bool zoom_gesture_active = false;
+        bool rotate_gesture_active = false;
+};

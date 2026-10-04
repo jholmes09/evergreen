@@ -1,0 +1,125 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <cstdint>
+#include <list>
+#include <string>
+#include <vector>
+
+class AudioManager;
+class Effect;
+class EffectManager;
+class IModelPreview;
+class JobPool;
+class Model;
+class OutputModelManager;
+class PreviewCamera;
+class SequenceElements;
+class TimingElement;
+class UICallbacks;
+enum class HEADER_INFO_TYPES;
+
+// Abstract interface replacing direct xLightsFrame* dependencies in
+// render/, effects/, and models/ code.  xLightsFrame implements this
+// so existing callers can be migrated one at a time.
+
+class RenderContext {
+public:
+    virtual ~RenderContext() = default;
+
+    // ---- directory / file management ----
+    virtual const std::string& GetShowDirectory() const = 0;
+    virtual const std::string& GetFseqDirectory() const = 0;
+    virtual const std::list<std::string>& GetMediaFolders() const = 0;
+
+    virtual bool IsInShowFolder(const std::string& file) const = 0;
+    virtual bool IsInShowOrMediaFolder(const std::string& file) const = 0;
+    virtual std::string MoveToShowFolder(const std::string& file,
+                                         const std::string& subdirectory,
+                                         bool reuse = false) = 0;
+    virtual std::string MakeRelativePath(const std::string& file) const = 0;
+
+    // ---- sequence state ----
+    virtual SequenceElements& GetSequenceElements() = 0;
+    virtual bool IsSequenceLoaded() const { return false; }
+    virtual bool IsSequencerInitialized() const { return false; }
+    virtual void MarkRgbEffectsChanged() {}
+    virtual AudioManager* GetCurrentMediaManager() const = 0;
+    virtual const std::string& GetHeaderInfo(HEADER_INFO_TYPES type) const = 0;
+
+    // ---- model access ----
+    virtual Model* GetModel(const std::string& name) const = 0;
+
+    // Generation counter that changes on any model add/replace/delete/clear.
+    // RenderEngine::BuildRenderTree folds this into its change-count gate so
+    // the cached render tree can never hold a freed Model*.
+    virtual unsigned int GetModelGeneration() const = 0;
+
+    // ---- layout group names (for model layout group assignment) ----
+    virtual std::vector<std::string> GetLayoutGroupNames() const { return {}; }
+
+    // ---- managers ----
+    virtual EffectManager& GetEffectManager() = 0;
+    virtual OutputModelManager* GetOutputModelManager() = 0;
+    virtual JobPool* GetJobPool() { return nullptr; }
+
+    // ---- rendering control ----
+    virtual bool AbortRender(int maxTimeMs = 60000) = 0;
+    // Whether any render job is in flight. Unlike AbortRender this only asks -
+    // it never waits and never pumps the event loop - so it is safe to call
+    // from inside a mutation that must not re-enter the UI.
+    virtual bool IsRenderDone() { return true; }
+    virtual void RenderEffectForModel(const std::string& model,
+                                      int startms,
+                                      int endms,
+                                      bool clear = false) = 0;
+
+    // Request a re-render WITHOUT rendering synchronously on the caller's
+    // thread. RenderEffectForModel runs the render pipeline inline and is only
+    // safe at the top of the event loop; calling it from deep inside a settings
+    // mutation (e.g. Effect::IncrementChangeCount, which holds the effect's
+    // settingsLock) deadlocks against the render worker threads that need that
+    // lock. The desktop overrides this to post the render to the event loop so
+    // it runs once the lock is released. Headless contexts render synchronously
+    // by design, so the default falls back to RenderEffectForModel.
+    virtual void RequestRenderForModel(const std::string& model,
+                                       int startms,
+                                       int endms) {
+        RenderEffectForModel(model, startms, endms);
+    }
+    virtual TimingElement* AddTimingElement(const std::string& name,
+                                            const std::string& subType = "") = 0;
+
+    // ---- preview / camera access (for 3D render buffer calculation) ----
+    virtual IModelPreview* GetHousePreview() const { return nullptr; }
+    virtual PreviewCamera* GetNamedCamera3D(const std::string& /*name*/) { return nullptr; }
+
+    // Pixel size whose ASPECT RATIO drives the "Per Preview" 3D projection
+    // (glm::perspective(45deg, w/h, ...)). Sourced from the show's stored render
+    // aspect (falling back to the virtual preview canvas) rather than any live
+    // on-screen preview window, so desktop, iPad, and headless render Per-Preview
+    // identically and reproducibly. Only the ratio matters.
+    virtual void GetRenderPreviewSize(int& w, int& h) const { w = 1280; h = 720; }
+
+    // ---- status / timer (empty defaults for headless) ----
+    virtual void SetLoadingStatusText(const std::string& /*text*/) {}
+    virtual void StartOutputTimer() {}
+
+    // ---- misc ----
+    virtual void SuspendAutoSave(bool suspend) = 0;
+    virtual bool IsLowDefinitionRender() const { return false; }
+    virtual bool GetEnablePositionZones() const { return true; }
+    virtual bool GetShowZoneIndicator() const { return false; }
+
+    // ---- UI callbacks (nullptr when running headless) ----
+    virtual UICallbacks* GetUICallbacks() { return nullptr; }
+};

@@ -1,0 +1,76 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "BaseObject.h"
+#include "ModelScreenLocation.h"
+#include "ViewObjectManager.h"
+
+class IModelPreview;
+class xlGraphicsProgram;
+class xlGraphicsContext;
+
+class ViewObject : public BaseObject
+{
+public:
+    ViewObject(const ObjectManager &manager);
+    virtual ~ViewObject();
+
+    virtual std::string GetDimension() const override { return ""; }
+    void Setup() override;
+    void AddASAPWork(uint32_t work, const std::string& from) override;
+    virtual void InitModel() = 0;
+
+    void ReloadModel() override {
+        GetBaseObjectScreenLocation().Reload();
+        Setup();
+    }
+
+    bool GetIs3dOnly() const { return only_3d; }
+
+    virtual const ModelScreenLocation &GetObjectScreenLocation() const = 0;
+    virtual ModelScreenLocation &GetObjectScreenLocation() = 0;
+
+    virtual bool Draw(IModelPreview* preview, xlGraphicsContext *ctx, xlGraphicsProgram *solid, xlGraphicsProgram *transparent, bool allowSelected = false) { return false; }
+
+    const ObjectManager& GetObjectManager() const { return objectManager; }
+
+protected:
+    // Most view objects (terrain, gridlines, meshes) only make sense in a 3D
+    // preview and stay 3D-only. Subclasses that are meaningful in 2D clear this
+    // so the preview's draw loop includes them.
+    void SetIs3dOnly(bool b) { only_3d = b; }
+
+private:
+    const ObjectManager& objectManager;
+    bool only_3d {true};
+};
+
+template <class ScreenLocation>
+class ObjectWithScreenLocation : public ViewObject {
+public:
+    virtual const ModelScreenLocation &GetObjectScreenLocation() const {
+        return screenLocation;
+    }
+    virtual ModelScreenLocation &GetObjectScreenLocation() {
+        return screenLocation;
+    }
+    virtual const ModelScreenLocation &GetBaseObjectScreenLocation() const {
+        return screenLocation;
+    }
+    virtual ModelScreenLocation &GetBaseObjectScreenLocation() {
+        return screenLocation;
+    }
+protected:
+    ObjectWithScreenLocation(const ViewObjectManager &manager) : ViewObject(manager) {}
+    virtual ~ObjectWithScreenLocation() {}
+    ScreenLocation screenLocation;
+};

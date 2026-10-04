@@ -1,0 +1,148 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "Model.h"
+
+class PolyLineModel : public ModelWithScreenLocation<PolyPointScreenLocation>
+{
+public:
+    PolyLineModel(const ModelManager& manager);
+    virtual ~PolyLineModel();
+
+    virtual int GetLightsPerNode() const override { return _lightsPerNode; }
+    bool UsesBufCoordsForModelPreview() const override { return _maxH > 1; }
+    virtual int GetStrandLength(int strand) const override;
+    virtual int MapToNodeIndex(int strand, int node) const override;
+
+    int GetPolyLineSize(int polyLineLayer) const;
+    virtual bool SupportsExportAsCustom() const override { return false; }
+    virtual bool SupportsWiringView() const override { return false; }
+    virtual bool SupportsSwapStartEnd() const override { return true; }
+    virtual void SwapStartEnd() override;
+    virtual int GetNumStrands() const override;
+    virtual const std::vector<std::string>& GetBufferStyles() const override;
+    virtual void InitRenderBufferNodes(const std::string& type, const std::string& camera, const std::string& transform, std::vector<NodeBaseClassPtr>& Nodes, int& BufferWi, int& BufferHi, int stagger, bool deep = false) const override;
+    virtual int GetNumPhysicalStrings() const override;
+    virtual int GetNumStrings() const override{ return _strings; }
+    virtual int NodesPerString() const override;
+    virtual int NodesPerString(int string) const override;
+
+    virtual void InsertHandle(int after_handle, float zoom, int scale) override;
+    virtual void DeleteHandle(int handle) override;
+    void AddHandle();
+
+    virtual void SetStringStartChannels(int NumberOfStrings, int StartChannel, int ChannelsPerString) override;
+
+    virtual bool IsNodeFirst(int node) const override;
+
+    bool HasAlternateNodes() const { return _alternateNodes; }
+    int GetDropPoints() const { return _numDropPoints; }
+    int GetNumSegments() const { return _numSegments; }
+    std::vector<int> GetSegmentsSizes() const { return _polyLineSizes;}
+    std::vector<std::string> GetCorners() const { return _polyCorner; }
+    [[nodiscard]] std::string GetDropPattern() const { return _dropPatternString; }
+    void SetDropPattern(const std::string & pattern);
+
+    bool AreSegsExpanded() const { return _segsCollapsed; }
+    void SetSegsCollapsed(bool val) { _segsCollapsed = val; }
+    void SetRawSegmentSize(int idx, int val) { _polyLineSizes[idx] = val; }
+
+    void Accept(BaseObjectVisitor& visitor) const override { return visitor.Visit(*this); }
+
+    float GetModelHeight() const { return _height; }
+    void SetNumStrings(int strings) { _strings = strings; }
+    void SetModelHeight(float height) { _height = height; }
+    void SetAlternateNodes(bool val) { _alternateNodes = val; }
+    void SetNumSegments(int val) { _polyLineSizes.resize(val); _polyLeadOffset.resize(val); _polyTrailOffset.resize(val); _polyLineSegDropSizes.resize(val); _polyCorner.resize(val+1); }
+    void SetSegmentSize(int idx, int val);
+    void SetLeadOffset(int idx, float val) { _polyLeadOffset[idx] = val; }
+    void SetTrailOffset(int idx, float val) { _polyTrailOffset[idx] = val; }
+    void SetCornerString( int idx, const std::string & corner) { _polyCorner[idx] = corner; }
+    [[nodiscard]] bool GetAutoDistribute() const { return _autoDistributeLights; }
+    void SetAutoDistribute(bool val) { _autoDistributeLights = val; }
+    void SetLightsPerNode(int val) { _lightsPerNode = val; }
+    [[nodiscard]] int GetTotalLightCount() const { return _totalLightCount; }
+    void SetTotalLightCount(int val) { _totalLightCount = val; }
+    void ClearPolyLineCreate() { _creatingNewPolyLine = false; }
+
+    const std::string StartNodeAttrName(int idx) const override
+    {
+        return "PolyNode" + std::to_string(idx + 1); // a space between "String" and "%i" breaks the start channels listed in Indiv Start Chans
+    }
+
+    const std::string SegAttrName(int idx) const
+    {
+        return "Seg" + std::to_string(idx + 1);
+    }
+
+    const std::string CornerAttrName(int idx) const
+    {
+        return "Corner" + std::to_string(idx + 1);
+    }
+
+protected:
+    static std::vector<std::string> POLYLINE_BUFFER_STYLES;
+    virtual void InitModel() override;
+
+    struct xlPolyPoint {
+        float x;
+        float y;
+        float z;
+        float length;
+        mutable bool has_curve;
+        mutable BezierCurveCubic3D* curve;
+        mutable glm::mat4* matrix;
+    };
+
+    void DistributeLightsEvenly(       std::vector<xlPolyPoint>& pPos,
+                                 const std::vector<int>&         dropSizes,
+                                 const float&                    mheight,
+                                 const int                       maxH,
+                                 const int                       numLights );
+
+    void DistributeLightsAcrossIndivSegments(       std::vector<xlPolyPoint>& pPos,
+                                              const std::vector<int>&         dropSizes,
+                                              const float&                    mheight,
+                                              const int                       maxH );
+
+    void DistributeLightsAcrossSegment( const int                       segment,
+                                              size_t&                   idx,
+                                              std::vector<xlPolyPoint>& pPos,
+                                        const std::vector<int>&         dropSizes,
+                                              unsigned int&             drop_index,
+                                        const float&                    mheight,
+                                              int&                      xpos,
+                                        const int                       maxH,
+                                        const bool                      isCurve );
+
+    void ParseDropSizes();
+
+    float _totalLength = 0.0f;
+    int _numSegments = 0;
+    std::vector<int> _polyLineSizes;
+    std::vector<float> _polyLeadOffset;
+    std::vector<float> _polyTrailOffset;
+    bool _segsCollapsed = true;
+    bool _autoDistributeLights = true;
+    bool _creatingNewPolyLine = true;
+    std::vector<int> _polyLineSegDropSizes;
+    std::vector<int> _dropSizes;
+    std::string _dropPatternString = "1";
+    unsigned int _numDropPoints = 0;
+    float _height = 1.0f;
+    bool _alternateNodes = false;
+    int _lightsPerNode = 1;
+    int _totalLightCount = 0;
+    int _strings = 1;
+    unsigned int _maxH = 0;
+    std::vector<std::string> _polyCorner;
+};

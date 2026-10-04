@@ -1,0 +1,165 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <deque>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <string>
+
+class Effect;
+class IRenderProgressSink;
+class Job;
+class PixelBufferClass;
+class JobPool;
+class Model;
+class RenderCache;
+class RenderContext;
+class RenderProgressInfo;
+class RenderTreeData;
+class SequenceData;
+class SequenceElements;
+class SettingsMap;
+
+// Platform-neutral render orchestration engine.
+// Owns the render tree and job tracking.  All effects run on render-pool
+// threads; ShaderEffect uses GLContextManager::ExecuteOnGLThread to
+// serialize GL work onto a dedicated worker on Windows.
+// xLightsFrame creates one of these and delegates all render work to it.
+class RenderEngine {
+public:
+    RenderEngine(RenderContext& ctx, JobPool& pool, RenderCache& cache);
+    ~RenderEngine();
+
+    // Render-pool size for this machine: CPU cores + effect renders the GPU
+    // can have in flight (those park their thread in waitForRenderCompletion,
+    // freeing the core) + slack for render-cache I/O.  Shared by the desktop
+    // and iPad pool setup so the heuristic lives in one place.
+    static size_t RecommendedPoolSize();
+
+    // ---- render tree ----
+    void BuildRenderTree(SequenceElements& elements, unsigned int modelsChangeCount);
+
+    // ---- rendering ----
+    void Render(SequenceElements& seqElements, SequenceData& seqData,
+                const std::list<Model*> models,
+                const std::list<Model*>& restrictToModels,
+                int startFrame, int endFrame,
+                std::unique_ptr<IRenderProgressSink> sink, bool clear,
+                std::function<void(bool)>&& callback);
+
+    void RenderDirtyModels(SequenceElements& elements, SequenceData& seqData,
+                           bool suspendRender, unsigned int modelsChangeCount);
+
+    void RenderEffectForModel(const std::string& model, int startms, int endms,
+                              SequenceElements& elements, SequenceData& seqData,
+                              bool suspendRender, unsigned int modelsChangeCount,
+                              bool clear = false);
+
+    // Extract a single model's channel data from rendered sequence data into a
+    // new SequenceData buffer.  Returns {exportData, chansPerNode} or {nullptr,0} on failure.
+    struct ExportedModelData {
+        std::unique_ptr<SequenceData> data;
+        int chansPerNode = 0;
+    };
+    ExportedModelData ExportModelData(const std::string& modelName, SequenceData& sourceData);
+
+    void SignalAbort();
+    bool IsRenderDone() const { return _renderProgressInfo.empty(); }
+
+    // ---- render job support ----
+    bool RenderEffectFromMap(bool suppress, Effect* effect, int layer,
+                             int period, SettingsMap& settings, PixelBufferClass& buffer,
+                             bool& resetEffectState);
+    void OnRenderJobComplete(const std::string& modelName);
+    void OnAllRenderJobsComplete();
+
+    // Called once per RenderJob as it reaches its Done state (any path:
+    // normal, aborted, early-bail). The thread that decrements the last job
+    // fires the render-batch completion callback.
+    void NotifyJobFinished(RenderProgressInfo* rpi);
+
+    // Push a render job (back) onto the pool — used by suspended jobs waking
+    // up and by row-ownership handoff between jobs.
+    void RequeueJob(Job* job);
+
+    // Watchdog: if a batch makes no progress while the pool is idle, a
+    // wake-up was lost — requeue suspended jobs so the batch can finish.
+    // Called from the platforms' render-status polling.
+    void CheckForStalledRender();
+
+    // Logs a per-job breakdown of every render job that has not finished, so a
+    // render or abort that never completes names the rows it is waiting on
+    // rather than just counting them.  `context` prefixes each line.
+    void LogUnfinishedRenderJobs(const std::string& context);
+
+    // ---- state access (for UI layer) ----
+    std::list<RenderProgressInfo*>& GetRenderProgressInfo() { return _renderProgressInfo; }
+    int GetAbortedRenderJobs() const { return _abortedRenderJobs; }
+    void ResetAbortedRenderJobs() { _abortedRenderJobs = 0; }
+
+    // ---- render tree (public for UI layer to query model list) ----
+    struct RenderTree {
+        RenderTree() = default;
+        ~RenderTree() { Clear(); }
+        void Clear();
+        void Add(Model* el);
+        void Print();
+        std::list<Model*> GetModels() const;
+
+        unsigned int renderTreeChangeCount = 0;
+        std::list<RenderTreeData*> data;
+    };
+    RenderTree& GetRenderTree() { return _renderTree; }
+
+    // ---- callbacks set by UI layer ----
+    void SetOnRenderStatusTimerStart(std::function<void()> fn) { _onRenderStatusTimerStart = std::move(fn); }
+    void SetOnRenderJobComplete(std::function<void(const std::string&)> fn) { _onRenderJobComplete = std::move(fn); }
+    void SetOnAllRenderJobsComplete(std::function<void()> fn) { _onAllRenderJobsComplete = std::move(fn); }
+
+private:
+    // Render()'s setup runs on the job pool, not on the calling thread. The
+    // requests are drained by one job at a time so they stay in submission
+    // order: RenderEffectForModel aborts the jobs of any overlapping in-flight
+    // batch before dispatching, which a setup running out of order could not
+    // do - the jobs it needs to abort would not exist yet. A plain mutex would
+    // give mutual exclusion but not that ordering.
+    friend class RenderSetupJob;
+    struct RenderSetupRequest;
+    void PerformRenderSetup(RenderSetupRequest& req);
+    void DrainRenderSetupQueue();
+    std::mutex _setupQueueLock;
+    std::deque<std::unique_ptr<RenderSetupRequest>> _setupQueue;
+    bool _setupJobRunning = false;
+
+    RenderContext& _ctx;
+    JobPool& _jobPool;
+    RenderCache& _renderCache;
+
+    RenderTree _renderTree;
+    std::list<RenderProgressInfo*> _renderProgressInfo;
+    // Incremented from SignalAbort on the caller's thread and from the setup
+    // job on the pool when it finds an abort that landed mid-setup.
+    std::atomic<int> _abortedRenderJobs{ 0 };
+    // Watchdog bookkeeping.  _stallCheckLock serializes CheckForStalledRender:
+    // on iPad it is polled from more than one thread (main-actor timer plus
+    // background drain loops).  _lastStallCheck throttles the per-job scan.
+    std::mutex _stallCheckLock;
+    std::chrono::steady_clock::time_point _lastStallCheck{};
+
+    std::function<void()> _onRenderStatusTimerStart;
+    std::function<void(const std::string&)> _onRenderJobComplete;
+    std::function<void()> _onAllRenderJobsComplete;
+};

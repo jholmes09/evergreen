@@ -1,0 +1,361 @@
+{
+    "effectName": "Faces",
+    "properties": [
+        {
+            "id": "Faces_MouthMovements",
+            "label": "",
+            "description": "Drives the mouth phonemes. Pick a Phoneme for a single fixed mouth shape, or pick a Timing Track with phoneme labels for automatic lip-sync.",
+            "type": "enum",
+            "controlType": "custom",
+            "default": ""
+        },
+        {
+            "id": "Faces_FaceDefinition",
+            "label": "Face Definition",
+            "description": "Selects which face definition from the model to use. Face definitions map phonemes to specific nodes or image files on the model.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "Default",
+            "dynamicOptions": "faces",
+            "expandToFill": true
+        },
+        {
+            "id": "Faces_Eyes",
+            "label": "State",
+            "description": "Controls the eye state. Open keeps eyes always open, Closed keeps them shut, Auto adds periodic random blinking, and (off) disables eye rendering.",
+            "tooltip": "When Auto, blink occurs during rest or (off).",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Open",
+                "Closed",
+                "Auto",
+                "(off)"
+            ],
+            "default": "Auto"
+        },
+        {
+            "id": "Faces_EyeBlinkFrequency",
+            "label": "Blink Frequency",
+            "description": "How often automatic eye blinks occur when Eyes is set to Auto. Faster settings produce more frequent blinking.",
+            "tooltip": "How often the blink happens.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Slowest",
+                "Slow",
+                "Normal",
+                "Fast",
+                "Fastest"
+            ],
+            "default": "Normal"
+        },
+        {
+            "id": "Faces_EyeBlinkDuration",
+            "label": "Blink Duration",
+            "description": "How long each automatic eye blink lasts when Eyes is set to Auto. Longer durations keep the eyes closed for more frames per blink.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Short",
+                "Normal",
+                "Long",
+                "Longer"
+            ],
+            "default": "Normal"
+        },
+        {
+            "id": "Faces_Outline",
+            "label": "Show outline",
+            "description": "When enabled, displays the face outline nodes in addition to the mouth and eyes, using the defined outline node group.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Faces_SuppressShimmer",
+            "label": "Suppress shimmer",
+            "description": "When enabled, prevents the shimmer animation on phoneme shapes that are defined with a shimmer suffix in the face definition.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Faces_UseState",
+            "label": "Use State as outline",
+            "description": "Selects a state definition to use as the face outline instead of the default outline. Allows combining state effects with face rendering.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "",
+            "dynamicOptions": "states",
+            "expandToFill": true
+        },
+        {
+            "id": "Faces_SuppressWhenNotSinging",
+            "label": "Suppress when not singing",
+            "description": "When enabled, the entire face (including outline) is hidden during rest phonemes or when no phoneme is active. Requires a Timing Track.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Faces_LeadFrames",
+            "label": "Lead In/Out Frames",
+            "description": "Number of frames to fade in before the first phoneme and fade out after the last phoneme on the timing track. Creates smoother transitions at the start and end of singing.",
+            "type": "int",
+            "controlType": "spin",
+            "default": 0,
+            "min": 0,
+            "max": 1000
+        },
+        {
+            "id": "Faces_Fade",
+            "label": "Fade during lead in/out",
+            "description": "When enabled, the face brightness gradually fades during the lead in and lead out frames instead of appearing/disappearing abruptly.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Faces_TransparentBlackRow",
+            "label": "",
+            "description": "Transparent Black enable checkbox with an inline brightness threshold slider (0-300). When enabled, face image pixels below the threshold are keyed out as transparent.",
+            "type": "int",
+            "controlType": "custom",
+            "default": 0
+        },
+        {
+            "id": "Faces_Direction",
+            "label": "Movement",
+            "description": "Direction the face image moves across the model. Only applies to Matrix type faces.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "none",
+                "left",
+                "right",
+                "up",
+                "down",
+                "up-left",
+                "down-left",
+                "up-right",
+                "down-right",
+                "peekaboo",
+                "wiggle",
+                "zoom in",
+                "peekaboo 90",
+                "peekaboo 180",
+                "peekaboo 270",
+                "flag wave",
+                "up once",
+                "down once",
+                "vector",
+                "tile-left",
+                "tile-right",
+                "tile-down",
+                "tile-up"
+            ],
+            "default": "none",
+            "lockable": true
+        },
+        {
+            "id": "Faces_Speed",
+            "label": "Movement Speed",
+            "description": "How fast the face image moves in the chosen direction. Only applies to Matrix type faces.",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "lockable": true,
+            "min": 0,
+            "max": 200
+        },
+        {
+            "id": "Faces_FrameRateAdj",
+            "label": "Frame Rate Adj",
+            "description": "Multiplier for the playback speed of animated GIF face images. Values above 1.0 speed up the animation. Only applies to Matrix type faces.",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "lockable": true,
+            "min": 0,
+            "max": 200
+        },
+        {
+            "id": "Faces_PixelOffsets",
+            "label": "Offsets In Pixels",
+            "description": "When enabled, the X and Y center offset values are treated as pixel counts rather than percentages of the model dimensions. Only applies to Matrix type faces.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Faces_Scaling",
+            "label": "Scaling",
+            "description": "How the face image is resized to fit the model when the face type is Matrix. Default (from face) uses the scaling mode defined on the face definition itself.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Default (from face)",
+                "No Scaling",
+                "Scale To Fit",
+                "Scale Keep Aspect Ratio",
+                "Scale Keep Aspect Ratio Crop"
+            ],
+            "default": "Default (from face)"
+        },
+        {
+            "id": "FacesXC",
+            "label": "X-axis Center",
+            "description": "Horizontal offset for the starting position of the face image, as a percentage of the model width. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true
+        },
+        {
+            "id": "Faces_WrapX",
+            "label": "Wrap X",
+            "description": "When enabled, the face image wraps around horizontally so pixels that scroll off one side reappear on the other. Only applies to Matrix type faces.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "FacesYC",
+            "label": "Y-axis Center",
+            "description": "Vertical offset for the starting position of the face image, as a percentage of the model height. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true
+        },
+        {
+            "id": "FacesEndXC",
+            "label": "X-axis Center",
+            "description": "Horizontal offset for the ending position of the face image when using the vector movement mode. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100
+        },
+        {
+            "id": "FacesEndYC",
+            "label": "Y-axis Center",
+            "description": "Vertical offset for the ending position of the face image when using the vector movement mode. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100
+        },
+        {
+            "id": "Faces_StartScale",
+            "label": "Scale Start",
+            "description": "Scale factor for the face image at the start of the effect, as a percentage. 100 is the original size. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 0,
+            "max": 1000
+        },
+        {
+            "id": "Faces_EndScale",
+            "label": "Scale End",
+            "description": "Scale factor for the face image at the end of the effect. The image smoothly transitions from the start scale to this value over the effect duration. Only applies to Matrix type faces.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 0,
+            "max": 1000
+        }
+    ],
+    "groups": [
+        {
+            "type": "section",
+            "label": "Mouth Movements",
+            "columns": 1,
+            "properties": ["Faces_MouthMovements"]
+        },
+        {
+            "type": "section",
+            "label": "Eyes",
+            "columns": 4,
+            "properties": ["Faces_Eyes", "Faces_EyeBlinkFrequency", "Faces_EyeBlinkDuration"]
+        },
+        {
+            "type": "section",
+            "columns": 1,
+            "properties": ["Faces_TransparentBlackRow"]
+        },
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Start Position",
+                    "properties": [
+                        "FacesXC",
+                        "Faces_WrapX",
+                        "FacesYC"
+                    ]
+                },
+                {
+                    "label": "End Position",
+                    "properties": [
+                        "FacesEndXC",
+                        "FacesEndYC"
+                    ]
+                },
+                {
+                    "label": "Start Scale",
+                    "properties": [
+                        "Faces_StartScale"
+                    ]
+                },
+                {
+                    "label": "End Scale",
+                    "properties": [
+                        "Faces_EndScale"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "FacesXC",
+            "yProperty": "FacesYC",
+            "wrapX": "Faces_WrapX"
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "FacesEndXC",
+            "yProperty": "FacesEndYC"
+        }
+    ],
+    "visibilityRules": [
+        {
+            "when": { "property": "Faces_Outline", "equals": true },
+            "enable": ["Faces_UseState"]
+        },
+        {
+            "when": { "property": "Faces_Eyes", "equals": "Auto" },
+            "enable": ["Faces_EyeBlinkFrequency", "Faces_EyeBlinkDuration"]
+        },
+        {
+            "when": { "property": "Faces_SuppressWhenNotSinging", "equals": true },
+            "enable": ["Faces_LeadFrames", "Faces_Fade"]
+        },
+        {
+            "when": { "property": "Faces_Direction", "equals": "vector" },
+            "enable": ["FacesEndXC", "FacesEndYC"]
+        }
+    ]
+}

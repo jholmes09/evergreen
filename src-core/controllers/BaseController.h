@@ -1,0 +1,75 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <list>
+#include <string>
+
+#include "ControllerUploadData.h"
+#include "UtilClasses.h"
+
+class ModelManager;
+class OutputManager;
+class Controller;
+class UICallbacks;
+
+class BaseController
+{
+protected:
+    #pragma region Member Variables
+    std::string _fppProxy;
+    std::string _ip;
+    std::string _baseUrl;
+    std::string _model;
+    std::string _version;
+    bool _connected = false;
+    #pragma endregion
+
+    #pragma region Protected Functions
+    virtual bool needsHTTP_0_9() const { return false; }
+    std::string GetURL(const std::string& url, const std::string& username = "", const std::string& password = "") const;
+    std::string PutURL(const std::string& url, const std::string& request, const std::string& username = "", const std::string& password = "", const std::string& contentType = "x-www-form-urlencoded") const;
+    #pragma endregion
+
+public:
+
+
+    #pragma region Constructors and Destructors
+    BaseController() {}
+    BaseController(const std::string& ip, const std::string &fppProxy);
+    virtual ~BaseController() {}
+    
+    
+#ifndef DISCOVERYONLY
+    static BaseController *CreateBaseController(Controller *controller, const std::string &ip = "");
+#endif
+
+    #pragma endregion
+    
+    #pragma region Getters and Setters
+    [[nodiscard]] bool IsConnected() const { return _connected; };
+
+    [[nodiscard]] virtual const std::string &GetModel() const { return _model; }
+    [[nodiscard]] virtual const std::string &GetVersion() const { return _version; }
+    [[nodiscard]] virtual std::string GetFullName() const { return _version.empty() ? _model : (_model + " " + _version); }
+
+#ifndef DISCOVERYONLY
+    virtual bool SetInputUniverses(Controller* controller, UICallbacks* ui) { return false; }
+    virtual bool SetOutputs(ModelManager* allmodels, OutputManager* outputManager, Controller* controller, UICallbacks* ui) = 0;
+
+    virtual bool UploadForImmediateOutput(ModelManager* allmodels, OutputManager* outputManager, Controller* controller, UICallbacks* ui) { return false; }
+    //virtual bool ResetAfterOutput(OutputManager* outputManager, Controller* controller, UICallbacks* ui) { return false; }
+#endif
+
+    [[nodiscard]] virtual bool UsesHTTP() const = 0;
+    
+    #pragma endregion
+};

@@ -1,0 +1,110 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <string>
+#include <glm/glm.hpp>
+
+#include "../PWMOutput.h"
+#include <map>
+
+class BaseObject;
+
+class Servo
+{
+public:
+    Servo(const std::string& _name, bool _is2d);
+    virtual ~Servo();
+
+    void Init(BaseObject* base);
+    
+    int GetChannel() const { return channel; }
+    int GetMinLimit() const { return min_limit; }
+    int GetMaxLimit() const { return max_limit; }
+    int GetRangeOfMotion() const { return range_of_motion; }
+    float GetPivotOffsetX() const { return pivot_offset_x; }
+    float GetPivotOffsetY() const { return pivot_offset_y; }
+    float GetPivotOffsetZ() const { return pivot_offset_z; }
+    const std::string GetStyle() const { return servo_style; }
+
+    bool IsTranslate() const;
+    bool IsRotate() const;
+    void FillMotionMatrix(float servo_pos, glm::mat4& motion_matrix);
+    float GetPosition(int channel_value);
+    bool Is16Bit() const { return _16bit; }
+    bool Is2D() const { return is_2d; }
+    
+    void SetChannel(int chan) { channel = chan; }
+    void SetMinLimit(int val) { min_limit = val; }
+    void SetMaxLimit(int val) { max_limit = val; }
+    void SetRangeOfMotion(float val) { range_of_motion = val; }
+    void SetStyle(const std::string& style);
+    void Set16Bit(bool value);
+    
+    void SetControllerMin(int val) { controller_min = val; }
+    void SetControllerMax(int val) { controller_max = val; }
+    void SetControllerReverse(bool val) { controller_reverse = val; }
+    void SetControllerZero(const std::string& val) { controller_zero = val; }
+    void SetControllerDataType(const std::string& val) { controller_dataType = val; }
+    
+    const std::string GetName() const { return base_name; }
+    int GetControllerMin() const { return controller_min; }
+    int GetControllerMax() const { return controller_max; }
+    bool GetControllerReverse() const { return controller_reverse; }
+    const std::string& GetControllerZero() const { return controller_zero; }
+    const std::string& GetControllerDataType() const { return controller_dataType; }
+    
+    void SetScaledPivotOffsetX(float val) { pivot_offset_x = val / offset_scale; }
+    void SetScaledPivotOffsetY(float val) { pivot_offset_y = val / offset_scale; }
+    void SetScaledPivotOffsetZ(float val) { pivot_offset_z = val / offset_scale; }
+    float GetScaledPivotOffsetX() const { return pivot_offset_x * offset_scale; }
+    float GetScaledPivotOffsetY() const { return pivot_offset_y * offset_scale; }
+    float GetScaledPivotOffsetZ() const { return pivot_offset_z * offset_scale; }
+    
+    void GetPWMOutputs(std::map<uint32_t, PWMOutput> &channels) const;
+    
+protected:
+    
+private:
+    enum SERVO_STYLE {
+        SERVO_STYLE_TRANSLATEX,
+        SERVO_STYLE_TRANSLATEY,
+        SERVO_STYLE_TRANSLATEZ,
+        SERVO_STYLE_ROTATEX,
+        SERVO_STYLE_ROTATEY,
+        SERVO_STYLE_ROTATEZ
+    };
+
+    std::string base_name;
+    int channel {0};
+    int min_limit {1};
+    int max_limit {65535};
+    float range_of_motion {180.0f};
+    float pivot_offset_x {0};
+    float pivot_offset_y {0};
+    float pivot_offset_z {0};
+    int servo_style_val {SERVO_STYLE_TRANSLATEX};
+    std::string servo_style {"Translate X"};
+    bool _16bit {true};
+    float offset_scale {1.0f};
+    bool is_2d {false};
+    BaseObject* base;
+
+    // used for display only in the previews
+    int lastValue = 0;
+
+    int controller_min {1000};
+    int controller_max {2000};
+    bool controller_reverse {false};
+    std::string controller_zero {"Hold"};
+    std::string controller_dataType {"Scaled"};
+};
+

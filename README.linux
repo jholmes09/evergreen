@@ -1,0 +1,266 @@
+xLights Linux build instructions
+------------------------------------------------------------------------------
+
+xLights can be built and run on Linux, Mac OS/X, or Windows. This
+document describes how **developers** should set up their tool chain to build
+xLights on Linux.
+Ubuntu packages are provided for users at https://code.launchpad.net/~chris-debenham/+archive/ubuntu/xlights
+
+xLights is written in C++ and uses the wxWidgets library as a
+compatibility layer across operating systems.  The minimum required version
+of wxWidgets for xLights is v3.1.5.  This can be compiled from
+source or installed via packages if they are available for your distribution.
+The provided makefile will download and build wxWidgets if needed - including
+application of a small patch from the end of this file to fix the sizing of
+bitmap buttons.
+SDL2 needs to be 2.0.5 or later.
+A precompiled libliquidfun.a.`uname -p` library and QM Vamp plugins are included for
+i686, x86_64 and aarm64 - for other platforms it would need to be recompiled from
+https://github.com/google/liquidfun
+
+== Building for linux via docker container ==
+
+If you wish to build for linux from other platforms or without having to touch your local install you can use Docker to test building
+To setup the nessecary docker image you can checkout the build file from git and build directly via:
+
+    docker build -t xlights-build https://github.com/xLightsSequencer/xlights-build-docker.git
+
+This will leave you with a suitable base image
+Once this is setup you can build xLights via:
+
+    docker run --name buildvm xlights-build /bin/bash Recipe
+
+If you want to build the appimage you can use:
+
+    docker run --name buildvm xlights-build /bin/bash Recipe.appimage
+
+If you want to create a fresh build then the container can be removed with:
+
+    docker rm buildvm
+
+== Building locally from source ==
+
+Ubuntu 24.04 is the minimum supported release.  It is what the official
+builds and the CI are compiled on, so it is the only baseline that is
+continuously verified.  Older releases may happen to work, but are not
+tested and are not supported.
+
+These instructions have been tested on the following distributions:
+
+  - Ubuntu 24.04
+  - Fedora 42
+
+Instructions for other Linux distributions will vary. 
+
+  a) Using Software Manager (or apt-get or rpm), install the following packages.
+     (Fedora packages will be named differently and have 'devel' instead of 'dev'
+     in their name)
+
+     build-essential
+     libgtk-3-dev
+     libgstreamer1.0-dev
+     libgstreamer-plugins-base1.0-dev
+     freeglut3-dev
+     libavcodec-dev
+     libavformat-dev
+     libavfilter-dev
+     libswscale-dev
+     libsdl2-dev
+     libzstd-dev
+     libcurl4-openssl-dev
+     liblua5.3-dev
+     libwebp-dev
+     libsecret-1-dev
+     libegl-dev          (required for Wayland support)
+     libfreetype-dev     (used for text/shape effect rendering)
+     libharfbuzz-dev     (used for text/shape effect rendering)
+     libfontconfig-dev   (used for text/shape effect rendering)
+     libavahi-compat-libdnssd-dev (mDNS/Bonjour controller discovery, e.g. WLED)
+     cbp2make (optional but recommended if compiling from git)
+
+     Example command to install packages on Ubuntu
+
+     sudo apt-get install g++ gcc build-essential libgtk-3-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev freeglut3-dev libavcodec-dev libavformat-dev libswscale-dev libsdl2-dev libavutil-dev libavfilter-dev libzstd-dev libwebp-dev libcurl4-openssl-dev liblua5.3-dev libminizip-dev libxlsxwriter-dev libegl-dev libfreetype-dev libharfbuzz-dev libfontconfig-dev libavahi-compat-libdnssd-dev wget git cbp2make curl libsecret-1-dev
+
+     mDNS/Bonjour controller discovery (WLED and similar):
+       BUILD: without libavahi-compat-libdnssd-dev, <dns_sd.h> is unavailable
+       and mDNS-based controller discovery silently compiles out (WLED
+       controllers will not be auto-discovered), with no build error.
+       RUNTIME: also requires the avahi-daemon service running:
+         sudo apt-get install avahi-daemon
+         sudo systemctl enable --now avahi-daemon
+
+     GPU-accelerated rendering (Vulkan):
+       BUILD: the compute kernels (src-core/effects/vulkan/shaders/*.comp) are
+       compiled to SPIR-V at build time by glslc, so glslc is a required build
+       tool (like ispc for the SIMD kernels). The Vulkan headers, volk loader,
+       and VulkanMemoryAllocator are vendored as git submodules (fetched by the
+       recursive submodule checkout) and volk loads the driver at runtime, so
+       nothing Vulkan is linked.  The Vulkan Shader effect additionally
+       translates user GLSL at runtime via glslang, which comes from the
+       distro: glslang-dev pulls in spirv-tools, which it needs because
+       the packaged glslang is built with the SPIR-V optimizer enabled.
+       Install glslc and glslang:
+         sudo apt-get install glslc glslang-dev
+       (or build with -DXLIGHTS_USE_VULKAN=OFF / omit it in the .cbp to skip the
+       GPU compute backend entirely.)
+
+       RUNTIME: to actually USE GPU acceleration the machine needs a Vulkan
+       loader and an ICD/driver; without them xLights logs "no Vulkan loader"
+       and falls back to CPU rendering:
+         sudo apt-get install libvulkan1 mesa-vulkan-drivers
+       (mesa-vulkan-drivers covers Intel/AMD; NVIDIA users get Vulkan from the
+       proprietary driver. Enable it under Preferences > Other > GPU rendering.)
+
+     Hardware video decode (VA-API):
+       No build-time dependency — decode goes through FFmpeg's generic
+       hwaccel API (libavcodec/libavutil, already required above), which
+       resolves VAAPI via the distro's own libva at runtime; nothing
+       VAAPI-specific is linked by xLights itself.
+
+       RUNTIME: needs a VA-API driver for the GPU (Intel: intel-media-va-driver
+       or intel-media-va-driver-non-free for newer iGPUs; AMD/Mesa:
+       mesa-va-drivers):
+         sudo apt-get install vainfo intel-media-va-driver mesa-va-drivers
+       `vainfo` confirms the driver initializes ("VAProfile..." lines printed)
+       before relying on it. Enable under Preferences > Other > Hardware Video
+       Decoding — it auto-tries vaapi then vdpau, no manual selection needed.
+
+     Example commands to install packages on Fedora 42
+
+     Fedora 38+ defaults to "ffmpeg-free" library to switch to full ffmpeg run, add rpmfusion repo first:
+
+        sudo dnf install https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+        sudo dnf swap ffmpeg-free ffmpeg --allowerasing
+     
+     Note: with Fedora cbp2make is not avalible in an offical repo, you must build and install it manually:
+        
+        sudo dnf install doxygen
+        git clone https://github.com/mirai-computing/cbp2make.git
+        cd cbp2make
+        make -f cbp2make.cbp.mak.unix
+        sudo install -m 755 -p -D bin/Release/cbp2make /usr/local/bin/cbp2make 
+     
+    Install other packages:
+
+     sudo dnf install https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm https://download1.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+     sudo dnf install gcc-c++ gtk3-devel gstreamer1-devel gstreamer1-plugins-base-devel freeglut-devel gstreamer1-plugins-bad-free-devel ffmpeg-devel SDL2-devel libzstd-devel libwebp-devel curl-develel lua-devel curl libsecret-devel expat-devel mesa-libEGL-devel freetype-devel harfbuzz-devel fontconfig-devel avahi-compat-libdns_sd-devel wget git
+
+
+     Note: Fedora lua package is versionless, to fake cbp/pkgconfig to 5.3 like ubuntu, add a sym link
+        sudo ln -s /usr/lib64/pkgconfig/lua.pc /usr/lib64/pkgconfig/lua53.pc
+
+  b) Get the xLights source code by opening a terminal window and
+     typing the following:
+
+     git clone --recurse-submodules https://github.com/xLightsSequencer/xLights.git xLights
+
+
+xLights can be built 2 ways on Linux. First, you can use the
+supplied makefile to build it. This is sufficient to get xLights
+running, but you will be limited in what source code modifications you can
+make.  Minor code changes or enhancements will be OK.  The second way to
+build is to install the Code::Blocks IDE and compile xLights
+within the IDE. If you plan on modifying xLights yourself, this
+may be the easiest way to go.
+
+To build xLights using the supplied makefile proceed to step 'c'.  To build
+using Code::Blocks, proceed to step 'd'.:
+
+
+  c) Build xLights using the supplied makefiles:
+
+     Build using the simplified top-level Makefile in the main xLights
+     directory.
+     If wxWidgets 3.1 is not available then as part of this wxWidgets 3.1
+     will be downloaded, compiled statically linked to xLights
+
+           $ make
+
+         Then install xLights to the default /usr/local/bin location as root:
+
+           # make install
+
+         To run the clean command:
+
+           $ make clean
+
+         To uninstall the xLights binary as root:
+
+           # make uninstall
+
+         Use `make SUDO= PREFIX=/someplace` to install to an alternative
+         location without sudo as long as the path is writable as the current
+         user.  Set LD_LIBRARY_PATH=PREFIX/lib when running xLights.
+
+     You may get some compiler warnings, however, the executable 'xLights'
+     should get built in the ./bin directory.  The proper dependencies are
+     not currently setup in the makefile to trigger rebuilds when some
+     files are modified, so you may have to run the clean command if your
+     code does not build properly after making modifications to the source.
+
+     If you want to build using Code::Blocks, proceed to step 'd'.
+
+  d) Building xLights using Code::Blocks
+
+     Install the Code::Blocks IDE using your distribution's package
+     manager as long as it is version 16.01 or later.  Otherwise,
+     you can try downloading it directly from the Code::Blocks web site:
+        http://www.codeblocks.org/downloads
+     Also, you may need to install libwxsmithlib0 to 
+     enable visual layout.
+
+     You will need to run 'make' from the command line once to build and
+     patch wxwidgets.  Then ensure that the wx-config command is in your
+     PATH so that codeblocks can find it. The simplest way to do this is
+     to go into the wxWidgets-3.1.5 directory and run 'sudo make install'
+
+     Now you are ready to use Code::Blocks to build xLights
+     by double-clicking on the xLights.cbp file.
+     In order for the double-click to work, you may need 
+     to first right-click on the cbp file, select properties,
+     and uncheck the box indicating that the file is runnable.
+     Make sure you set the target to "Release Linux" before you build.
+
+That should be all you need to build xLights.
+If you get missing decoder messages related to gstreamer, a couple of things to try are:
+- sudo apt-get install ubuntu-restricted-extras  (substitute as appropriate for other *nices)
+- install "Play it slowly"  - this app includes some gstreamer dependencies
+
+
+==============================================================================
+
+If it is necessary to rebuild the xLights.cbp.mak makefile such as when new
+source files are added to the project, the command used to run cbp2make is:
+
+cbp2make -in xLights.cbp -cfg ../cbp2make.cfg -out xLights.cbp.mak --with-deps --keep-outdir --keep-objdir
+
+This will be run automatically at compile time if cbp2make is installed.
+
+==============================================================================
+
+Troubleshooting:
+
+With so few Linux users and a general lack of experience in the platform I think it is worthwhile
+documenting some troubleshooting steps that can help determine issues.
+
+Hangs & Pauses
+--------------
+
+To capture a log of systems calls
+
+    strace -f -tt <executable> > strace.txt 2>&1
+    
+    you may also consider adding -y or -yy to capture socket and file descriptor information if 
+    supported on your system
+    
+    These logs files are large and difficult to analyse but provide our best chance of debugging 
+    these types of problems without an interactive debugger.
+
+wxWidgets Bugginess (and possible xLights bugginess)
+
+    There are some situations where limiting xLights to a single CPU can significantly minimise 
+    issues at the expense of parallelism. So if you are getting random issues you may want to try
+    
+    taskset -c 0 <executable>
+    

@@ -1,0 +1,153 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "MHPathPresetBitmapButton.h"
+#include "effects/SketchEffectDrawing.h"
+
+#include "Color.h"
+#include "shared/utils/wxUtilities.h"
+
+#include <wx/graphics.h>
+
+MHPathPresetBitmapButton::MHPathPresetBitmapButton(wxWindow* parent, wxWindowID id, const wxBitmapBundle& bitmap, const wxPoint& pos,
+    const wxSize& size, long style, const wxValidator& validator,
+    const wxString& name)
+    : wxBitmapButton(parent, id, bitmap, pos, size, style, validator, name)
+{
+}
+
+MHPathPresetBitmapButton::~MHPathPresetBitmapButton()
+{
+}
+void MHPathPresetBitmapButton::DoSetSizeHints(int minW, int minH,
+    int maxW, int maxH,
+    int incW, int incH)
+{
+    int offset = 0;
+#ifdef LINUX
+    offset = 12; //Linux puts a 6 pixel border around it
+#endif // LINUX
+    wxBitmapButton::DoSetSizeHints(minW + offset,
+        minH + offset,
+        maxW + offset,
+        maxH + offset,
+        incW, incH);
+}
+
+void MHPathPresetBitmapButton::SetPreset(const std::string& _settings)
+{
+    mSettings = _settings;
+    RenderNewBitmap();
+}
+
+void MHPathPresetBitmapButton::RenderNewBitmap() {
+    wxBitmap bmp = CreateImage(48, 48, GetContentScaleFactor());
+    if ( bmp.IsOk() ) {
+        SetBitmap(bmp);
+    } else {
+        // Fallback: Set a default or empty bitmap to avoid crashes
+        wxBitmap defaultBmp(48, 48);
+        wxMemoryDC dc(defaultBmp);
+        dc.SetBrush(*wxBLACK_BRUSH);
+        dc.SetPen(*wxWHITE_PEN);
+        dc.DrawRectangle(0, 0, 48, 48);
+        SetBitmap(defaultBmp);
+    }
+}
+
+wxBitmap MHPathPresetBitmapButton::CreateImage( int w, int h, double scaleFactor ) {
+    if (scaleFactor < 1.0) {
+        scaleFactor = 1.0;
+    }
+    float width = w * scaleFactor;
+    float height = h * scaleFactor;
+
+    wxBitmap bmp(width, height);
+
+    wxMemoryDC dc(bmp);
+    dc.SetBrush(*wxBLACK_BRUSH);
+    dc.SetPen(*wxWHITE_PEN);
+    dc.DrawRectangle(0, 0, width, height);
+
+    std::unique_ptr<wxGraphicsContext> gc(wxGraphicsContext::Create(dc));
+
+    wxColour c(xlColorToWxColour(xlORANGE));
+    wxGraphicsPen pen = gc->CreatePen(wxGraphicsPenInfo(c));
+    gc->SetPen(pen);
+
+    SketchEffectSketch sketch = SketchEffectSketch::SketchFromString(mSettings);
+
+    // Moving heads only have one path
+    const auto& all_paths = sketch.paths();
+    if (all_paths.empty()) {
+        return bmp;
+    }
+
+    const auto& path = all_paths[0];
+    if (path->segments().empty()) {
+        return bmp;
+    }
+
+    wxGraphicsPath graphicsPath(gc->CreatePath());
+    const auto& firstSegment(path->segments().front());
+    auto startPt = NormalizedToUI(firstSegment->StartPoint(), width, height);
+    graphicsPath.MoveToPoint(startPt);
+
+    for (const auto& segment : path->segments()) {
+        std::shared_ptr<SketchQuadraticBezier> quadratic;
+        std::shared_ptr<SketchCubicBezier> cubic;
+
+        if (std::dynamic_pointer_cast<SketchLine>(segment) != nullptr) {
+            auto endPt = NormalizedToUI(segment->EndPoint(), width, height);
+            graphicsPath.AddLineToPoint(endPt);
+        } else if ((quadratic = std::dynamic_pointer_cast<SketchQuadraticBezier>(segment)) != nullptr) {
+            auto ctrlPt = NormalizedToUI(quadratic->ControlPoint(), width, height);
+            auto endPt = NormalizedToUI(quadratic->EndPoint(), width, height);
+            graphicsPath.AddQuadCurveToPoint(ctrlPt.m_x, ctrlPt.m_y, endPt.m_x, endPt.m_y);
+        } else if ((cubic = std::dynamic_pointer_cast<SketchCubicBezier>(segment)) != nullptr) {
+            auto ctrlPt1 = NormalizedToUI(cubic->ControlPoint1(), width, height);
+            auto ctrlPt2 = NormalizedToUI(cubic->ControlPoint2(), width, height);
+            auto endPt = NormalizedToUI(cubic->EndPoint(), width, height);
+            graphicsPath.AddCurveToPoint(ctrlPt1, ctrlPt2, endPt);
+        }
+    }
+
+    if (path->isClosed()) {
+        graphicsPath.CloseSubpath();
+    }
+
+    gc->DrawPath(graphicsPath);
+
+    if (scaleFactor > 1.0f) {
+        wxImage img = bmp.ConvertToImage();
+        return wxBitmap(img, 8, scaleFactor);
+    }
+
+    return bmp;
+}
+
+void MHPathPresetBitmapButton::SetBitmap(const wxBitmapBundle& bpm)
+{
+    wxBitmapButton::SetBitmap(bpm);
+}
+
+wxPoint2DDouble MHPathPresetBitmapButton::NormalizedToUI(const xlPointD& pt, float bmpWidth, float bmpHeight) const
+{
+    double x = pt.x * bmpWidth;
+    double y = pt.y * bmpHeight;
+    return wxPoint2DDouble(x, bmpHeight - y);
+}
+
+wxPoint MHPathPresetBitmapButton::NormalizedToUI2(const xlPointD& pt, float bmpWidth, float bmpHeight) const
+{
+    wxPoint2DDouble pt1 = NormalizedToUI(pt, bmpWidth, bmpHeight);
+    return wxPoint((int)pt1.m_x, (int)pt1.m_y);
+}
+

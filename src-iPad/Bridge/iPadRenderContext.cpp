@@ -1,0 +1,3110 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "iPadRenderContext.h"
+
+#include <CoreFoundation/CoreFoundation.h>
+
+#include "render/Element.h"
+#include "render/EffectLayer.h"
+#include "render/Effect.h"
+#include "render/FSEQFile.h"
+#include "render/FSEQFileIO.h"
+#include "render/IRenderJobStatus.h"
+#include "render/RenderProgressInfo.h"
+#include "render/SeqMediaMigration.h"
+#include "render/SequenceMedia.h"
+#include "media/AudioManager.h"
+#include "media/MediaCompatibility.h"
+#include "xLightsVersion.h"
+#include <map>
+#include "effects/ShaderEffect.h"
+#include "models/Model.h"
+#include "models/ModelGroup.h"
+#include "models/ModelSet.h"
+#include "models/MeshObject.h"
+#include "models/ImageObject.h"
+#include "models/GridlinesObject.h"
+#include "models/TerrainObject.h"
+#include "models/RulerObject.h"
+#include "models/TwoPointScreenLocation.h"
+#include "models/BoxedScreenLocation.h"
+#include "models/TerrainScreenLocation.h"
+#include "models/MatrixModel.h"
+#include "models/ModelScreenLocation.h"
+#include "models/Node.h"
+#include "render/ValueCurve.h"
+#include "render/UICallbacks.h"
+#include "utils/Color.h"
+#include "utils/ExternalHooks.h"
+#include "utils/string_utils.h"
+#include "XmlSerializer/XmlSerializingVisitor.h"
+#include "XmlSerializer/XmlSerializer.h"
+
+#include <pugixml.hpp>
+#include "utils/FileUtils.h"
+#include "utils/CachedFileDownloader.h"
+#include <globals.h>
+#include <log.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <mutex>
+#include <string_view>
+#include <system_error>
+#include <thread>
+#include <vector>
+
+namespace {
+// Adapts iPadRenderContext's Check-Sequence disable set to the
+// UICallbacks surface CustomModel / SketchEffect consult during a
+// sequence check. Every other UICallbacks method is a defensive
+// stub — the only check-time caller is IsCheckSequenceOptionDisabled.
+class iPadCheckUICallbacks final : public UICallbacks {
+public:
+    explicit iPadCheckUICallbacks(const iPadRenderContext* ctx) : _ctx(ctx) {}
+
+    bool IsCheckSequenceOptionDisabled(const std::string& option) const override {
+        return _ctx && _ctx->IsCheckOptionDisabled(option);
+    }
+
+    void ShowMessage(const std::string&, const std::string&) const override {}
+    bool PromptYesNo(const std::string&, const std::string&) const override { return false; }
+    std::string PromptForDirectory(const std::string&, const std::string&) const override { return ""; }
+    std::string PromptForFile(const std::string&, const std::string&, const std::string&) const override { return ""; }
+    long PromptForNumber(const std::string&, const std::string&, long defaultValue, long, long) const override { return defaultValue; }
+    std::string PromptForText(const std::string&, const std::string&, const std::string& defaultValue) const override { return defaultValue; }
+    ProgressToken BeginProgress(const std::string&, int) override { return INVALID_PROGRESS; }
+    void UpdateProgress(ProgressToken, int, const std::string&) override {}
+    void EndProgress(ProgressToken) override {}
+
+private:
+    const iPadRenderContext* _ctx;
+};
+} // namespace
+
+UICallbacks* iPadRenderContext::GetUICallbacks() {
+    if (!_checkUICallbacks) {
+        _checkUICallbacks = std::make_unique<iPadCheckUICallbacks>(this);
+    }
+    return _checkUICallbacks.get();
+}
+
+iPadRenderContext::iPadRenderContext() {
+    // effectManager, _sequenceElements, and the rest of the show state are
+    // constructed by the xLightsShowContext base (effectManager self-resolves
+    // its metadata dir from FileUtils::GetResourcesDir()).
+    // Tier 1 memory-pressure mitigation:
+    //   * Cap the disk-backed render cache at 50 MB so iPadOS
+    //     doesn't balloon its memory-resident frame map by loading
+    //     a huge desktop-authored cache at sequence open.
+    //   * Cap the undo history at 50 steps — every DeletedEffect /
+    //     ModifiedEffect snapshot can be several KB of settings
+    //     strings, so 2000-edit sessions on a long show add up.
+    //     iPad users don't need desktop-scale undo depth anyway.
+    _renderCache.SetMaximumSizeMB(ReadRenderCacheMaxMB());
+    _sequenceElements.get_undo_mgr().SetMaxSteps(50);
+
+    // Render cache defaults OFF on iPad (see ReadRenderCacheMode): it trades
+    // memory + disk for re-render speed, and both are scarce here. The user
+    // can opt into "Locked Only" / "Enabled" via the Folder Config picker;
+    // EnsureRenderEngine re-reads it before every render so changes take
+    // effect without a restart.
+    _renderCache.Enable(ReadRenderCacheMode());
+}
+
+iPadRenderContext::~iPadRenderContext() {
+    // Nothing left to protect if the drain fails - we are going away either way.
+    (void)CloseSequence();
+}
+
+iPadRenderContext::ModelMutationScope::ModelMutationScope(iPadRenderContext& ctx, int maxWaitMs)
+    : _lock(ctx._modelMutationGate, std::defer_lock) {
+    if (maxWaitMs <= 0) maxWaitMs = 5000;
+    // Bounded rather than blocking: "Update From Base Now" runs this straight
+    // off a SwiftUI button on the main actor, and waiting there indefinitely for
+    // a detached show-folder load to finish is a 0x8BADF00D kill.
+    if (!_lock.try_lock_for(std::chrono::milliseconds(maxWaitMs))) {
+        spdlog::error("iPadRenderContext: another model rebuild holds the gate; refusing to mutate the models concurrently");
+        return;
+    }
+    _ok = ctx.AbortRender(maxWaitMs);
+    if (!_ok) {
+        spdlog::error("iPadRenderContext: could not abort in-flight render; leaving the models alone rather than freeing them under a live render job");
+    }
+}
+
+bool iPadRenderContext::LoadShowFolder(const std::string& showDir) {
+    return LoadShowFolder(showDir, {});
+}
+
+bool iPadRenderContext::LoadShowFolder(const std::string& showDir,
+                                       const std::list<std::string>& mediaFolders) {
+    // A background render may still be in flight (house preview or an open
+    // sequence) holding Model* / PixelBuffer references into the current
+    // ModelManager. Switching show folders rebuilds _modelManager below
+    // (destroying every existing Model), so signal abort and wait for the
+    // JobPool workers to drain first — otherwise a render worker writes node
+    // channel data through a freed model mid-teardown (use-after-free seen in
+    // crash reports as ~ModelManager racing PixelBuffer::SetColors /
+    // Node::GetForChannels). Safe to block here: loadShowFolder runs on a
+    // detached background task, never the main actor, so the wait can't trip
+    // the watchdog. The abort is best-effort — on timeout the workers still
+    // hold Model* references, so keep the current show loaded rather than free
+    // the models under them.
+    //
+    // The scope takes the gate BEFORE the drain and holds it to the end of the
+    // rebuild: the drain alone only empties the queue at one instant, and
+    // everything after it — ObtainAccessToURL, OutputManager::Load, the
+    // rgbeffects parse — runs for seconds with the main run loop free to start
+    // a fresh render.
+    ModelMutationScope mutate(*this);
+    if (!mutate.ok()) {
+        spdlog::error("iPadRenderContext: keeping the current show folder rather than freeing models under a live render job");
+        return false;
+    }
+
+    showDirectory = showDir;
+    fseqDirectory = showDir; // iPad writes the fseq into the show folder
+    mediaDirectories.clear();
+
+    if (!ObtainAccessToURL(showDir, false)) {
+        // Stale security-scoped bookmark for the show folder itself —
+        // every subsequent file open will fail. Log loudly and continue;
+        // the caller will see the load report empty models / settings
+        // and surface a re-pick prompt.
+        spdlog::warn("iPadRenderContext: ObtainAccessToURL failed for show folder '{}' — bookmark likely stale", showDir);
+    }
+    for (const auto& folder : mediaFolders) {
+        if (ObtainAccessToURL(folder, false)) {
+            mediaDirectories.push_back(folder);
+        } else {
+            // Drop the folder entirely so FileUtils doesn't try to
+            // resolve assets through a path it can't actually read.
+            // Without this drop, FixFile silently returns broken paths
+            // and the user sees missing-media warnings with no clue
+            // that the bookmark went stale.
+            spdlog::warn("iPadRenderContext: ObtainAccessToURL failed for media folder '{}' — dropping from search list", folder);
+        }
+    }
+
+    // Wire the show dir + media folders into FileUtils::FixFile so that
+    // sequence references (audio, videos, images, 3D meshes, shaders, etc.)
+    // that were saved with absolute paths from another machine get re-resolved
+    // against the iPad's current show/media locations. Without this,
+    // _fixFileSearchDirs stays empty and FixFile has no way to relocate
+    // assets — the raw saved paths fall straight through and FileExists fails.
+    FileUtils::SetFixFileShowDir(showDir);
+    FileUtils::SetFixFileDirectories(mediaDirectories);
+    FileUtils::ClearNonExistentFiles();
+
+    // Load network/controller configuration
+    if (!_outputManager.Load(showDir)) {
+        spdlog::warn("iPadRenderContext: Failed to load xlights_networks.xml from {}", showDir);
+    } else if (_outputManager.DidConvert()) {
+        // A legacy <network> file was migrated to the controller
+        // structure in memory. Desktop flags the show as having unsaved
+        // network changes so the converted form is written back
+        // (TabSetup.cpp:456-458 → NetworkChange()); without the same
+        // flag here the migration is thrown away and redone on every
+        // single open.
+        _outputManager.SomethingChanged();
+        MarkControllersDirty();
+    }
+
+    // Reset the (base-owned, eager) model/view managers for this show — same
+    // clear()-on-reload the desktop frame does. The abort+drain above ensures no
+    // render worker still holds a Model* before we free them.
+    AllModels.clear();
+    AllObjects.clear();
+    _sequenceViewManager.SetModelManager(&AllModels);
+
+    // Load models from xlights_rgbeffects.xml
+    std::string rgbPath = showDir + "/xlights_rgbeffects.xml";
+    ObtainAccessToURL(rgbPath, false);
+
+    spdlog::info("iPadRenderContext: Loading rgbeffects from {}", rgbPath);
+    if (FileExists(rgbPath)) {
+        spdlog::info("iPadRenderContext: File exists: {}", rgbPath);
+    } else {
+        spdlog::error("iPadRenderContext: File NOT found: {}", rgbPath);
+    }
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(rgbPath.c_str());
+    if (result) {
+        auto xlightsNode = doc.child("xrgb");
+        if (!xlightsNode) {
+            xlightsNode = doc.child("xlights");
+        }
+        if (!xlightsNode) {
+            spdlog::error("iPadRenderContext: No <xrgb> or <xlights> root element in {}", rgbPath);
+        } else {
+            _showGuid.clear();
+            // Preview canvas size lives in the <settings> node as
+            // <previewWidth value="..."/> / <previewHeight value="..."/>.
+            // Desktop falls back to 1280x720 when absent; match that.
+            auto settingsNode = xlightsNode.child("settings");
+            if (settingsNode) {
+                for (auto s = settingsNode.first_child(); s; s = s.next_sibling()) {
+                    std::string name = s.name();
+                    const char* v = s.attribute("value").as_string();
+                    if (name == "ShowGUID") {
+                        _showGuid = v;
+                    } else if (name == "previewWidth") {
+                        int w = (int)std::strtol(v, nullptr, 10);
+                        if (w > 0) _previewWidth = w;
+                    } else if (name == "previewHeight") {
+                        int h = (int)std::strtol(v, nullptr, 10);
+                        if (h > 0) _previewHeight = h;
+                    } else if (name == "Display2DCenter0") {
+                        _display2DCenter0 = (std::string(v) == "1");
+                    } else if (name == "Display2DGrid") {
+                        _display2DGrid = (std::string(v) == "1");
+                    } else if (name == "Display2DGridSpacing") {
+                        long sp = std::strtol(v, nullptr, 10);
+                        if (sp > 0) _display2DGridSpacing = sp;
+                    } else if (name == "Display2DBoundingBox") {
+                        _display2DBoundingBox = (std::string(v) == "1");
+                    } else if (name == "LayoutMode3D") {
+                        _layoutMode3D = (std::string(v) == "1");
+                    } else if (name == "backgroundImage") {
+                        _backgroundImage = v;
+                    } else if (name == "backgroundBrightness") {
+                        int b = (int)std::strtol(v, nullptr, 10);
+                        if (b >= 0) _backgroundBrightness = b;
+                    } else if (name == "backgroundAlpha") {
+                        int a = (int)std::strtol(v, nullptr, 10);
+                        if (a >= 0) _backgroundAlpha = a;
+                    } else if (name == "scaleImage") {
+                        _scaleBackgroundImage = (std::strtol(v, nullptr, 10) > 0);
+                    }
+                }
+            }
+            // Mint the show's id if this is the first client ever to open it.
+            // Written straight back rather than deferred to SaveLayoutChanges:
+            // an id that only lives in memory would differ every launch, which
+            // is worse than having none at all for the counting it exists to
+            // support. Left empty if the folder is not writable.
+            if (_showGuid.empty()) {
+                // Split out from the mint condition: folding it in meant a show
+                // folder we could not take write access to produced no id and no
+                // trace of why, which is indistinguishable in a report from a
+                // show that simply has none yet.
+                if (!ObtainAccessToURL(rgbPath, true)) {
+                    spdlog::warn("iPadRenderContext: no show id - cannot take write access to {} to mint one", rgbPath);
+                } else {
+                    std::string guid = GenerateGuid();
+                    if (!settingsNode) {
+                        settingsNode = xlightsNode.append_child("settings");
+                    }
+                    settingsNode.append_child("ShowGUID").append_attribute("value") = guid.c_str();
+                    if (doc.save_file(rgbPath.c_str())) {
+                        _showGuid = guid;
+                    } else {
+                        spdlog::warn("iPadRenderContext: unable to write ShowGUID to {}", rgbPath);
+                    }
+                }
+            }
+            // Same wording the desktop logs, so one grep covers both. The id is
+            // in the show XML the manual package attaches, but the automatic
+            // upload carries no show content by design - this is the only place
+            // it reaches an automatic report outside the counts sidecar.
+            spdlog::info("Show id: {}", _showGuid.empty() ? std::string("none") : _showGuid);
+
+            // Resolve the background image against the show folder / media
+            // directories. FixFile handles both absolute paths (from a
+            // different machine's filesystem) and plain filenames.
+            if (!_backgroundImage.empty()) {
+                _backgroundImage = FileUtils::FixFile(showDirectory, _backgroundImage);
+                ObtainAccessToURL(_backgroundImage, false);
+                if (!FileExists(_backgroundImage)) {
+                    spdlog::warn("iPadRenderContext: background image not found: {}",
+                                 _backgroundImage);
+                    _backgroundImage.clear();
+                }
+            }
+            spdlog::info("iPadRenderContext: Preview canvas {}x{}, mode3D={}, center2D0={}, bg='{}' bri={} alpha={} scale={}",
+                         _previewWidth, _previewHeight, _layoutMode3D,
+                         _display2DCenter0, _backgroundImage,
+                         _backgroundBrightness, _backgroundAlpha,
+                         _scaleBackgroundImage);
+
+            // Named layout groups — each gets its own background stack.
+            // Desktop writes these under `<layoutGroups><layoutGroup …/>`
+            // with attribute-style values (not `<settings>` children).
+            _namedLayoutGroups.clear();
+            auto layoutGroupsNode = xlightsNode.child("layoutGroups");
+            if (layoutGroupsNode) {
+                for (auto lg = layoutGroupsNode.first_child(); lg; lg = lg.next_sibling()) {
+                    if (std::string_view(lg.name()) != "layoutGroup") continue;
+                    NamedLayoutGroup g;
+                    g.name = lg.attribute("name").as_string("");
+                    if (g.name.empty()) continue;
+                    g.backgroundImage = lg.attribute("backgroundImage").as_string("");
+                    g.backgroundBrightness = lg.attribute("backgroundBrightness").as_int(100);
+                    g.backgroundAlpha = lg.attribute("backgroundAlpha").as_int(100);
+                    g.scaleBackgroundImage = lg.attribute("scaleImage").as_int(0) > 0;
+                    if (!g.backgroundImage.empty()) {
+                        g.backgroundImage = FileUtils::FixFile(showDirectory, g.backgroundImage);
+                        ObtainAccessToURL(g.backgroundImage, false);
+                        if (!FileExists(g.backgroundImage)) {
+                            spdlog::warn("iPadRenderContext: layoutGroup '{}' bg not found: {}",
+                                         g.name, g.backgroundImage);
+                            g.backgroundImage.clear();
+                        }
+                    }
+                    _namedLayoutGroups.push_back(std::move(g));
+                }
+                spdlog::info("iPadRenderContext: Loaded {} named layout groups",
+                             _namedLayoutGroups.size());
+            }
+
+            auto modelsNode = xlightsNode.child("models");
+            if (!modelsNode) {
+                spdlog::error("iPadRenderContext: No <models> element in {}", rgbPath);
+            } else {
+                AllModels.LoadModels(modelsNode, _previewWidth, _previewHeight);
+                spdlog::info("iPadRenderContext: Loaded {} models", AllModels.GetModels().size());
+
+                // Load model groups
+                auto groupsNode = xlightsNode.child("modelGroups");
+                if (groupsNode) {
+                    AllModels.LoadGroups(groupsNode, _previewWidth, _previewHeight);
+                    spdlog::info("iPadRenderContext: Loaded groups, total models now {}",
+                                 AllModels.GetModels().size());
+                }
+
+                // Model Sets — translation-only links between models
+                // (`<modelSets>` sibling of `<modelGroups>`; see
+                // ModelSetManager.h). Loading matters even with no Set UI
+                // on screen: the manager is what keeps a Set coherent
+                // through a model rename or delete, so without this an
+                // iPad edit would leave the desktop user's Set pointing
+                // at a name that no longer exists.
+                AllModels.GetSetManager().Load(xlightsNode.child("modelSets"));
+                spdlog::info("iPadRenderContext: Loaded {} model sets",
+                             AllModels.GetSetManager().GetAllSets().size());
+
+                // Load view objects (house meshes, ground images, gridlines, terrain, rulers)
+                auto viewObjectsNode = xlightsNode.child("view_objects");
+                if (viewObjectsNode) {
+                    AllObjects.LoadViewObjects(viewObjectsNode);
+                    spdlog::info("iPadRenderContext: Loaded {} view objects",
+                                 AllObjects.size());
+                }
+
+                // Load saved views. `SequenceViewManager::GetViews()` always
+                // ensures a Master View entry, but the rest (Christmas,
+                // Halloween, etc.) come from the <views> node.
+                auto viewsNode = xlightsNode.child("views");
+                if (viewsNode) {
+                    _sequenceViewManager.Load(viewsNode, 0);
+                    spdlog::info("iPadRenderContext: Loaded {} views",
+                                 _sequenceViewManager.GetViewCount());
+                }
+
+                // Viewpoints — saved camera positions (2D/3D separated).
+                // Desktop exposes these via the preview right-click menu
+                // (ModelPreview context menu). On iPad we surface them
+                // through the preview controls overlay.
+                auto viewpointsNode = xlightsNode.child("Viewpoints");
+                viewpoint_mgr.Clear();
+                if (viewpointsNode) {
+                    viewpoint_mgr.Load(viewpointsNode);
+                    spdlog::info("iPadRenderContext: Loaded viewpoints (2D={}, 3D={})",
+                                 viewpoint_mgr.GetNum2DCameras(),
+                                 viewpoint_mgr.GetNum3DCameras());
+                }
+            }
+        }
+    } else {
+        spdlog::error("iPadRenderContext: Failed to load {}: {}", rgbPath, result.description());
+    }
+
+    // Load the user-customised <colors> palette so brackets / labels /
+    // gridlines pick up the same look the user configured on desktop.
+    // Re-uses the doc loaded above when possible, falls through to a
+    // separate parse if loading failed.
+    _palette.clear();
+    auto loadPaletteFrom = [this](const pugi::xml_node& root) {
+        auto colorsNode = root.child("colors");
+        if (!colorsNode) return;
+        for (auto c = colorsNode.first_child(); c; c = c.next_sibling()) {
+            PaletteColor pc;
+            pc.r = (uint8_t)std::clamp(c.attribute("Red").as_int(0), 0, 255);
+            pc.g = (uint8_t)std::clamp(c.attribute("Green").as_int(0), 0, 255);
+            pc.b = (uint8_t)std::clamp(c.attribute("Blue").as_int(0), 0, 255);
+            _palette[c.name()] = pc;
+        }
+    };
+    if (result) {
+        auto root = doc.child("xrgb");
+        if (!root) root = doc.child("xlights");
+        if (root) loadPaletteFrom(root);
+    }
+
+    // PRE-1 — load the persistent effect preset library. Prefer the
+    // desktop JSON file so presets round-trip cross-platform; fall back
+    // to the legacy <effects> node embedded in xlights_rgbeffects.xml
+    // (migration path, matching xLightsFrame::LoadEffectsFile). The
+    // version stamp is needed so a later SaveEffectPresets writes a
+    // current-format file.
+    _effectPresetManager.Reset();
+    std::string presetsPath = showDir + "/" + XLIGHTS_PRESETS_FILE;
+    ObtainAccessToURL(presetsPath, false);
+    if (_effectPresetManager.LoadJsonFile(presetsPath)) {
+        spdlog::info("iPadRenderContext: Loaded effect presets from {}", presetsPath);
+    } else if (result) {
+        auto root = doc.child("xrgb");
+        if (!root) root = doc.child("xlights");
+        if (root) {
+            auto effectsNode = root.child("effects");
+            if (effectsNode) {
+                _effectPresetManager.Load(effectsNode);
+                spdlog::info("iPadRenderContext: Migrated effect presets from {} (<effects> node)", rgbPath);
+            }
+        }
+    }
+    if (_effectPresetManager.GetVersion().empty()) {
+        _effectPresetManager.SetVersion(XLIGHTS_RGBEFFECTS_VERSION);
+    }
+    // Repair illegal characters and name collisions in the loaded
+    // library, as desktop does when the preset tree opens
+    // (EffectTreeDialog.cpp:227-236). Write the repaired names straight
+    // back: desktop can afford to tell the user to save from the Layout
+    // tab, but here nothing else would carry the change and the next
+    // load would just repeat the repair.
+    if (_effectPresetManager.FixRgbEffects()) {
+        spdlog::info("iPadRenderContext: auto-corrected preset/group names in {}", presetsPath);
+        SaveEffectPresets();
+    }
+
+    LoadBasePresets();
+
+    return true;
+}
+
+bool iPadRenderContext::LoadBasePresets() {
+    _basePresetManager.Reset();
+    std::string baseDir = _outputManager.GetBaseShowDir();
+    if (baseDir.empty() || baseDir == showDirectory)
+        return false;
+    std::string basePresetsPath = baseDir + "/" + XLIGHTS_PRESETS_FILE;
+    ObtainAccessToURL(basePresetsPath, false);
+    if (_basePresetManager.LoadJsonFile(basePresetsPath) &&
+        !_basePresetManager.GetRoot().GetChildren().empty()) {
+        spdlog::info("iPadRenderContext: Loaded base effect presets from {}", basePresetsPath);
+        return true;
+    }
+    _basePresetManager.Reset();
+    return false;
+}
+
+bool iPadRenderContext::SaveEffectPresets() {
+    if (showDirectory.empty())
+        return false;
+    if (_effectPresetManager.GetVersion().empty()) {
+        _effectPresetManager.SetVersion(XLIGHTS_RGBEFFECTS_VERSION);
+    }
+    std::string backupPath = showDirectory + "/" + XLIGHTS_PRESETS_FILE_BACKUP;
+    ObtainAccessToURL(backupPath, true);
+    _effectPresetManager.SaveJsonFile(backupPath); // best-effort
+
+    std::string presetsPath = showDirectory + "/" + XLIGHTS_PRESETS_FILE;
+    ObtainAccessToURL(presetsPath, true);
+    if (!_effectPresetManager.SaveJsonFile(presetsPath)) {
+        spdlog::warn("iPadRenderContext: failed to save effect presets to {}", presetsPath);
+        return false;
+    }
+    return true;
+}
+
+iPadRenderContext::PaletteColor
+iPadRenderContext::GetEffectBracketColor(EffectBracketState state) const {
+    // Defaults mirror ColorManager::xLights_color[] in
+    // src-ui-wx/color/ColorManager.h. Names match the strings desktop
+    // writes into <colors> so a user's customised palette overrides
+    // the default.
+    const char* key = nullptr;
+    PaletteColor fallback;
+    switch (state) {
+        case EffectBracketState::Default:
+            key = "EffectDefault";
+            fallback = {192, 192, 192};
+            break;
+        case EffectBracketState::Selected:
+            key = "EffectSelected";
+            fallback = {204, 102, 255};
+            break;
+        case EffectBracketState::Locked:
+            key = "LockedEffect";
+            fallback = {200, 0, 0};
+            break;
+        case EffectBracketState::Disabled:
+            key = "DisabledEffect";
+            fallback = {200, 200, 0};
+            break;
+    }
+    auto it = _palette.find(key);
+    return it == _palette.end() ? fallback : it->second;
+}
+
+bool iPadRenderContext::RegenerateShowGuid() {
+    if (showDirectory.empty()) return false;
+    std::string rgbPath = showDirectory + "/xlights_rgbeffects.xml";
+    if (!ObtainAccessToURL(rgbPath, true)) {
+        spdlog::warn("iPadRenderContext: cannot take write access to '{}' to re-mint the show id", rgbPath);
+        return false;
+    }
+
+    pugi::xml_document doc;
+    if (!doc.load_file(rgbPath.c_str())) return false;
+    auto xlightsNode = doc.child("xrgb");
+    if (!xlightsNode) xlightsNode = doc.child("xlights");
+    if (!xlightsNode) return false;
+
+    auto settingsNode = xlightsNode.child("settings");
+    if (!settingsNode) settingsNode = xlightsNode.append_child("settings");
+    // Unlike the first mint, the node is normally already there and has to be
+    // updated in place - appending a second ShowGUID would leave the reader
+    // taking whichever came first.
+    pugi::xml_node guidNode;
+    for (auto s = settingsNode.first_child(); s; s = s.next_sibling()) {
+        if (std::string(s.name()) == "ShowGUID") {
+            guidNode = s;
+            break;
+        }
+    }
+    if (!guidNode) guidNode = settingsNode.append_child("ShowGUID");
+
+    std::string const guid = GenerateGuid();
+    if (auto attr = guidNode.attribute("value")) {
+        attr.set_value(guid.c_str());
+    } else {
+        guidNode.append_attribute("value") = guid.c_str();
+    }
+    if (!doc.save_file(rgbPath.c_str())) {
+        spdlog::warn("iPadRenderContext: unable to write the re-minted show id to '{}'", rgbPath);
+        return false;
+    }
+    _showGuid = guid;
+    spdlog::info("Show id matched the base show folder's, so this show was given a new one: {}", guid);
+    return true;
+}
+
+bool iPadRenderContext::SaveViewpoints() {
+    if (showDirectory.empty()) return false;
+    std::string rgbPath = showDirectory + "/xlights_rgbeffects.xml";
+    if (!ObtainAccessToURL(rgbPath, true)) {
+        spdlog::warn("iPadRenderContext::SaveViewpoints: ObtainAccessToURL failed for '{}' — write will likely fail", rgbPath);
+    }
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(rgbPath.c_str());
+    if (!result) {
+        spdlog::error("iPadRenderContext::SaveViewpoints: load failed: {}",
+                      result.description());
+        return false;
+    }
+    auto root = doc.child("xrgb");
+    if (!root) root = doc.child("xlights");
+    if (!root) {
+        spdlog::error("iPadRenderContext::SaveViewpoints: no root element");
+        return false;
+    }
+
+    // Remove the old Viewpoints subtree and rewrite from the in-memory
+    // ViewpointMgr. ViewpointMgr::Save walks the visitor which creates
+    // a fresh <Viewpoints> child under the target node.
+    while (auto existing = root.child("Viewpoints")) {
+        root.remove_child(existing);
+    }
+    XmlSerializingVisitor visitor(root);
+    viewpoint_mgr.Save(visitor);
+
+    if (!doc.save_file(rgbPath.c_str(), "  ")) {
+        spdlog::error("iPadRenderContext::SaveViewpoints: write failed for {}",
+                      rgbPath);
+        return false;
+    }
+    return true;
+}
+
+bool iPadRenderContext::SaveViews() {
+    if (showDirectory.empty()) return false;
+    std::string rgbPath = showDirectory + "/xlights_rgbeffects.xml";
+    if (!ObtainAccessToURL(rgbPath, true)) {
+        spdlog::warn("iPadRenderContext::SaveViews: ObtainAccessToURL failed for '{}' — write will likely fail", rgbPath);
+    }
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(rgbPath.c_str());
+    if (!result) {
+        spdlog::error("iPadRenderContext::SaveViews: load failed: {}",
+                      result.description());
+        return false;
+    }
+    auto root = doc.child("xrgb");
+    if (!root) root = doc.child("xlights");
+    if (!root) {
+        spdlog::error("iPadRenderContext::SaveViews: no root element");
+        return false;
+    }
+
+    while (auto existing = root.child("views")) {
+        root.remove_child(existing);
+    }
+    XmlSerializingVisitor visitor(root);
+    _sequenceViewManager.Save(visitor);
+
+    if (!doc.save_file(rgbPath.c_str(), "  ")) {
+        spdlog::error("iPadRenderContext::SaveViews: write failed for {}",
+                      rgbPath);
+        return false;
+    }
+    return true;
+}
+
+bool iPadRenderContext::SaveModelStates() {
+    if (_dirtyStateModels.empty()) return true;
+    if (showDirectory.empty()) return false;
+
+    std::string rgbPath = showDirectory + "/xlights_rgbeffects.xml";
+    if (!ObtainAccessToURL(rgbPath, true)) {
+        spdlog::warn("iPadRenderContext::SaveModelStates: ObtainAccessToURL failed for '{}' — write will likely fail", rgbPath);
+    }
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(rgbPath.c_str());
+    if (!result) {
+        spdlog::error("iPadRenderContext::SaveModelStates: load failed: {}",
+                      result.description());
+        return false;
+    }
+    auto root = doc.child("xrgb");
+    if (!root) root = doc.child("xlights");
+    if (!root) {
+        spdlog::error("iPadRenderContext::SaveModelStates: no root element");
+        return false;
+    }
+    auto modelsNode = root.child("models");
+    if (!modelsNode) {
+        spdlog::error("iPadRenderContext::SaveModelStates: no <models> element");
+        return false;
+    }
+
+    for (const auto& modelName : _dirtyStateModels) {
+        Model* m = AllModels.GetModel(modelName);
+        if (!m) {
+            spdlog::warn("iPadRenderContext::SaveModelStates: model '{}' not in manager — skipping",
+                         modelName);
+            continue;
+        }
+        // Find the matching <model> child by Name attribute.
+        pugi::xml_node modelNode;
+        for (auto n = modelsNode.first_child(); n; n = n.next_sibling()) {
+            if (std::string_view(n.name()) != "model") continue;
+            if (modelName == n.attribute("name").as_string()) {
+                modelNode = n;
+                break;
+            }
+        }
+        if (!modelNode) {
+            spdlog::warn("iPadRenderContext::SaveModelStates: <model name='{}'> not found in xml — skipping",
+                         modelName);
+            continue;
+        }
+        // Drop existing <stateInfo> children, then rewrite from the live map.
+        // WriteStateInfo prepends, so the on-disk order ends up reversed
+        // relative to the in-memory map iteration order — same behaviour
+        // desktop has, so this matches the canonical file layout.
+        while (auto existing = modelNode.child("stateInfo")) {
+            modelNode.remove_child(existing);
+        }
+        Model::WriteStateInfo(modelNode, m->GetStateInfo());
+    }
+
+    if (!doc.save_file(rgbPath.c_str(), "  ")) {
+        spdlog::error("iPadRenderContext::SaveModelStates: write failed for {}",
+                      rgbPath);
+        return false;
+    }
+    _dirtyStateModels.clear();
+    return true;
+}
+
+bool iPadRenderContext::SaveLayoutChanges() {
+    return SaveLayoutChangesTo("", /*clearDirty*/ true);
+}
+
+namespace {
+std::string LayoutAutosavePathFor(const std::string& showDir) {
+    return showDir + "/xlights_rgbeffects.xbkp";
+}
+}  // namespace
+
+bool iPadRenderContext::HasNewerLayoutAutosave() const {
+    if (showDirectory.empty()) return false;
+    const std::string autosave = LayoutAutosavePathFor(showDirectory);
+    const std::string live = showDirectory + "/xlights_rgbeffects.xml";
+    if (!FileExists(autosave)) return false;
+    auto autoTicks = FileUtils::GetFileModTimeTicks(autosave);
+    if (!autoTicks) return false;
+    auto liveTicks = FileUtils::GetFileModTimeTicks(live);
+    // No live file at all: anything we autosaved is worth offering.
+    if (!liveTicks) return true;
+    return *autoTicks > *liveTicks;
+}
+
+bool iPadRenderContext::RestoreLayoutAutosave() {
+    if (showDirectory.empty()) return false;
+    const std::string autosave = LayoutAutosavePathFor(showDirectory);
+    const std::string live = showDirectory + "/xlights_rgbeffects.xml";
+    if (!FileExists(autosave)) return false;
+    ObtainAccessToURL(live, true);
+
+    // Keep the file we're about to replace — the same one-step
+    // recovery the ordinary save path leaves behind.
+    std::error_code ec;
+    if (FileExists(live)) {
+        std::filesystem::copy_file(live, live + ".iPad-bkp",
+                                    std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) {
+            spdlog::warn("iPadRenderContext::RestoreLayoutAutosave: backup of {} failed: {}",
+                         live, ec.message());
+            ec.clear();
+        }
+    }
+    std::filesystem::copy_file(autosave, live,
+                                std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        spdlog::error("iPadRenderContext::RestoreLayoutAutosave: copy failed: {}", ec.message());
+        return false;
+    }
+    DiscardLayoutAutosave();
+    return true;
+}
+
+void iPadRenderContext::DiscardLayoutAutosave() {
+    if (showDirectory.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(LayoutAutosavePathFor(showDirectory), ec);
+}
+
+// Autosave target: the patched document goes to
+// `xlights_rgbeffects.xbkp` (desktop's name, so either platform
+// recognises the file) and the dirty sets are left alone, so the
+// pending edits still land in the real file on the next explicit save.
+bool iPadRenderContext::AutosaveLayoutChanges() {
+    if (showDirectory.empty()) return false;
+    return SaveLayoutChangesTo(LayoutAutosavePathFor(showDirectory),
+                               /*clearDirty*/ false);
+}
+
+bool iPadRenderContext::SaveLayoutChangesTo(const std::string& targetPath, bool clearDirty) {
+    const bool hasLayoutDirt =
+        !_deletedLayoutGroups.empty() ||
+        !_dirtyLayoutModels.empty() ||
+        !_dirtyLayoutViewObjects.empty() ||
+        !_createdGroups.empty() ||
+        !_deletedGroups.empty() ||
+        !_createdViewObjects.empty() ||
+        !_deletedViewObjects.empty() ||
+        !_dirtyBackgroundGroups.empty() ||
+        !_renamedGroups.empty() ||
+        !_renamedViewObjects.empty() ||
+        !_renamedModels.empty();
+    if (!hasLayoutDirt && !_controllersDirty) {
+        return true;
+    }
+    if (showDirectory.empty()) return false;
+
+    // J-31 — Controllers tab edits live in xlights_networks.xml.
+    // Save them first; if the layout side has no other changes,
+    // we're done.
+    if (_controllersDirty && clearDirty) {
+        if (!_outputManager.Save()) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: OutputManager::Save() failed");
+            // Continue to layout save — partial saves are still
+            // useful, and the dirty flag stays set until success.
+        } else {
+            _controllersDirty = false;
+        }
+        if (!hasLayoutDirt) return true;
+    }
+    if (!hasLayoutDirt) return true;
+
+    // Read the live file, patch it, then write wherever the caller
+    // asked — the real file for a save, the .xbkp copy for an autosave.
+    std::string rgbPath = showDirectory + "/xlights_rgbeffects.xml";
+    const std::string writePath = targetPath.empty() ? rgbPath : targetPath;
+    if (!ObtainAccessToURL(rgbPath, true)) {
+        spdlog::warn("iPadRenderContext::SaveLayoutChanges: ObtainAccessToURL failed for '{}' — write will likely fail", rgbPath);
+    }
+
+    // Always copy the current on-disk file to a single rolling
+    // backup before overwriting. The user can `cp` it back if a
+    // session of testing turns out badly. The backup intentionally
+    // overwrites itself each save so it doesn't accumulate; one
+    // step of recovery is the explicit goal. Skipped for an autosave,
+    // which doesn't touch the real file and so has nothing to protect.
+    if (clearDirty && FileExists(rgbPath)) {
+        std::string backupPath = rgbPath + ".iPad-bkp";
+        std::error_code ec;
+        std::filesystem::copy_file(rgbPath, backupPath,
+                                    std::filesystem::copy_options::overwrite_existing,
+                                    ec);
+        if (ec) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: backup copy {} failed: {}",
+                         backupPath, ec.message());
+        }
+    }
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(rgbPath.c_str());
+    if (!result) {
+        spdlog::error("iPadRenderContext::SaveLayoutChanges: load failed: {}",
+                      result.description());
+        return false;
+    }
+    auto root = doc.child("xrgb");
+    if (!root) root = doc.child("xlights");
+    if (!root) {
+        spdlog::error("iPadRenderContext::SaveLayoutChanges: no root element");
+        return false;
+    }
+    auto modelsNode = root.child("models");
+    if (!modelsNode) {
+        spdlog::error("iPadRenderContext::SaveLayoutChanges: no <models> element");
+        return false;
+    }
+    auto modelGroupsNode = root.child("modelGroups");
+    // J-7 — if a brand-new group landed before the file ever had
+    // any groups, ensure the <modelGroups> container exists. The
+    // desktop happily reads xml without a <modelGroups> node, so
+    // any show that's never had groups won't have one.
+    if (!modelGroupsNode && !_createdGroups.empty()) {
+        modelGroupsNode = root.append_child("modelGroups");
+    }
+
+    // J-7 (group CRUD) — Pass 0a: drop deleted groups so the
+    // subsequent passes don't find stale elements.
+    if (modelGroupsNode && !_deletedGroups.empty()) {
+        for (const auto& deletedName : _deletedGroups) {
+            for (auto n = modelGroupsNode.first_child(); n; ) {
+                auto next = n.next_sibling();
+                if (std::string_view(n.name()) == "modelGroup" &&
+                    deletedName == n.attribute("name").as_string()) {
+                    modelGroupsNode.remove_child(n);
+                }
+                n = next;
+            }
+        }
+    }
+
+    // J-7 — Pass 0b: append a fresh <modelGroup> element for each
+    // newly-created group, populated from the live in-memory
+    // ModelGroup. Subsequent passes may patch additional attrs if
+    // the user edited the group after creating it.
+    if (modelGroupsNode && !_createdGroups.empty()) {
+        for (const auto& createdName : _createdGroups) {
+            Model* m = AllModels.GetModel(createdName);
+            if (!m || m->GetDisplayAs() != DisplayAsType::ModelGroup) {
+                spdlog::warn("iPadRenderContext::SaveLayoutChanges: created group '{}' not in manager — skipping",
+                             createdName);
+                continue;
+            }
+            auto* g = static_cast<ModelGroup*>(m);
+            pugi::xml_node node = modelGroupsNode.append_child("modelGroup");
+            node.append_attribute("name")           = createdName.c_str();
+            node.append_attribute("LayoutGroup")    = g->GetLayoutGroup().c_str();
+            node.append_attribute("layout")         = g->GetLayout().c_str();
+            node.append_attribute("DefaultCamera")  = g->GetDefaultCamera().c_str();
+            node.append_attribute("GridSize")       = g->GetGridSize();
+            node.append_attribute("centreX")        = std::to_string(g->GetCentreX()).c_str();
+            node.append_attribute("centreY")        = std::to_string(g->GetCentreY()).c_str();
+            node.append_attribute("centreDefined")  = std::to_string(g->GetCentreDefined()).c_str();
+            node.append_attribute("selected")       = "0";
+            std::string members;
+            for (size_t i = 0; i < g->ModelNames().size(); ++i) {
+                if (i > 0) members += ",";
+                members += g->ModelNames()[i];
+            }
+            node.append_attribute("models") = members.c_str();
+            // Strip from dirty set — we've just written everything
+            // we know about this group, no need to patch it too.
+            _dirtyLayoutModels.erase(createdName);
+        }
+    }
+
+    // For each dirty model, serialize the in-memory Model into a fresh
+    // pugi::xml_document via the canonical XmlSerializer (same path
+    // desktop uses for export). Replace the matching <model> child of
+    // the on-disk <models> node with the serialized one. Preserves
+    // every attribute the Model owns — transforms, dimensions,
+    // rotation, locked, layoutGroup, controllerName, plus model-type-
+    // specific attributes the live edit may have side-effected.
+    for (const auto& modelName : _dirtyLayoutModels) {
+        Model* m = AllModels.GetModel(modelName);
+        if (!m) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: model '{}' not in manager — skipping",
+                         modelName);
+            continue;
+        }
+
+        // ModelGroups live in `<modelGroups>`, not `<models>`, and
+        // their on-disk form is a flat attribute list — no nested
+        // child elements. Patch attributes in place rather than
+        // serializing through XmlSerializer (which targets `<model>`).
+        if (m->GetDisplayAs() == DisplayAsType::ModelGroup) {
+            if (!modelGroupsNode) {
+                spdlog::warn("iPadRenderContext::SaveLayoutChanges: dirty group '{}' but no <modelGroups> element",
+                             modelName);
+                continue;
+            }
+            // J-16 — rename support. If this group was renamed in
+            // memory, the on-disk `<modelGroup>` still has the OLD
+            // name. Look it up via the renames map, find by old
+            // name, then update the name attribute below.
+            std::string findName = modelName;
+            bool renamed = false;
+            if (auto it = _renamedGroups.find(modelName); it != _renamedGroups.end()) {
+                findName = it->second;
+                renamed = true;
+            }
+            pugi::xml_node existing;
+            for (auto n = modelGroupsNode.first_child(); n; n = n.next_sibling()) {
+                if (std::string_view(n.name()) != "modelGroup") continue;
+                if (findName == n.attribute("name").as_string()) {
+                    existing = n;
+                    break;
+                }
+            }
+            if (!existing) {
+                spdlog::warn("iPadRenderContext::SaveLayoutChanges: <modelGroup name='{}'> not found",
+                             findName);
+                continue;
+            }
+            if (renamed) {
+                if (existing.attribute("name")) existing.remove_attribute("name");
+                existing.append_attribute("name") = modelName.c_str();
+            }
+            ModelGroup* g = static_cast<ModelGroup*>(m);
+            auto setAttr = [&](const char* k, const std::string& v) {
+                if (existing.attribute(k)) existing.remove_attribute(k);
+                existing.append_attribute(k) = v.c_str();
+            };
+            auto setAttrInt = [&](const char* k, int v) {
+                if (existing.attribute(k)) existing.remove_attribute(k);
+                existing.append_attribute(k) = v;
+            };
+            setAttr("LayoutGroup",    g->GetLayoutGroup());
+            setAttr("layout",         g->GetLayout());
+            setAttr("DefaultCamera",  g->GetDefaultCamera());
+            setAttrInt("GridSize",    g->GetGridSize());
+            setAttr("centreX",        std::to_string(g->GetCentreX()));
+            setAttr("centreY",        std::to_string(g->GetCentreY()));
+            setAttr("centreDefined",  std::to_string(g->GetCentreDefined()));
+            // J-7 (group CRUD) — write the comma-delimited member
+            // list so add/remove member edits persist.
+            std::string members;
+            for (size_t i = 0; i < g->ModelNames().size(); ++i) {
+                if (i > 0) members += ",";
+                members += g->ModelNames()[i];
+            }
+            setAttr("models", members);
+            // Persist the FromBase flag: clear the attribute when
+            // unlinked (so a subsequent base-folder merge doesn't
+            // re-overwrite local edits), or ensure it's "1" when
+            // still linked. Matches how BaseSerializingVisitor
+            // handles FromBase for models.
+            if (g->IsFromBase()) {
+                if (!existing.attribute("FromBase") ||
+                    strcmp(existing.attribute("FromBase").value(), "1") != 0) {
+                    if (existing.attribute("FromBase"))
+                        existing.remove_attribute("FromBase");
+                    existing.append_attribute("FromBase") = "1";
+                }
+            } else {
+                if (existing.attribute("FromBase"))
+                    existing.remove_attribute("FromBase");
+            }
+            continue;
+        }
+
+        XmlSerializer serializer;
+        pugi::xml_document modelDoc = serializer.SerializeModel(m);
+        pugi::xml_node serRoot = modelDoc.document_element();
+        if (!serRoot) continue;
+        pugi::xml_node serModel = serRoot.first_child();
+        if (!serModel) continue;
+
+        // J-18 — rename support. If this model was renamed in
+        // memory, the on-disk `<model>` still has the OLD name.
+        // Find by old name (taken from the renames map keyed by
+        // new) and let `insert_copy_before` swap it for the
+        // serialized copy (which already carries the new name).
+        std::string findName = modelName;
+        if (auto it = _renamedModels.find(modelName); it != _renamedModels.end()) {
+            findName = it->second;
+        }
+        pugi::xml_node existing;
+        for (auto n = modelsNode.first_child(); n; n = n.next_sibling()) {
+            if (std::string_view(n.name()) != "model") continue;
+            if (findName == n.attribute("name").as_string()) {
+                existing = n;
+                break;
+            }
+        }
+        if (!existing) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: <model name='{}'> not found in xml — appending",
+                         findName);
+            modelsNode.append_copy(serModel);
+            continue;
+        }
+        // Replace by inserting the serialized copy before the old node
+        // and removing the old node — pugixml has no "replace_child".
+        modelsNode.insert_copy_before(serModel, existing);
+        modelsNode.remove_child(existing);
+    }
+
+    // J-6 — patch `<view_object>` attributes in place for each
+    // dirty view object. View-object on-disk form is a flat
+    // attribute list, so we patch the screen-location attribs the
+    // user can edit (WorldPos / Scale / Rotate / Locked /
+    // LayoutGroup). Per-type attributes (Mesh's ObjFile, Image's
+    // bitmap path) round-trip untouched.
+    // J-12 — view-object create/delete + per-object patch.
+    if (!_dirtyLayoutViewObjects.empty() ||
+        !_createdViewObjects.empty() ||
+        !_deletedViewObjects.empty()) {
+        auto viewObjectsNode = root.child("view_objects");
+        if (!viewObjectsNode && !_createdViewObjects.empty()) {
+            viewObjectsNode = root.append_child("view_objects");
+        }
+        if (!viewObjectsNode) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: dirty view objects but no <view_objects> element — skipping");
+        } else {
+            // Drop deleted view objects first.
+            for (const auto& deletedName : _deletedViewObjects) {
+                for (auto n = viewObjectsNode.first_child(); n; ) {
+                    auto next = n.next_sibling();
+                    if (std::string_view(n.name()) == "view_object" &&
+                        deletedName == n.attribute("name").as_string()) {
+                        viewObjectsNode.remove_child(n);
+                    }
+                    n = next;
+                }
+            }
+            // Append fresh elements for created view objects. The
+            // common patcher below then writes their per-type
+            // attrs (since we add the name to the dirty set
+            // before falling through).
+            {
+                for (const auto& createdName : _createdViewObjects) {
+                    ViewObject* vo = AllObjects.GetViewObject(createdName);
+                    if (!vo) {
+                        spdlog::warn("iPadRenderContext::SaveLayoutChanges: created VO '{}' not in manager",
+                                     createdName);
+                        continue;
+                    }
+                    pugi::xml_node node = viewObjectsNode.append_child("view_object");
+                    node.append_attribute("name") = createdName.c_str();
+                    node.append_attribute("DisplayAs") = vo->GetDisplayAsString().c_str();
+                    // Defer the rest to the dirty patcher.
+                    _dirtyLayoutViewObjects.insert(createdName);
+                }
+            }
+        }
+    }
+    if (!_dirtyLayoutViewObjects.empty()) {
+        auto viewObjectsNode = root.child("view_objects");
+        if (!viewObjectsNode) {
+            spdlog::warn("iPadRenderContext::SaveLayoutChanges: dirty view objects but no <view_objects> element — skipping");
+        } else {
+            ViewObjectManager& vm = AllObjects;
+            for (const auto& objName : _dirtyLayoutViewObjects) {
+                ViewObject* vo = vm.GetViewObject(objName);
+                if (!vo) {
+                    spdlog::warn("iPadRenderContext::SaveLayoutChanges: view object '{}' not in manager — skipping",
+                                 objName);
+                    continue;
+                }
+                // J-17 — rename support: if this VO was renamed
+                // in memory, the on-disk `<view_object>` still
+                // has the OLD name. Look up via the renames map
+                // and update the name attribute below.
+                std::string findName = objName;
+                bool renamed = false;
+                if (auto it = _renamedViewObjects.find(objName);
+                    it != _renamedViewObjects.end()) {
+                    findName = it->second;
+                    renamed = true;
+                }
+                pugi::xml_node existing;
+                for (auto n = viewObjectsNode.first_child(); n; n = n.next_sibling()) {
+                    if (std::string_view(n.name()) != "view_object") continue;
+                    if (findName == n.attribute("name").as_string()) {
+                        existing = n;
+                        break;
+                    }
+                }
+                if (!existing) {
+                    spdlog::warn("iPadRenderContext::SaveLayoutChanges: <view_object name='{}'> not found",
+                                 findName);
+                    continue;
+                }
+                if (renamed) {
+                    if (existing.attribute("name")) existing.remove_attribute("name");
+                    existing.append_attribute("name") = objName.c_str();
+                }
+                auto& loc = vo->GetObjectScreenLocation();
+                auto setAttr = [&](const char* k, const std::string& v) {
+                    if (existing.attribute(k)) existing.remove_attribute(k);
+                    existing.append_attribute(k) = v.c_str();
+                };
+                auto removeAttr = [&](const char* k) {
+                    if (existing.attribute(k)) existing.remove_attribute(k);
+                };
+                glm::vec3 pos    = loc.GetWorldPosition();
+                glm::vec3 scale  = loc.GetScaleMatrix();
+                glm::vec3 rotate = loc.GetRotation();
+                setAttr("WorldPosX", std::to_string(pos.x));
+                setAttr("WorldPosY", std::to_string(pos.y));
+                setAttr("WorldPosZ", std::to_string(pos.z));
+                setAttr("ScaleX",    std::to_string(scale.x));
+                setAttr("ScaleY",    std::to_string(scale.y));
+                setAttr("ScaleZ",    std::to_string(scale.z));
+                setAttr("RotateX",   std::to_string(rotate.x));
+                setAttr("RotateY",   std::to_string(rotate.y));
+                setAttr("RotateZ",   std::to_string(rotate.z));
+                setAttr("LayoutGroup", vo->GetLayoutGroup());
+                if (loc.IsLocked()) {
+                    setAttr("Locked", "1");
+                } else {
+                    removeAttr("Locked");
+                }
+                if (vo->IsActive()) {
+                    removeAttr("Active");
+                } else {
+                    setAttr("Active", "0");
+                }
+                auto setInt = [&](const char* k, int v) {
+                    if (existing.attribute(k)) existing.remove_attribute(k);
+                    existing.append_attribute(k) = v;
+                };
+                // J-12 — per-type attrs. Names match the
+                // XmlNodeKeys constants used by the deserialize
+                // factory so round-trip on next launch is clean.
+                switch (vo->GetDisplayAs()) {
+                    case DisplayAsType::Mesh: {
+                        auto* m = dynamic_cast<MeshObject*>(vo);
+                        if (m) {
+                            setAttr("ObjFile",    FileUtils::MakeRelativeFileOrOriginal(m->GetObjFile()));
+                            setInt ("Brightness", m->GetBrightness());
+                            setAttr("MeshOnly",   m->IsMeshOnly() ? "1" : "0");
+                        }
+                        break;
+                    }
+                    case DisplayAsType::Image: {
+                        auto* i = dynamic_cast<ImageObject*>(vo);
+                        if (i) {
+                            setAttr("Image",        FileUtils::MakeRelativeFileOrOriginal(i->GetImageFile()));
+                            setInt ("Brightness",   i->GetBrightness());
+                            setInt ("Transparency", i->GetTransparency());
+                        }
+                        break;
+                    }
+                    case DisplayAsType::Gridlines: {
+                        auto* g = dynamic_cast<GridlinesObject*>(vo);
+                        if (g) {
+                            setInt ("GridLineSpacing", g->GetGridLineSpacing());
+                            setInt ("GridWidth",       g->GetGridWidth());
+                            setInt ("GridHeight",      g->GetGridHeight());
+                            setAttr("GridColor",       g->GetGridColor());
+                            setAttr("GridAxis",        g->GetHasAxis() ? "1" : "0");
+                            setAttr("PointToFront",    g->GetPointToFront() ? "1" : "0");
+                        }
+                        break;
+                    }
+                    case DisplayAsType::Terrain: {
+                        auto* t = dynamic_cast<TerrainObject*>(vo);
+                        if (t) {
+                            setAttr("Image",              FileUtils::MakeRelativeFileOrOriginal(t->GetImageFile()));
+                            setInt ("Brightness",         (int)t->GetBrightness());
+                            setInt ("Transparency",       t->GetTransparency());
+                            // Desktop typo: "Terrian" not "Terrain"
+                            // (deserializer reads both but writes
+                            // the legacy spelling).
+                            setInt ("TerrianLineSpacing", t->GetSpacing());
+                            setInt ("TerrianWidth",       t->GetWidth());
+                            setInt ("TerrianDepth",       t->GetDepth());
+                            setAttr("HideGrid",  t->IsHideGrid()  ? "1" : "0");
+                            setAttr("HideImage", t->IsHideImage() ? "1" : "0");
+                            setAttr("GridColor", t->GetGridColor());
+                        }
+                        break;
+                    }
+                    case DisplayAsType::Ruler: {
+                        auto* r = dynamic_cast<RulerObject*>(vo);
+                        if (r) {
+                            setInt ("Units",  RulerObject::GetUnits());
+                            setAttr("Length", std::to_string(r->GetLength()));
+                            // J-14 — TwoPointScreenLocation point-2
+                            // offset. WorldPos (X/Y/Z = point 1)
+                            // already written by the common patcher.
+                            if (auto* tpl = dynamic_cast<TwoPointScreenLocation*>(&loc)) {
+                                setAttr("X2", std::to_string(tpl->GetX2()));
+                                setAttr("Y2", std::to_string(tpl->GetY2()));
+                                setAttr("Z2", std::to_string(tpl->GetZ2()));
+                            }
+                        }
+                        break;
+                    }
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+
+    // J-8 (2D Background pseudo-object) — patch background attrs
+    // on the matching target. "Default" maps to top-level
+    // `<settings>`; everything else to `<layoutGroups><layoutGroup
+    // name="...">`. Path attrs are written using whatever the
+    // user picked; the load path FixFile-resolves them on next
+    // launch, so absolute / show-relative both round-trip.
+    // Deleted layout groups first: their entries must go before the
+    // dirty pass, so a rename (delete old + add new) can't have the
+    // removal wipe the freshly-written entry.
+    if (!_deletedLayoutGroups.empty()) {
+        if (auto lgs = root.child("layoutGroups")) {
+            for (const auto& gone : _deletedLayoutGroups) {
+                for (auto n = lgs.first_child(); n;) {
+                    auto next = n.next_sibling();
+                    if (std::string_view(n.name()) == "layoutGroup" &&
+                        gone == n.attribute("name").as_string()) {
+                        lgs.remove_child(n);
+                    }
+                    n = next;
+                }
+            }
+        }
+    }
+
+    for (const auto& grpName : _dirtyBackgroundGroups) {
+        std::string bgPath;
+        int bri, alpha;
+        bool scale;
+        if (grpName == "Default") {
+            bgPath = _backgroundImage;
+            bri    = _backgroundBrightness;
+            alpha  = _backgroundAlpha;
+            scale  = _scaleBackgroundImage;
+        } else {
+            const NamedLayoutGroup* src = nullptr;
+            for (const auto& g : _namedLayoutGroups) {
+                if (g.name == grpName) { src = &g; break; }
+            }
+            if (!src) {
+                spdlog::warn("iPadRenderContext::SaveLayoutChanges: dirty bg for unknown group '{}'",
+                             grpName);
+                continue;
+            }
+            bgPath = src->backgroundImage;
+            bri    = src->backgroundBrightness;
+            alpha  = src->backgroundAlpha;
+            scale  = src->scaleBackgroundImage;
+        }
+
+        pugi::xml_node target;
+        if (grpName == "Default") {
+            target = root.child("settings");
+            if (!target) target = root.append_child("settings");
+        } else {
+            auto layoutGroupsNode = root.child("layoutGroups");
+            if (!layoutGroupsNode) {
+                layoutGroupsNode = root.append_child("layoutGroups");
+            }
+            for (auto n = layoutGroupsNode.first_child(); n; n = n.next_sibling()) {
+                if (std::string_view(n.name()) != "layoutGroup") continue;
+                if (grpName == n.attribute("name").as_string()) {
+                    target = n;
+                    break;
+                }
+            }
+            if (!target) {
+                target = layoutGroupsNode.append_child("layoutGroup");
+                target.append_attribute("name") = grpName.c_str();
+            }
+        }
+        auto patch = [&](const char* k, const std::string& v) {
+            if (target.attribute(k)) target.remove_attribute(k);
+            if (!v.empty()) target.append_attribute(k) = v.c_str();
+        };
+        auto patchInt = [&](const char* k, int v) {
+            if (target.attribute(k)) target.remove_attribute(k);
+            target.append_attribute(k) = v;
+        };
+        patch("backgroundImage", FileUtils::MakeRelativeFileOrOriginal(bgPath));
+        patchInt("backgroundBrightness", bri);
+        patchInt("backgroundAlpha", alpha);
+        patchInt("scaleImage", scale ? 1 : 0);
+    }
+
+    // Model Sets. Rewritten wholesale from the manager, matching desktop's
+    // `xLightsFrame::SerializeModelSets` (including its skip of degenerate
+    // <2-member Sets). Safe to do unconditionally because the manager was
+    // populated from this same file at load: with no Set edits it writes
+    // back what it read, and after a model rename/delete it writes the
+    // repaired membership rather than a dangling name.
+    {
+        auto setsNode = root.child("modelSets");
+        const auto& sets = AllModels.GetSetManager().GetAllSets();
+        if (!setsNode && !sets.empty()) {
+            setsNode = root.append_child("modelSets");
+        }
+        if (setsNode) {
+            AllModels.GetSetManager().Save(setsNode);
+        }
+    }
+
+    if (writePath != rgbPath) ObtainAccessToURL(writePath, true);
+    if (!doc.save_file(writePath.c_str(), "  ")) {
+        spdlog::error("iPadRenderContext::SaveLayoutChanges: write failed for {}",
+                      writePath);
+        return false;
+    }
+    if (!clearDirty) return true;
+    _dirtyLayoutModels.clear();
+    _dirtyLayoutViewObjects.clear();
+    _createdGroups.clear();
+    _deletedGroups.clear();
+    _dirtyBackgroundGroups.clear();
+    _createdViewObjects.clear();
+    _deletedViewObjects.clear();
+    _renamedGroups.clear();
+    _renamedViewObjects.clear();
+    _renamedModels.clear();
+    _deletedLayoutGroups.clear();
+    return true;
+}
+
+bool iPadRenderContext::CaptureModelUndoEntry(const std::string& modelName, LayoutUndoEntry& e) const {
+    Model* m = AllModels.GetModel(modelName);
+    if (!m) return false;
+    auto& loc = m->GetModelScreenLocation();
+    glm::vec3 rot = loc.GetRotation();
+    e.target = UndoTarget::Model;
+    e.modelName = modelName;
+    e.hcenter = loc.GetHcenterPos();
+    e.vcenter = loc.GetVcenterPos();
+    e.dcenter = loc.GetDcenterPos();
+    e.width   = loc.GetMWidth();
+    e.height  = loc.GetMHeight();
+    e.depth   = loc.GetMDepth();
+    e.rotateX = rot.x;
+    e.rotateY = rot.y;
+    e.rotateZ = rot.z;
+    e.locked  = loc.IsLocked();
+    e.layoutGroup    = m->GetLayoutGroup();
+    e.controllerName = m->GetControllerName();
+    return true;
+}
+
+void iPadRenderContext::PushLayoutUndoStep(LayoutUndoStep&& step) {
+    if (step.empty()) return;
+    _layoutUndoStack.push_back(std::move(step));
+    while (_layoutUndoStack.size() > kLayoutUndoMaxDepth) {
+        _layoutUndoStack.pop_front();
+    }
+}
+
+void iPadRenderContext::PushLayoutUndoSnapshotForModel(const std::string& modelName) {
+    PushLayoutUndoSnapshotForModels({ modelName }, false);
+}
+
+void iPadRenderContext::PushLayoutUndoSnapshotForModels(const std::vector<std::string>& modelNames,
+                                                        bool includeSetPeers) {
+    LayoutUndoStep step;
+    std::set<std::string> seen;
+    for (const auto& n : modelNames) {
+        if (n.empty() || !seen.insert(n).second) continue;
+        LayoutUndoEntry e;
+        if (CaptureModelUndoEntry(n, e)) step.push_back(std::move(e));
+    }
+    // Peers go after every named model so a peer that was also selected
+    // keeps its full entry.
+    if (includeSetPeers) {
+        for (const auto& n : modelNames) {
+            if (n.empty() || !AllModels.GetModel(n)) continue;
+            const ModelSet* s = AllModels.GetSetManager().GetSetContaining(n);
+            if (!s) continue;
+            for (const auto& p : s->GetMembers()) {
+                if (seen.count(p)) continue;
+                Model* pm = AllModels.GetModel(p);
+                if (!pm) continue;
+                seen.insert(p);
+                auto& loc = pm->GetModelScreenLocation();
+                LayoutUndoEntry e;
+                e.target = UndoTarget::ModelPosition;
+                e.modelName = p;
+                e.hcenter = loc.GetHcenterPos();
+                e.vcenter = loc.GetVcenterPos();
+                e.dcenter = loc.GetDcenterPos();
+                step.push_back(std::move(e));
+            }
+        }
+    }
+    PushLayoutUndoStep(std::move(step));
+}
+
+// J-17 — VO common-transform snapshot. ScaleX/Y/Z come from the
+// BoxedScreenLocation; objects on other screen-loc types (Ruler
+// uses TwoPoint) get all-1 scale and the undo applies just the
+// world pos / rotation — close enough for those types.
+void iPadRenderContext::PushLayoutUndoSnapshotForViewObject(const std::string& objectName) {
+    if (objectName.empty()) return;
+    ViewObject* vo = AllObjects.GetViewObject(objectName);
+    if (!vo) return;
+    auto& loc = vo->GetObjectScreenLocation();
+    glm::vec3 rot = loc.GetRotation();
+    LayoutUndoEntry e;
+    e.target = UndoTarget::ViewObject;
+    e.modelName = objectName;
+    e.hcenter = loc.GetHcenterPos();
+    e.vcenter = loc.GetVcenterPos();
+    e.dcenter = loc.GetDcenterPos();
+    if (auto* bsl = dynamic_cast<BoxedScreenLocation*>(&loc)) {
+        e.scaleX = bsl->GetScaleX();
+        e.scaleY = bsl->GetScaleY();
+        e.scaleZ = bsl->GetScaleZ();
+    } else {
+        glm::vec3 sm = loc.GetScaleMatrix();
+        e.scaleX = sm.x;
+        e.scaleY = sm.y;
+        e.scaleZ = sm.z;
+    }
+    e.rotateX = rot.x;
+    e.rotateY = rot.y;
+    e.rotateZ = rot.z;
+    e.locked  = loc.IsLocked();
+    e.layoutGroup = vo->GetLayoutGroup();
+    PushLayoutUndoStep({ std::move(e) });
+}
+
+void iPadRenderContext::PushTerrainHeightmapUndoSnapshot(const std::string& terrainName) {
+    if (terrainName.empty()) return;
+    ViewObject* vo = AllObjects.GetViewObject(terrainName);
+    auto* terrain = dynamic_cast<TerrainObject*>(vo);
+    if (!terrain) return;
+    auto& sloc = dynamic_cast<TerrainScreenLocation&>(terrain->GetBaseObjectScreenLocation());
+    LayoutUndoEntry e;
+    e.target = UndoTarget::ViewObjectHeightmap;
+    e.modelName = terrainName;
+    e.pointData = sloc.GetDataAsString();
+    PushLayoutUndoStep({ std::move(e) });
+}
+
+bool iPadRenderContext::UndoLastLayoutChange() {
+    if (_layoutUndoStack.empty()) return false;
+    LayoutUndoStep step = std::move(_layoutUndoStack.back());
+    _layoutUndoStack.pop_back();
+    bool applied = false;
+    for (const auto& e : step) {
+        applied = ApplyLayoutUndoEntry(e) || applied;
+    }
+    return applied;
+}
+
+bool iPadRenderContext::ApplyLayoutUndoEntry(const LayoutUndoEntry& e) {
+    switch (e.target) {
+    case UndoTarget::Model: {
+        Model* m = AllModels.GetModel(e.modelName);
+        if (!m) return false;
+        auto& loc = m->GetModelScreenLocation();
+        m->SetHcenterPos(e.hcenter);
+        m->SetVcenterPos(e.vcenter);
+        m->SetDcenterPos(e.dcenter);
+        m->SetWidth(e.width);
+        m->SetHeight(e.height);
+        m->SetDepth(e.depth);
+        loc.SetRotateX(e.rotateX);
+        loc.SetRotateY(e.rotateY);
+        loc.SetRotateZ(e.rotateZ);
+        loc.SetLocked(e.locked);
+        if (m->GetLayoutGroup() != e.layoutGroup) m->SetLayoutGroup(e.layoutGroup);
+        if (m->GetControllerName() != e.controllerName) m->SetControllerName(e.controllerName);
+        MarkLayoutModelDirty(e.modelName);
+        return true;
+    }
+    case UndoTarget::ModelPosition: {
+        Model* m = AllModels.GetModel(e.modelName);
+        if (!m) return false;
+        m->SetHcenterPos(e.hcenter);
+        m->SetVcenterPos(e.vcenter);
+        m->SetDcenterPos(e.dcenter);
+        MarkLayoutModelDirty(e.modelName);
+        return true;
+    }
+    case UndoTarget::ViewObject: {
+        ViewObject* vo = AllObjects.GetViewObject(e.modelName);
+        if (!vo) return false;
+        auto& loc = vo->GetObjectScreenLocation();
+        vo->SetHcenterPos(e.hcenter);
+        vo->SetVcenterPos(e.vcenter);
+        vo->SetDcenterPos(e.dcenter);
+        if (auto* bsl = dynamic_cast<BoxedScreenLocation*>(&loc)) {
+            bsl->SetScaleX(e.scaleX);
+            bsl->SetScaleY(e.scaleY);
+            bsl->SetScaleZ(e.scaleZ);
+        } else {
+            loc.SetScaleMatrix(glm::vec3(e.scaleX, e.scaleY, e.scaleZ));
+        }
+        loc.SetRotateX(e.rotateX);
+        loc.SetRotateY(e.rotateY);
+        loc.SetRotateZ(e.rotateZ);
+        loc.SetLocked(e.locked);
+        if (vo->GetLayoutGroup() != e.layoutGroup) vo->SetLayoutGroup(e.layoutGroup);
+        vo->IncrementChangeCount();
+        vo->ReloadModel();
+        MarkLayoutViewObjectDirty(e.modelName);
+        return true;
+    }
+    case UndoTarget::ViewObjectHeightmap: {
+        ViewObject* vo = AllObjects.GetViewObject(e.modelName);
+        auto* terrain = dynamic_cast<TerrainObject*>(vo);
+        if (!terrain) return false;
+        auto& sloc = dynamic_cast<TerrainScreenLocation&>(terrain->GetBaseObjectScreenLocation());
+        sloc.SetDataFromString(e.pointData);
+        terrain->IncrementChangeCount();
+        terrain->ReloadModel();
+        MarkLayoutViewObjectDirty(e.modelName);
+        return true;
+    }
+    }
+    return false;
+}
+
+bool iPadRenderContext::DeleteNamedLayoutGroup(const std::string& name) {
+    if (name.empty() || name == "Default") return false;
+    auto it = std::find_if(_namedLayoutGroups.begin(), _namedLayoutGroups.end(),
+                            [&](const NamedLayoutGroup& g) { return g.name == name; });
+    if (it == _namedLayoutGroups.end()) return false;
+    _namedLayoutGroups.erase(it);
+
+    // Models pointing at the deleted group would otherwise reference a
+    // preview that no longer exists and vanish from every list.
+    for (auto& [modelName, model] : AllModels.GetModels()) {
+        if (model && model->GetLayoutGroup() == name) {
+            model->SetLayoutGroup("Unassigned");
+            MarkLayoutModelDirty(modelName);
+        }
+    }
+
+    _dirtyBackgroundGroups.erase(name);
+    _deletedLayoutGroups.insert(name);
+    if (_activeLayoutGroup == name) _activeLayoutGroup = "Default";
+    return true;
+}
+
+bool iPadRenderContext::RenameNamedLayoutGroup(const std::string& oldName,
+                                                const std::string& newName) {
+    if (oldName.empty() || newName.empty() || oldName == newName) return false;
+    if (oldName == "Default") return false;
+    if (newName == "Default" || newName == "All Models" ||
+        newName == "Unassigned" || newName == "All Previews") {
+        return false;
+    }
+    auto it = std::find_if(_namedLayoutGroups.begin(), _namedLayoutGroups.end(),
+                            [&](const NamedLayoutGroup& g) { return g.name == oldName; });
+    if (it == _namedLayoutGroups.end()) return false;
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == newName) return false;
+    }
+
+    it->name = newName;
+    for (auto& [modelName, model] : AllModels.GetModels()) {
+        if (model && model->GetLayoutGroup() == oldName) {
+            model->SetLayoutGroup(newName);
+            MarkLayoutModelDirty(modelName);
+        }
+    }
+
+    // The old entry has to go and the new one be written: the save
+    // patcher matches `<layoutGroup>` by name attribute, so a rename is
+    // a delete plus an add as far as the file is concerned.
+    _dirtyBackgroundGroups.erase(oldName);
+    _deletedLayoutGroups.insert(oldName);
+    _dirtyBackgroundGroups.insert(newName);
+    if (_activeLayoutGroup == oldName) _activeLayoutGroup = newName;
+    return true;
+}
+
+bool iPadRenderContext::AddNamedLayoutGroup(const std::string& name) {
+    if (name.empty()) return false;
+    // Reserved sentinels — desktop's create-preview dialog rejects
+    // these explicitly, mirror to avoid corrupting filter logic
+    // (`modelsInActiveLayoutGroup` only treats "Default" and
+    // "All Previews" specially today).
+    if (name == "Default" || name == "All Models" || name == "Unassigned" ||
+        name == "All Previews") {
+        return false;
+    }
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == name) return false;
+    }
+    NamedLayoutGroup g;
+    g.name = name;
+    _namedLayoutGroups.push_back(std::move(g));
+    // The save patcher walks _dirtyBackgroundGroups and appends a
+    // `<layoutGroup name="…">` for any name not already in the
+    // file. We have no background image yet, so the saved entry
+    // is empty except for the name attribute.
+    _dirtyBackgroundGroups.insert(name);
+    return true;
+}
+
+void iPadRenderContext::SetActiveLayoutGroup(const std::string& name) {
+    if (name == "Default" || name == "All Models" || name == "Unassigned") {
+        _activeLayoutGroup = name;
+        return;
+    }
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == name) {
+            _activeLayoutGroup = name;
+            return;
+        }
+    }
+    // Unknown group — fall back to Default rather than render nothing.
+    _activeLayoutGroup = "Default";
+}
+
+const std::string& iPadRenderContext::GetActiveBackgroundImage() const {
+    if (_activeLayoutGroup == "Default") return _backgroundImage;
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == _activeLayoutGroup) return g.backgroundImage;
+    }
+    return _backgroundImage;
+}
+
+int iPadRenderContext::GetActiveBackgroundBrightness() const {
+    if (_activeLayoutGroup == "Default") return _backgroundBrightness;
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == _activeLayoutGroup) return g.backgroundBrightness;
+    }
+    return _backgroundBrightness;
+}
+
+int iPadRenderContext::GetActiveBackgroundAlpha() const {
+    if (_activeLayoutGroup == "Default") return _backgroundAlpha;
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == _activeLayoutGroup) return g.backgroundAlpha;
+    }
+    return _backgroundAlpha;
+}
+
+bool iPadRenderContext::GetActiveScaleBackgroundImage() const {
+    if (_activeLayoutGroup == "Default") return _scaleBackgroundImage;
+    for (const auto& g : _namedLayoutGroups) {
+        if (g.name == _activeLayoutGroup) return g.scaleBackgroundImage;
+    }
+    return _scaleBackgroundImage;
+}
+
+// J-8 (2D Background pseudo-object) — setters write through to
+// the correct storage (default <settings> vs a named layout
+// group) and record the group name in `_dirtyBackgroundGroups`
+// so SaveLayoutChanges patches the matching XML attributes.
+namespace {
+template <typename T>
+iPadRenderContext::NamedLayoutGroup* FindNamedGroup(
+        std::vector<iPadRenderContext::NamedLayoutGroup>& groups,
+        const std::string& name) {
+    for (auto& g : groups) {
+        if (g.name == name) return &g;
+    }
+    return nullptr;
+}
+} // namespace
+
+bool iPadRenderContext::SetActiveBackgroundImage(const std::string& path) {
+    if (_activeLayoutGroup == "Default") {
+        if (path == _backgroundImage) return false;
+        _backgroundImage = path;
+    } else {
+        auto* g = FindNamedGroup<int>(_namedLayoutGroups, _activeLayoutGroup);
+        if (!g) return false;
+        if (path == g->backgroundImage) return false;
+        g->backgroundImage = path;
+    }
+    if (!path.empty()) ObtainAccessToURL(path, false);
+    _dirtyBackgroundGroups.insert(_activeLayoutGroup);
+    return true;
+}
+
+bool iPadRenderContext::SetActiveBackgroundBrightness(int brightness) {
+    if (brightness < 0) brightness = 0;
+    if (brightness > 100) brightness = 100;
+    if (_activeLayoutGroup == "Default") {
+        if (brightness == _backgroundBrightness) return false;
+        _backgroundBrightness = brightness;
+    } else {
+        auto* g = FindNamedGroup<int>(_namedLayoutGroups, _activeLayoutGroup);
+        if (!g) return false;
+        if (brightness == g->backgroundBrightness) return false;
+        g->backgroundBrightness = brightness;
+    }
+    _dirtyBackgroundGroups.insert(_activeLayoutGroup);
+    return true;
+}
+
+bool iPadRenderContext::SetActiveBackgroundAlpha(int alpha) {
+    if (alpha < 0) alpha = 0;
+    if (alpha > 100) alpha = 100;
+    if (_activeLayoutGroup == "Default") {
+        if (alpha == _backgroundAlpha) return false;
+        _backgroundAlpha = alpha;
+    } else {
+        auto* g = FindNamedGroup<int>(_namedLayoutGroups, _activeLayoutGroup);
+        if (!g) return false;
+        if (alpha == g->backgroundAlpha) return false;
+        g->backgroundAlpha = alpha;
+    }
+    _dirtyBackgroundGroups.insert(_activeLayoutGroup);
+    return true;
+}
+
+bool iPadRenderContext::SetActiveScaleBackgroundImage(bool scale) {
+    if (_activeLayoutGroup == "Default") {
+        if (scale == _scaleBackgroundImage) return false;
+        _scaleBackgroundImage = scale;
+    } else {
+        auto* g = FindNamedGroup<int>(_namedLayoutGroups, _activeLayoutGroup);
+        if (!g) return false;
+        if (scale == g->scaleBackgroundImage) return false;
+        g->scaleBackgroundImage = scale;
+    }
+    _dirtyBackgroundGroups.insert(_activeLayoutGroup);
+    return true;
+}
+
+// Mirrors desktop xLightsFrame::UpdateModelsList (TabSequence.cpp:1209).
+// For the Default preview, include models tagged "Default" or
+// "All Previews". For a named group, include models tagged with that
+// name or "All Previews". Model groups whose own `layout_group` matches
+// are expanded to their constituent models, skipping duplicates.
+std::vector<Model*> iPadRenderContext::GetModelsForActivePreview() const {
+    std::vector<Model*> out;
+
+    const std::string& active = _activeLayoutGroup;
+    // "All Models" / "Unassigned" are virtual previews matching
+    // desktop's `LayoutPanel`. "All Models" shows every model; the
+    // "Unassigned" virtual preview surfaces models whose
+    // layout_group is literally "Unassigned" (desktop sets this on
+    // models that get removed from a preview).
+    const bool allModels  = (active == "All Models");
+    const bool unassigned = (active == "Unassigned");
+
+    auto matchesActive = [&](const std::string& g) {
+        if (allModels) return true;
+        if (unassigned) return g == "Unassigned";
+        return g == active || g == "All Previews";
+    };
+
+    auto addModelIfAbsent = [&](Model* m) {
+        if (!m) return;
+        if (std::find(out.begin(), out.end(), m) == out.end()) {
+            out.push_back(m);
+        }
+    };
+
+    // Pass 1: individual (non-group) models whose layout_group matches.
+    for (const auto& [name, model] : AllModels.GetModels()) {
+        if (!model) continue;
+        if (model->GetDisplayAs() == DisplayAsType::ModelGroup) continue;
+        if (matchesActive(model->GetLayoutGroup())) {
+            addModelIfAbsent(model);
+        }
+    }
+    // Pass 2: ModelGroups tagged for this preview — flatten their
+    // children (recursively for nested groups). A model already added
+    // in pass 1 is not duplicated. Skip when viewing "Unassigned"
+    // (desktop's filter explicitly excludes groups from that view).
+    if (!unassigned) {
+        std::function<void(ModelGroup*)> expand = [&](ModelGroup* grp) {
+            if (!grp) return;
+            for (Model* m : grp->Models()) {
+                if (!m) continue;
+                if (m->GetDisplayAs() == DisplayAsType::ModelGroup) {
+                    expand(static_cast<ModelGroup*>(m));
+                } else {
+                    addModelIfAbsent(m);
+                }
+            }
+        };
+        for (const auto& [name, model] : AllModels.GetModels()) {
+            if (!model) continue;
+            if (model->GetDisplayAs() != DisplayAsType::ModelGroup) continue;
+            if (matchesActive(model->GetLayoutGroup())) {
+                expand(static_cast<ModelGroup*>(model));
+            }
+        }
+    }
+    return out;
+}
+
+bool iPadRenderContext::OpenSequence(const std::string& path) {
+    // A close that could not drain the render released nothing. Loading over the
+    // top would clear and repopulate _sequenceElements (destroying the Elements
+    // the workers are reading) and resize _seqData, so refuse the open instead.
+    if (!CloseSequence()) {
+        spdlog::warn("iPadRenderContext::OpenSequence: refusing to open '{}' - the previous sequence is still rendering", path);
+        return false;
+    }
+
+    if (!ObtainAccessToURL(path, false)) {
+        spdlog::warn("iPadRenderContext::OpenSequence: ObtainAccessToURL failed for '{}' — bookmark likely stale", path);
+    }
+
+    _sequenceFile = std::make_unique<SequenceFile>(path);
+    _sequenceDoc = _sequenceFile->Open(showDirectory, false, path);
+
+    if (!_sequenceDoc) {
+        spdlog::warn("iPadRenderContext: Failed to open sequence {}", path);
+        _sequenceFile.reset();
+        return false;
+    }
+
+    // Shared load steps (frequency, views manager, LoadSequencerFile, settings
+    // migration, CheckForValidModels [base logs missing models], view prep) plus
+    // the iPad's animated-GIF media fixup via OnSequenceElementsLoaded below. See
+    // xLightsShowContext::LoadSequenceElements.
+    if (!LoadSequenceElements(*_sequenceFile, *_sequenceDoc)) {
+        spdlog::warn("iPadRenderContext: Failed to load sequence elements from {}", path);
+        _sequenceFile.reset();
+        _sequenceDoc.reset();
+        return false;
+    }
+
+    spdlog::info("iPadRenderContext: Row info size: {}, timing rows: {}",
+                 _sequenceElements.GetRowInformationSize(),
+                 _sequenceElements.GetNumberOfTimingElements());
+
+    // Pre-allocate SequenceData once per sequence. Previously RenderAll called
+    // init() on every pass (Cleanup()+realloc of `_frames`), which a concurrent
+    // worker read could OOB. Allocating here keeps the buffer stable for the
+    // sequence's lifetime; RenderEngine::Render zeros per-frame data on clear.
+    EnsureSequenceDataSized();
+
+    spdlog::info("iPadRenderContext: Opened sequence {} ({} elements, {} ms)",
+                 path,
+                 _sequenceElements.GetElementCount(),
+                 _sequenceFile->GetSequenceDurationMS());
+    return true;
+}
+
+void iPadRenderContext::OnSequenceElementsLoaded(SequenceFile& file) {
+    // Some animated-GIF Video effects can't be decoded on iOS; convert them to
+    // Pictures effects on load. Runs after the rows are populated, before the
+    // sequence is marked loaded (xLightsShowContext::LoadSequenceElements seam).
+    // Desktop keeps them as Video effects.
+    std::vector<std::string> videoFiles = _sequenceElements.GetSequenceMedia().GetVideoFilePaths();
+    std::vector<MediaCompatibilityIssue> gifIssues;
+    for (const auto& vf : videoFiles) {
+        std::string resolved = FileUtils::FixFile(showDirectory, vf);
+        std::string reason = MediaCompatibility::CheckVideoFile(resolved);
+        if (reason.empty()) continue;
+        MediaCompatibilityIssue issue;
+        issue.filePath = resolved;
+        issue.reason = reason;
+        issue.isVideo = true;
+        if (issue.isAnimatedGif() && issue.canConvert()) {
+            gifIssues.push_back(std::move(issue));
+        }
+    }
+    if (!gifIssues.empty()) {
+        int rewritten = seqmedia::ConvertGifVideoEffectsToPictures(_sequenceElements, gifIssues);
+        if (rewritten > 0) {
+            spdlog::info("iPadRenderContext: converted {} animated GIF Video effect(s) to Pictures effects on load of {}",
+                         rewritten, file.GetFullPath());
+        }
+    }
+}
+
+namespace {
+// Byte-equal comparison; matches desktop's wx FilesMatch semantics
+// closely enough for the "skip the copy when an identical file already
+// exists" branch.
+bool FilesMatchBytes(const std::filesystem::path& a,
+                     const std::filesystem::path& b) {
+    std::error_code ec;
+    auto sa = std::filesystem::file_size(a, ec);
+    if (ec) return false;
+    auto sb = std::filesystem::file_size(b, ec);
+    if (ec || sa != sb) return false;
+    std::ifstream fa(a, std::ios::binary);
+    std::ifstream fb(b, std::ios::binary);
+    if (!fa.is_open() || !fb.is_open()) return false;
+    constexpr size_t blk = 64 * 1024;
+    std::vector<char> bufA(blk), bufB(blk);
+    while (fa && fb) {
+        fa.read(bufA.data(), blk);
+        fb.read(bufB.data(), blk);
+        auto ra = fa.gcount();
+        auto rb = fb.gcount();
+        if (ra != rb) return false;
+        if (ra == 0) return true;
+        if (std::memcmp(bufA.data(), bufB.data(), (size_t)ra) != 0) return false;
+    }
+    return fa.eof() && fb.eof();
+}
+
+/// Shared routine for MoveToShowFolder / CopyToMediaFolder. Copies
+/// `file` into `<destRoot>/<subdir>/<basename>`, appends `_N` on
+/// collision unless `reuse` and the existing file matches byte-for-
+/// byte. Returns the original `file` on any failure — matching
+/// desktop's xLightsFrame::MoveToShowFolder contract — since callers
+/// store the return value as the new reference and a path to a file
+/// that was never written is worse than the one they already had.
+/// Creates the subdir if missing.
+std::string CopyIntoRoot(const std::string& file,
+                        const std::string& destRoot,
+                        const std::string& subdirectory,
+                        bool reuse) {
+    if (destRoot.empty() || file.empty()) return file;
+
+    namespace fs = std::filesystem;
+    fs::path src(file);
+    // Use the error_code fs::exists overloads throughout: the throwing overload
+    // can raise filesystem_error on iOS sandbox/permission edge cases, and the
+    // app has no handler, so it terminates (per CLAUDE.md filesystem guidance).
+    std::error_code existsEc;
+    if (!fs::exists(src, existsEc) || existsEc) return file;
+
+    // Normalise subdir: strip leading separator. Desktop's callers
+    // pass both "/Images" and "Images"; the trailing concat either way
+    // ends up inside destRoot.
+    std::string sub = subdirectory;
+    while (!sub.empty() && (sub.front() == '/' || sub.front() == '\\')) {
+        sub.erase(sub.begin());
+    }
+
+    fs::path dir = fs::path(destRoot);
+    if (!sub.empty()) dir /= sub;
+
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) {
+        spdlog::error("iPadRenderContext: Unable to create media target folder {}: {}",
+                      dir.string(), ec.message());
+        return file;
+    }
+
+    fs::path target = dir / src.filename();
+    if (!reuse) {
+        // Append _N until we find an unused name (or until an existing
+        // file at that slot matches our source byte-for-byte, in which
+        // case we reuse it silently).
+        std::string stem = src.stem().string();
+        std::string ext  = src.extension().string();
+        int n = 1;
+        std::error_code targetEc;
+        while (fs::exists(target, targetEc) && !FilesMatchBytes(src, target)) {
+            target = dir / (stem + "_" + std::to_string(n++) + ext);
+        }
+    }
+
+    if (!fs::exists(target, ec)) {
+        fs::copy_file(src, target, fs::copy_options::none, ec);
+        if (ec) {
+            spdlog::error("iPadRenderContext: Copy {} -> {} failed: {}",
+                          src.string(), target.string(), ec.message());
+            return file;
+        }
+    }
+    return target.string();
+}
+} // namespace
+
+std::string iPadRenderContext::MoveToShowFolder(const std::string& file,
+                                                  const std::string& subdirectory,
+                                                  bool reuse) {
+    if (showDirectory.empty()) return file;
+    return CopyIntoRoot(file, showDirectory, subdirectory, reuse);
+}
+
+std::string iPadRenderContext::CopyToMediaFolder(const std::string& file,
+                                                  const std::string& mediaFolderPath,
+                                                  const std::string& subdirectory) {
+    // Refuse unknown media folders — writing outside the configured
+    // set would break the "media must be in show or media folder"
+    // invariant iPad enforces.
+    bool known = false;
+    for (const auto& mf : mediaDirectories) {
+        if (mf == mediaFolderPath) { known = true; break; }
+    }
+    if (!known) return file;
+    return CopyIntoRoot(file, mediaFolderPath, subdirectory, /*reuse*/ false);
+}
+
+void iPadRenderContext::SetWaveformTrackIndex(int idx) {
+    if (!_sequenceFile) {
+        _waveformTrackIndex = -1;
+        return;
+    }
+    if (idx < -1) idx = -1;
+    if (idx >= _sequenceFile->GetAltTrackCount()) idx = -1;
+    if (idx == _waveformTrackIndex) return;
+
+    // The selected track is also the one playback uses, so a switch
+    // mid-playback would otherwise leave the previous track running
+    // while the transport reports on the new one. Stop the old track;
+    // the next Play starts the new one from the transport position.
+    if (AudioManager* previous = GetPlaybackMedia()) {
+        previous->Stop();
+    }
+    _waveformTrackIndex = idx;
+}
+
+AudioManager* iPadRenderContext::GetWaveformMedia() const {
+    if (!_sequenceFile) return nullptr;
+    if (_waveformTrackIndex < 0) return _sequenceFile->GetMedia();
+    AudioManager* alt = _sequenceFile->GetAltTrackMedia(_waveformTrackIndex);
+    return alt ? alt : _sequenceFile->GetMedia();
+}
+
+int iPadRenderContext::GetAltTrackCount() const {
+    return _sequenceFile ? _sequenceFile->GetAltTrackCount() : 0;
+}
+
+std::string iPadRenderContext::GetAltTrackDisplayName(int idx) const {
+    if (!_sequenceFile) return "";
+    if (idx < 0 || idx >= _sequenceFile->GetAltTrackCount()) return "";
+    return _sequenceFile->GetAltTrackDisplayName(idx);
+}
+
+const std::string& iPadRenderContext::GetHeaderInfo(HEADER_INFO_TYPES type) const {
+    if (_sequenceFile) {
+        return _sequenceFile->GetHeaderInfo(type);
+    }
+    static const std::string empty;
+    return empty;
+}
+
+Model* iPadRenderContext::GetModel(const std::string& name) const {
+    if (Model* m = AllModels.GetModel(name)) return m;
+    // Preset model lives in its own ModelManager so it isn't visible
+    // on the real sequence / layout. Desktop's xLightsFrame::GetModel
+    // short-circuits on the preset name too
+    // (`tabSequencer.cpp:335-336`); without this, the render engine
+    // resolves the preset name to nullptr, skips `ModelElement::Init`,
+    // and every rendered frame comes back black.
+    if (_presetModel != nullptr && name == _presetModel->GetName()) {
+        return _presetModel;
+    }
+    if (_presetModelManager) {
+        if (Model* m = _presetModelManager->GetModel(name)) return m;
+    }
+    return nullptr;
+}
+
+PhonemeDictionary& iPadRenderContext::GetPhonemeDictionary() {
+    if (!_phonemeDict) {
+        _phonemeDict = std::make_unique<PhonemeDictionary>();
+    }
+    // Always call LoadDictionaries — the method short-circuits if
+    // the map is already populated, so repeat calls are cheap.
+    // Search dirs: show folder first (so user-override
+    // `user_dictionary` files win), then the app bundle's
+    // `dictionaries/` folder (where the shipped corpus lives).
+    std::vector<std::string> searchDirs;
+    if (!showDirectory.empty()) {
+        searchDirs.push_back(showDirectory);
+    }
+    std::string res = FileUtils::GetResourcesDir();
+    if (!res.empty()) {
+        searchDirs.push_back(res + "/dictionaries");
+    }
+    _phonemeDict->LoadDictionaries(searchDirs);
+    return *_phonemeDict;
+}
+
+TimingElement* iPadRenderContext::AddTimingElement(const std::string& name,
+                                                    const std::string& subType) {
+    // Mirrors xLightsFrame::AddTimingElement (tabSequencer.cpp:3502).
+    // Makes the name unique by appending _N suffixes, deactivates all
+    // existing timing elements so the new one is the only active
+    // track, adds the element + a single default effect layer, and
+    // registers it with the current sequence view.
+    std::string n = name;
+    int nn = 1;
+    while (_sequenceElements.GetElement(n) != nullptr) {
+        n = name + "_" + std::to_string(nn++);
+    }
+    _sequenceElements.DeactivateAllTimingElements();
+    int timingCount = _sequenceElements.GetNumberOfTimingElements();
+    Element* raw = _sequenceElements.AddElement(timingCount, n, "timing",
+                                                 /*visible*/ true,
+                                                 /*collapsed*/ false,
+                                                 /*active*/ true,
+                                                 /*selected*/ false,
+                                                 /*renderDisabled*/ false);
+    TimingElement* e = dynamic_cast<TimingElement*>(raw);
+    if (!e) return nullptr;
+    e->SetSubType(subType);
+    e->AddEffectLayer();
+    _sequenceElements.AddTimingToCurrentView(n);
+    _sequenceElements.PopulateRowInformation();
+    return e;
+}
+
+bool iPadRenderContext::IsLowDefinitionRender() const {
+    // Opt-in app preference, default OFF = full-definition render — matches the
+    // desktop, whose "Low Definition Render" preference also defaults off, and
+    // keeps the final FSEQ output full-resolution. Reads the same UserDefaults
+    // store the SwiftUI toggle writes via @AppStorage("render.lowDefinition").
+    // When off, per-model Low-Def Factors are inert (exactly like desktop with
+    // the pref off); on is a deliberate memory-relief escape hatch for huge
+    // shows on 4 GB devices.
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("render.lowDefinition"),
+                                                    kCFPreferencesCurrentApplication);
+    bool on = (v != nullptr) && CFGetTypeID(v) == CFBooleanGetTypeID()
+              && CFBooleanGetValue((CFBooleanRef)v);
+    if (v) CFRelease(v);
+    return on;
+}
+
+std::string iPadRenderContext::ReadRenderCacheMode() const {
+    // App preference written by the Folder Config → Rendering picker via
+    // @AppStorage("render.cacheMode"). Default "Disabled": the render cache
+    // trades extra memory + disk to speed re-renders, and iPad is tight on
+    // both — desktop defaults to the milder "Locked Only", but iPad starts
+    // fully off. Valid values map straight to RenderCache::Enable.
+    std::string mode = "Disabled";
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("render.cacheMode"),
+                                                    kCFPreferencesCurrentApplication);
+    if (v) {
+        if (CFGetTypeID(v) == CFStringGetTypeID()) {
+            char buf[32] = { 0 };
+            if (CFStringGetCString((CFStringRef)v, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+                std::string s(buf);
+                if (s == "Locked Only" || s == "Enabled" || s == "Disabled") {
+                    mode = s;
+                }
+            }
+        }
+        CFRelease(v);
+    }
+    return mode;
+}
+
+size_t iPadRenderContext::ReadRenderCacheMaxMB() const {
+    // App preference written by the Folder Config → Rendering picker via
+    // @AppStorage("render.cacheMaxMB"). The desktop "Maximum Render Cache
+    // Size" choices are Unlimited / 1 / 5 / 10 / 50 / 100 / 200 GB; the
+    // SwiftUI picker stores the cap directly in MB (0 = Unlimited). Absent
+    // key → 50 MB, the long-standing iPad default that keeps a desktop-
+    // authored cache from ballooning the in-memory frame map at open.
+    long mb = 50;
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("render.cacheMaxMB"),
+                                                    kCFPreferencesCurrentApplication);
+    if (v) {
+        if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+            CFNumberGetValue((CFNumberRef)v, kCFNumberLongType, &mb);
+        }
+        CFRelease(v);
+    }
+    if (mb < 0) mb = 0;
+    return (size_t)mb;
+}
+
+void iPadRenderContext::PurgeDownloadCache() {
+    CachedFileDownloader::GetDefaultCache().ClearCache();
+}
+
+std::string iPadRenderContext::ReadFseqCompression() const {
+    // @AppStorage("fseq.compression"). Default "zstd" — fastest and the
+    // desktop default; "zlib" is slightly smaller; "none" is uncompressed.
+    std::string mode = "zstd";
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("fseq.compression"),
+                                                    kCFPreferencesCurrentApplication);
+    if (v) {
+        if (CFGetTypeID(v) == CFStringGetTypeID()) {
+            char buf[16] = { 0 };
+            if (CFStringGetCString((CFStringRef)v, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+                std::string s(buf);
+                if (s == "zstd" || s == "zlib" || s == "none") {
+                    mode = s;
+                }
+            }
+        }
+        CFRelease(v);
+    }
+    return mode;
+}
+
+int iPadRenderContext::ReadFseqCompressionLevel() const {
+    // @AppStorage("fseq.compressionLevel"). zstd level 1..22, default 2.
+    int level = 2;
+    CFPropertyListRef v = CFPreferencesCopyAppValue(CFSTR("fseq.compressionLevel"),
+                                                    kCFPreferencesCurrentApplication);
+    if (v) {
+        if (CFGetTypeID(v) == CFNumberGetTypeID()) {
+            int n = 0;
+            if (CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &n) && n >= 1 && n <= 22) {
+                level = n;
+            }
+        }
+        CFRelease(v);
+    }
+    return level;
+}
+
+bool iPadRenderContext::WasRenderAborted() const {
+    return _renderEngine && _renderEngine->GetAbortedRenderJobs() > 0;
+}
+
+void iPadRenderContext::RenderEffectForModel(const std::string& model,
+                                              int startms, int endms, bool clear) {
+    // try_lock, never lock: a show-folder rebuild holds the gate for its whole
+    // run, and this is reached from the main actor (edit handlers, the dirty
+    // poll), which must not block. The render can't run now, but it can't be
+    // dropped either - this is the only place the edit's render is requested,
+    // so defer it for the next RenderDependentModels sweep to pick up.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) {
+        spdlog::debug("iPadRenderContext: deferring render of '{}' - the show's models are being rebuilt", model);
+        DeferEditRender(model, startms, endms, clear);
+        return;
+    }
+    if (_renderEngine && _seqData.IsValidData()) {
+        _renderEngine->RenderEffectForModel(model, startms, endms,
+                                             _sequenceElements, _seqData,
+                                             false, modelsChangeCount, clear);
+    }
+}
+
+void iPadRenderContext::DeferEditRender(const std::string& model,
+                                        int startms, int endms, bool clear) {
+    std::lock_guard<std::mutex> lock(_deferredEditRenderLock);
+    auto it = _deferredEditRenders.find(model);
+    if (it == _deferredEditRenders.end()) {
+        _deferredEditRenders[model] = DeferredEditRender{ startms, endms, clear };
+    } else {
+        // Union the ranges: replaying both edits over the wider span is
+        // correct and cheaper than tracking them separately.
+        it->second.startMs = std::min(it->second.startMs, startms);
+        it->second.endMs = std::max(it->second.endMs, endms);
+        it->second.clear = it->second.clear || clear;
+    }
+}
+
+int iPadRenderContext::RenderDependentModels() {
+    // Driven by a 0.5s main-run-loop timer, so it keeps firing right through a
+    // detached show-folder load. Without this gate that tick was the writer in
+    // the LoadShowFolder-vs-render use-after-free: it started jobs after the
+    // load's drain and they resolved models out of the ModelManager being
+    // cleared. The dirty set is not consumed here, so a skipped sweep is picked
+    // up by the next tick.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) return 0;
+    if (!_renderEngine || !_seqData.IsValidData()) return 0;
+
+    int started = 0;
+
+    // Edit renders that lost the gate earlier. Taken only now that the gate is
+    // held, so a sweep that lost it leaves them queued for the next tick.
+    std::map<std::string, DeferredEditRender> deferred;
+    {
+        std::lock_guard<std::mutex> lock(_deferredEditRenderLock);
+        deferred.swap(_deferredEditRenders);
+    }
+    for (const auto& [model, d] : deferred) {
+        _renderEngine->RenderEffectForModel(model, d.startMs, d.endMs,
+                                             _sequenceElements, _seqData,
+                                             false, modelsChangeCount, d.clear);
+        ++started;
+    }
+
+    std::vector<Element*> elsToRender;
+    if (!_sequenceElements.GetElementsToRender(elsToRender)) return started;
+
+    for (Element* el : elsToRender) {
+        if (!el) continue;
+        int ss = 0, es = 0;
+        el->GetDirtyRange(ss, es);
+        _renderEngine->RenderEffectForModel(el->GetModelName(), ss, es,
+                                             _sequenceElements, _seqData,
+                                             false, modelsChangeCount, false);
+        ++started;
+    }
+    return started;
+}
+
+bool iPadRenderContext::RenderModelAndWait(const std::string& model, int maxTimeMs) {
+    {
+        // Gate the kickoff only, not the wait below - holding it across the wait
+        // would stall a show-folder load for the full render. Once the jobs are
+        // registered a concurrent rebuild's own AbortRender drains them, and the
+        // wait loop then exits on IsRenderDone.
+        std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+        if (!gate.owns_lock()) {
+            spdlog::warn("iPadRenderContext: cannot render '{}' - the show's models are being rebuilt", model);
+            return false;
+        }
+        EnsureSequenceDataSized();
+        if (!_seqData.IsValidData()) return false;
+        EnsureRenderEngine();
+        // Make sure no stale jobs are touching the model's frames before we
+        // kick off a fresh full-range render.
+        AbortRender(maxTimeMs);
+        _renderEngine->RenderEffectForModel(model, 0, 99999999,
+                                            _sequenceElements, _seqData,
+                                            false, modelsChangeCount, true);
+    }
+    if (maxTimeMs <= 0) maxTimeMs = 60000;
+    int loops = maxTimeMs / 10;
+    int i = 0;
+    while (!IsRenderDone() && i < loops) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        ++i;
+    }
+    return IsRenderDone();
+}
+
+void iPadRenderContext::EnsureRenderEngine() {
+    if (!_renderEngine) {
+        // Render jobs suspend and requeue instead of blocking a thread while
+        // they wait on overlapping models (plans/render-scheduler.md), so the
+        // pool only needs cpu + gpu + slack threads (see
+        // RenderEngine::RecommendedPoolSize). jobPool is the base's eager
+        // member; start it once here alongside the engine.
+        jobPool.Start(RenderEngine::RecommendedPoolSize());
+        _renderEngine = std::make_unique<RenderEngine>(*this, jobPool, _renderCache);
+    }
+    // Re-read the render-cache mode each render kickoff so the Folder Config
+    // picker takes effect without an app restart (the engine itself is long-
+    // lived). RenderEngine checks _renderCache.IsEnabled() per effect.
+    _renderCache.Enable(ReadRenderCacheMode());
+    _renderCache.SetMaximumSizeMB(ReadRenderCacheMaxMB());
+}
+
+bool iPadRenderContext::RenderAll() {
+    if (!_sequenceFile) return false;
+
+    // Runs on its own thread (SequencerViewModel.beginFreshRender), so it can
+    // land mid-rebuild just as easily as the dirty poll can. Held for the whole
+    // body: this is the path that reallocates _seqData and rebuilds every
+    // PixelBuffer, so it must not overlap the model teardown at all.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) {
+        spdlog::warn("iPadRenderContext::RenderAll: the show's models are being rebuilt; skipping this pass");
+        return false;
+    }
+
+    // Refuse to start a second pass over a live one. Every caller can reach
+    // here with the previous render still running: startBackgroundRender
+    // aborts first but discards the best-effort result and chains in anyway,
+    // the batch runner retries after its poll times out, and an edit can kick
+    // off a render while one is in flight. Starting anyway would resize
+    // _seqData and build a fresh set of PixelBuffers (PixelBufferClass::reset
+    // frees and rebuilds every LayerInfo) while the running workers still hold
+    // pointers into the old ones. AbortRender returns immediately when the
+    // render is already done, so this costs nothing on the normal path.
+    if (!AbortRender(5000)) {
+        spdlog::error("iPadRenderContext::RenderAll: previous render would not drain; skipping this pass rather than rebuilding buffers under live workers");
+        return false;
+    }
+
+    // SequenceData is normally allocated in OpenSequence and reused
+    // across every render pass — avoids the allocation churn (and
+    // the concurrent-render OOB crash) that came from re-`init()`
+    // on every RenderAll. This call only reallocates when something
+    // changed (duration / frame rate / channel count); otherwise
+    // it's a no-op. `RenderEngine::Render(..., clear=true)` zeros
+    // the existing frames per-range so we don't need to ourselves.
+    EnsureSequenceDataSized();
+
+    unsigned int numFrames = _seqData.NumFrames();
+    unsigned int numChannels = _seqData.NumChannels();
+    if (!_seqData.IsValidData() || numFrames == 0) {
+        spdlog::error("iPadRenderContext::RenderAll: no valid sequence data ({} frames, {} channels); skipping this pass",
+                      numFrames, numChannels);
+        return false;
+    }
+
+    EnsureRenderEngine();
+
+    _renderEngine->BuildRenderTree(_sequenceElements, modelsChangeCount);
+
+    auto models = _renderEngine->GetRenderTree().GetModels();
+    std::list<Model*> empty;
+
+    _renderEngine->Render(_sequenceElements, _seqData,
+                           models, empty,
+                           0, (int)numFrames - 1,
+                           nullptr, true,
+                           [](bool) {});
+
+    spdlog::info("iPadRenderContext: RenderAll started for {} frames, {} channels",
+                 numFrames, numChannels);
+    return true;
+}
+
+void iPadRenderContext::HandleMemoryWarning() {
+    // Lighter-touch response: try to free significant memory WITHOUT
+    // interrupting active work. Callers may fire this repeatedly as
+    // the pressure source stays elevated.
+    //
+    //   * Signal the render engine to abort at the next safe point
+    //     (actual abort is cooperative; workers notice between
+    //     frames).
+    //   * Drop the memory-resident render cache frames. The
+    //     on-disk cache stays — it rebuilds its mmap window on
+    //     next GetFrame.
+    //   * Drop UI-side derivatives from every media entry:
+    //     preview thumbnails and scaled-image variants. Those
+    //     rebuild lazily on the next media-picker or effect-panel
+    //     access, usually sub-second.
+    if (_renderEngine) {
+        _renderEngine->SignalAbort();
+    }
+    _renderCache.Purge(nullptr, false);
+    _sequenceElements.GetSequenceMedia().PurgePreviewCaches();
+    spdlog::warn("iPadRenderContext: memory warning handled "
+                 "(render abort signalled, cache + media previews purged)");
+}
+
+void iPadRenderContext::HandleMemoryCritical() {
+    // Strictly more aggressive than Warning — the lighter response
+    // wasn't enough, so we stop pretending and tear down optional
+    // state even at the cost of user work. Called when the OS is
+    // threatening jetsam.
+    HandleMemoryWarning();
+
+    // Block until render workers actually exit so the buffers they
+    // hold can be reclaimed. Warning just signals; Critical waits.
+    if (_renderEngine) {
+        AbortRender(3000);
+    }
+
+    // Free the preset render scaffolding (shader preview rendering,
+    // effect thumbnail generation). Reconstructed on next
+    // `EnsurePresetModel`.
+    _presetSequenceData.Cleanup();
+    if (_presetModel) {
+        _presetSequenceElements.Clear();
+        _presetModel = nullptr;
+        _presetModelManager.reset();
+    }
+
+    // Drop media entries that aren't referenced by any current
+    // effect. `MarkAllUnused` + render path would normally flag
+    // what's in use, but by the time we're critical we can't
+    // afford another render pass — walk every effect's settings
+    // and palette maps to build the "in-use" set, then remove the
+    // rest. `RemoveUnusedMedia` does exactly this on the
+    // caller's behalf.
+    _sequenceElements.GetSequenceMedia().RemoveUnusedMedia();
+
+    spdlog::error("iPadRenderContext: memory critical handled "
+                  "(render aborted, preset data freed, unused media removed)");
+}
+
+float iPadRenderContext::GetRenderProgressFraction() const {
+    if (!_renderEngine) return 1.0f;
+
+    uint64_t totalDone = 0;
+    uint64_t totalWork = 0;
+    // Locked walk: entries are erased and deleted by IsRenderDone() on other
+    // threads (an abort, the RenderAll thread) while this polls from the main
+    // actor.
+    ForEachRenderProgress([&](RenderProgressInfo* rpi) {
+        const int totalFrames = rpi->endFrame - rpi->startFrame + 1;
+        if (totalFrames <= 0 || !rpi->jobs) return;
+        for (int i = 0; i < rpi->numRows; ++i) {
+            IRenderJobStatus* job = rpi->jobs[i];
+            if (!job) continue;
+            const int cur = job->GetCurrentFrame();
+            int done;
+            if (cur == END_OF_RENDER_FRAME) {
+                done = totalFrames;
+            } else {
+                int rel = cur - rpi->startFrame;
+                if (rel < 0) rel = 0;
+                if (rel > totalFrames) rel = totalFrames;
+                done = rel;
+            }
+            totalDone += static_cast<uint64_t>(done);
+            totalWork += static_cast<uint64_t>(totalFrames);
+        }
+    });
+    if (totalWork == 0) return 1.0f;
+    return static_cast<float>(totalDone) / static_cast<float>(totalWork);
+}
+
+std::vector<iPadRenderContext::RenderJobProgress> iPadRenderContext::GetRenderJobProgress() const {
+    std::vector<RenderJobProgress> out;
+    if (!_renderEngine) return out;
+
+    // Same lifetime problem as GetRenderProgressFraction: walk under the
+    // context's drain lock or this reads jobs another thread just deleted.
+    ForEachRenderProgress([&](RenderProgressInfo* rpi) {
+        int totalFrames = rpi->endFrame - rpi->startFrame + 1;
+        if (totalFrames <= 0 || !rpi->jobs) return;
+        for (int i = 0; i < rpi->numRows; ++i) {
+            IRenderJobStatus* job = rpi->jobs[i];
+            if (!job) continue;
+            RenderJobProgress p;
+            p.model = job->GetName();
+            const int cur = job->GetCurrentFrame();
+            if (cur == END_OF_RENDER_FRAME) {
+                p.percent = 100;
+            } else {
+                int rel = cur - rpi->startFrame;
+                if (rel < 0) rel = 0;
+                if (rel > totalFrames) rel = totalFrames;
+                p.percent = (100 * rel) / totalFrames;
+            }
+            // GetStatusForUser walks live effect state, which is why
+            // desktop only calls it while its progress dialog is shown
+            // (RenderUI.cpp:232-236). Same contract here: the caller is
+            // expected to poll this only while the progress list is on
+            // screen, not from the always-running toolbar gauge.
+            p.status = job->GetStatusForUser();
+            out.push_back(std::move(p));
+        }
+    });
+    return out;
+}
+
+void iPadRenderContext::SetModelColors(int frameMS) {
+    // Walks every Model in AllModels from the preview draw path (main thread),
+    // while a show-folder load can be clearing them from its detached task -
+    // the read side of the same window LoadShowFolder holds the gate for.
+    // try_lock so a draw never blocks; a skipped frame just keeps the colours
+    // it already had, and the rebuild redraws when it finishes.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) return;
+    SetModelColorsUnlocked(frameMS);
+}
+
+void iPadRenderContext::SetModelColorsUnlocked(int frameMS) {
+    if (!_seqData.IsValidData()) return;
+
+    int frame = frameMS / _seqData.FrameTime();
+    if (frame < 0 || (unsigned int)frame >= _seqData.NumFrames()) return;
+
+    auto& fd = _seqData[frame];
+    // Iterate the manager rather than AllModels.GetModels(), which returns the
+    // map BY VALUE — a full red-black tree + key-string copy. This runs once per
+    // preview draw (XLMetalBridge drawModelsForDocument:), i.e. at display
+    // refresh, so the copy was pure per-frame allocation churn.
+    for (auto& [name, model] : AllModels) {
+        int chansPerNode = model->GetChanCountPerNode();
+        for (size_t n = 0; n < model->GetNodeCount(); n++) {
+            int32_t startChan = model->NodeStartChannel(n);
+            if (startChan >= 0 && (unsigned int)startChan + chansPerNode <= _seqData.NumChannels()) {
+                model->SetNodeChannelValues(n, &fd[startChan]);
+            }
+        }
+    }
+}
+
+std::vector<iPadRenderContext::PixelData> iPadRenderContext::GetModelPixels(
+    const std::string& modelName, int frameMS) {
+
+    std::vector<PixelData> pixels;
+    // One gate for the colour refresh AND the node walk below - both read
+    // models the show-folder rebuild may be deleting.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) return pixels;
+
+    Model* model = GetModel(modelName);
+    if (!model) return pixels;
+
+    SetModelColorsUnlocked(frameMS);
+
+    for (size_t n = 0; n < model->GetNodeCount(); n++) {
+        xlColor color = model->GetNodeColor(n);
+        std::vector<std::tuple<float, float, float>> pts;
+        model->GetNode3DScreenCoords(n, pts);
+        for (const auto& [sx, sy, sz] : pts) {
+            pixels.push_back({sx, sy, color.red, color.green, color.blue});
+        }
+    }
+    return pixels;
+}
+
+std::vector<iPadRenderContext::PixelData> iPadRenderContext::GetAllModelPixels(int frameMS) {
+    std::vector<PixelData> allPixels;
+
+    // As in GetModelPixels: one gate covering the colour refresh and the walk.
+    std::unique_lock<std::timed_mutex> gate(_modelMutationGate, std::try_to_lock);
+    if (!gate.owns_lock()) return allPixels;
+
+    SetModelColorsUnlocked(frameMS);
+
+    static bool loggedOnce = false;
+    // Same reason as SetModelColors above: no by-value map copy on the draw path.
+    for (auto& [name, model] : AllModels) {
+        for (size_t n = 0; n < model->GetNodeCount(); n++) {
+            xlColor color = model->GetNodeColor(n);
+            std::vector<std::tuple<float, float, float>> pts;
+            model->GetNode3DScreenCoords(n, pts);
+            for (const auto& [sx, sy, sz] : pts) {
+                allPixels.push_back({sx, sy, color.red, color.green, color.blue});
+            }
+        }
+        if (!loggedOnce && model->GetNodeCount() > 0) {
+            std::vector<std::tuple<float, float, float>> firstPts;
+            model->GetNode3DScreenCoords(0, firstPts);
+            if (!firstPts.empty()) {
+                auto [fx, fy, fz] = firstPts[0];
+                spdlog::info("Preview: model '{}' node0 screen=({},{},{}), color=({},{},{}), nodes={}",
+                             name, fx, fy, fz,
+                             model->GetNodeColor(0).red,
+                             model->GetNodeColor(0).green,
+                             model->GetNodeColor(0).blue,
+                             model->GetNodeCount());
+            }
+        }
+    }
+    if (!loggedOnce && !allPixels.empty()) {
+        spdlog::info("Preview: total {} pixels from {} models", allPixels.size(), AllModels.size());
+        loggedOnce = true;
+    }
+    return allPixels;
+}
+
+// === Preset model + preview-render helpers ==============================
+// Ports `xLightsFrame::EnsurePresetModel` +
+// `xLightsFrame::RenderEffectToFrames` from
+// `src-ui-wx/app-shell/TabConvert.cpp`. Kept iPad-local so we don't drag
+// wx into core; reuses everything else (MatrixModel, ModelManager,
+// RenderEngine) from src-core.
+
+namespace {
+
+#define PRESET_MODEL_NAME "PRESET_Matrix_XYZZY"
+constexpr int PRESET_ICON_SIZE = 64;
+
+// Raster a single model's node colours into the provided xlImage at
+// (x, y) offset. Mirrors `RenderModelOnXlImage` from
+// `src-ui-wx/app-shell/TabConvert.cpp:795`.
+void RenderModelOnXlImagePreset(xlImage& image, Model* model,
+                                 uint8_t* framedata, int startAddr,
+                                 int x, int y, bool invert) {
+    int outheight = image.GetHeight();
+    int outwidth = image.GetWidth();
+    uint8_t* imagedata = image.GetData();
+
+    int chs = model->GetChanCountPerNode();
+    uint8_t* ps = framedata + startAddr;
+
+    char r = model->GetChannelColorLetter(0);
+    int rr = 0, gg = 1, bb = 2;
+    if (r == 'G') gg = 0;
+    else if (r == 'B') bb = 0;
+    char g = model->GetChannelColorLetter(1);
+    if (g == 'R') rr = 1;
+    else if (g == 'B') bb = 1;
+    char b = model->GetChannelColorLetter(2);
+    if (b == 'R') rr = 2;
+    else if (b == 'G') gg = 2;
+
+    for (size_t i = 0; i < model->GetNodeCount(); i++) {
+        xlColor c = model->GetNodeColor(i);
+        std::vector<xlPoint> pts;
+        model->GetNodeCoords(i, pts);
+
+        for (const auto& it : pts) {
+            int xx = x + it.x;
+            int yy = y + it.y;
+            if (invert) yy = outheight - yy - 1;
+
+            if (xx >= 0 && xx < outwidth && yy >= 0 && yy < outheight) {
+                uint8_t* p = imagedata + (yy * outwidth + xx) * 4; // RGBA
+                if (chs == 1) {
+                    p[0] = c.Red();
+                    p[1] = c.Green();
+                    p[2] = c.Blue();
+                } else {
+                    p[0] = *(ps + rr);
+                    p[1] = *(ps + gg);
+                    p[2] = *(ps + bb);
+                }
+                p[3] = 255; // fully opaque
+            }
+        }
+        ps += chs;
+    }
+}
+
+// Handle ModelGroups by iterating members, exactly as
+// `FillXlImage` does on desktop.
+void FillXlImagePreset(xlImage& image, Model* model,
+                       uint8_t* framedata, int startAddr, bool invert) {
+    if (model->GetDisplayAs() == DisplayAsType::ModelGroup) {
+        auto* mg = static_cast<ModelGroup*>(model);
+        for (auto it = mg->Models().begin(); it != mg->Models().end(); ++it) {
+            int start = (*it)->GetFirstChannel() - startAddr;
+            RenderModelOnXlImagePreset(image, *it, framedata, start, 0, 0, invert);
+        }
+    } else {
+        RenderModelOnXlImagePreset(image, model, framedata,
+                                    model->GetFirstChannel() - startAddr + 1,
+                                    0, 0, invert);
+    }
+}
+
+} // namespace
+
+void iPadRenderContext::EnsurePresetModel() {
+    if (_presetModel != nullptr) return;
+
+    // Preset lives in its own ModelManager so it isn't visible on the
+    // real sequence's preview / layout.
+    _presetModelManager = std::make_unique<ModelManager>(nullptr, this);
+
+    auto* matrixModel = new MatrixModel(*_presetModelManager);
+    _presetModel = matrixModel;
+
+    matrixModel->SetStringType("RGB Nodes");
+    matrixModel->SetPixelStyle(Model::PIXEL_STYLE::PIXEL_STYLE_SMOOTH);
+    matrixModel->SetPixelSize(2);
+    matrixModel->SetTransparency(0);
+    matrixModel->SetNumMatrixStrings(PRESET_ICON_SIZE);
+    matrixModel->SetNodesPerString(PRESET_ICON_SIZE);
+    matrixModel->SetStrandsPerString(1);
+    matrixModel->SetVertical(false);
+    matrixModel->SetDirection("L");
+    matrixModel->SetStartSide("T");
+
+    auto& screenLoc = matrixModel->GetModelScreenLocation();
+    screenLoc.SetWorldPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    auto& boxedLoc = dynamic_cast<BoxedScreenLocation&>(screenLoc);
+    boxedLoc.SetScale(1.0f, 1.0f);
+    boxedLoc.SetScaleZ(1.0f);
+    screenLoc.SetRotation(glm::vec3(0.0f, 0.0f, 0.0f));
+
+    matrixModel->SetLayoutGroup("Unassigned", true);
+    matrixModel->SetName(PRESET_MODEL_NAME);
+    matrixModel->SetStartChannel("1");
+    matrixModel->Setup();
+
+    _presetSequenceElements.AddElement(_presetModel->GetName(), "Model",
+                                        true, false, false, false, false);
+}
+
+std::vector<std::shared_ptr<xlImage>> iPadRenderContext::RenderEffectToFrames(
+    Model* matrixModel, SequenceData& seqData, SequenceElements& seqElements,
+    size_t numFrames, int frameTimeMs) {
+    std::vector<std::shared_ptr<xlImage>> result;
+    if (!matrixModel || numFrames == 0) return result;
+
+    int width = 0, height = 0;
+    matrixModel->GetBufferSize("Default", "2D", "None", width, height, 0);
+    if (width <= 0 || height <= 0) return result;
+
+    size_t channels = (size_t)width * (size_t)height * 3;
+    seqData.init(channels, numFrames, frameTimeMs, true);
+
+    EnsureRenderEngine();
+
+    std::atomic<bool> renderComplete{false};
+    _renderEngine->Render(seqElements, seqData,
+                           { matrixModel }, { matrixModel },
+                           0, (int)numFrames - 1,
+                           nullptr, true,
+                           [&renderComplete](bool) { renderComplete = true; });
+
+    while (!renderComplete) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    for (size_t i = 0; i < numFrames; i++) {
+        auto img = std::make_shared<xlImage>(width, height);
+        FillXlImagePreset(*img, matrixModel,
+                           (uint8_t*)&seqData[i][0], 1, true);
+        result.push_back(img);
+    }
+
+    // Tier 1 #6: release the preset SequenceData allocation once
+    // we've copied frames out to xlImages. For a 64×64 preset at
+    // 100 frames that's ~8 MB; for shader preview sweeps with
+    // hundreds of frames it balloons much further. Callers that
+    // need it again (the next shader preview, the next thumbnail
+    // batch) re-init via the standard path — allocation is cheap.
+    seqData.Cleanup();
+
+    return result;
+}
+
+void iPadRenderContext::GenerateShaderPreview(ShaderMediaCacheEntry* entry) {
+    if (!entry || entry->GetShaderSource().empty()) return;
+    if (entry->HasPreview()) return;
+
+    ShaderConfig* config = entry->GetShaderConfig(&_presetSequenceElements);
+    if (!config) {
+        // Try the main sequence's elements if the preset doesn't know
+        // about this shader yet. ShaderConfig creation only needs a
+        // `SequenceElements*` handle for logging.
+        config = entry->GetShaderConfig(&_sequenceElements);
+        if (!config) return;
+    }
+
+    // Serialize concurrent shader-preview requests. The single preset
+    // scaffolding (shared `_presetSequenceElements` / `_presetSequenceData`
+    // / `_presetModel`) can only host one render at a time; a second
+    // caller racing through here would reset the effect layer out
+    // from under the first render. Swift kicks off one thumbnail
+    // request per shader on sheet open, so we need to queue them —
+    // the earlier CAS-based guard *dropped* concurrent requests
+    // instead of queueing, which is why only one more preview
+    // populated per sheet open.
+    static std::mutex s_previewMutex;
+    std::scoped_lock lock(s_previewMutex);
+    // Re-check after locking — a caller ahead of us may have already
+    // rendered this exact entry.
+    if (entry->HasPreview()) return;
+
+    EnsurePresetModel();
+
+    // Build the default settings string: file + global shader
+    // parameters + per-uniform defaults. Mirrors
+    // `GenerateShaderPreview` in ShaderPreviewGenerator.cpp.
+    std::string settings = "E_0FILEPICKERCTRL_IFS=" + entry->GetFilePath();
+    settings += ",E_SLIDER_Shader_Speed=100";
+    settings += ",E_TEXTCTRL_Shader_Offset_X=0,E_TEXTCTRL_Shader_Offset_Y=0";
+    settings += ",E_TEXTCTRL_Shader_Zoom=0,E_TEXTCTRL_Shader_LeadIn=0";
+
+    for (const auto& parm : config->GetParms()) {
+        if (!parm.ShowParm()) continue;
+        switch (parm._type) {
+            case ShaderParmType::SHADER_PARM_FLOAT: {
+                std::string key = "E_TEXTCTRL_" +
+                    parm.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_TEXTCTRL);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.4f", parm._default);
+                settings += "," + key + "=" + buf;
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_BOOL: {
+                std::string key = "E_CHECKBOX_" +
+                    parm.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_CHECKBOX);
+                settings += "," + key + "=" + (parm._default != 0.0 ? "1" : "0");
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_LONGCHOICE: {
+                std::string key = "E_CHOICE_" +
+                    parm.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_CHOICE);
+                auto choices = parm.GetChoices();
+                if (!choices.empty()) {
+                    int idx = (int)parm._default;
+                    std::string choiceStr = choices[0];
+                    for (const auto& [val, str] : parm._valueOptions) {
+                        if (val == idx) { choiceStr = str; break; }
+                    }
+                    settings += "," + key + "=" + choiceStr;
+                }
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_POINT2D: {
+                std::string keyBase = parm.GetUndecoratedId(
+                    ShaderCtrlType::SHADER_CTRL_TEXTCTRL);
+                char bufX[64], bufY[64];
+                snprintf(bufX, sizeof(bufX), "%.4f", parm._defaultPt.x);
+                snprintf(bufY, sizeof(bufY), "%.4f", parm._defaultPt.y);
+                settings += ",E_TEXTCTRL_" + keyBase + "X=" + bufX;
+                settings += ",E_TEXTCTRL_" + keyBase + "Y=" + bufY;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    const std::string palette =
+        "C_BUTTON_Palette1=#FFFFFF,C_BUTTON_Palette2=#FF0000,"
+        "C_CHECKBOX_Palette1=1,C_CHECKBOX_Palette2=1";
+
+    Element* elem = _presetSequenceElements.GetElement(_presetModel->GetName());
+    if (!elem) return;
+
+    for (const auto& it : elem->GetEffectLayers()) {
+        it->DeleteAllEffects();
+    }
+    if (elem->GetEffectLayerCount() == 0) {
+        elem->AddEffectLayer();
+    }
+
+    EffectLayer* el = elem->GetEffectLayer(0);
+    el->AddEffect(0, "Shader", settings, palette, 0, 1000,
+                   false, false, true);
+
+    constexpr int frameTimeMs = 50;
+    constexpr size_t numFrames = 20; // 1 second at 50 ms — matches desktop
+
+    auto frames = RenderEffectToFrames(_presetModel, _presetSequenceData,
+                                        _presetSequenceElements,
+                                        numFrames, frameTimeMs);
+    if (!frames.empty()) {
+        entry->SetPreviewFrames(std::move(frames), frameTimeMs);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// FSEQ write/read — mirrors the v2/zstd/sparse path of
+// `xLightsFrame::WriteFalconPiFile` (TabConvert.cpp:1565) +
+// `FileConverter::WriteFalconPiFile` (FileConverter.cpp:1488). The iPad
+// produces fseq files with the same shape so that FPP / Falcon controllers
+// playing back an iPad-saved show see no difference from a desktop save.
+// ----------------------------------------------------------------------------
+
+bool iPadRenderContext::WriteFseq(const std::string& path) {
+    if (!IsSequenceLoaded()) return false;
+
+    // FSEQ-1 — honor the Folder Config → Rendering compression preference.
+    FSEQFileIO::WriteOptions opts;
+    opts.compressionLevel = ReadFseqCompressionLevel();
+    const std::string comp = ReadFseqCompression();
+    if (comp == "zlib") {
+        opts.compression = FSEQFile::CompressionType::zlib;
+        opts.compressionLevel = -99; // level applies only to zstd
+    } else if (comp == "none") {
+        opts.compression = FSEQFile::CompressionType::none;
+        opts.compressionLevel = -99;
+    }
+    opts.source = "xLights iPadOS " + xlights_version_string;
+    if (_sequenceFile) opts.mediaFile = _sequenceFile->GetMediaFile();
+
+    // Embed the current on-disk show config + sequence so the .fseq is
+    // self-describing, matching desktop's XR/XN/XS headers. iPad saves are
+    // persisted before render, so the disk files are authoritative.
+    if (!showDirectory.empty()) {
+        opts.embedded.push_back({{'X', 'R'}, showDirectory + "/xlights_rgbeffects.xml", ""});
+        opts.embedded.push_back({{'X', 'N'}, showDirectory + "/xlights_networks.xml", ""});
+    }
+    if (_sequenceFile) {
+        opts.embedded.push_back({{'X', 'S'}, _sequenceFile->GetFullPath(), ""});
+    }
+
+    return FSEQFileIO::Write(path, _seqData, &_sequenceElements, this, opts);
+}
+
+bool iPadRenderContext::TryLoadFseq(const std::string& fseqPath,
+                                     const std::string& xsqPath) {
+    if (!IsSequenceLoaded()) return false;
+    if (fseqPath.empty()) return false;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(fseqPath, ec) || ec) {
+        return false;
+    }
+
+    if (!xsqPath.empty()) {
+        auto fseqMtime = std::filesystem::last_write_time(fseqPath, ec);
+        if (ec) return false;
+        auto xsqMtime = std::filesystem::last_write_time(xsqPath, ec);
+        if (ec) return false;
+        if (fseqMtime < xsqMtime) {
+            spdlog::info("TryLoadFseq: fseq is older than xsq; will render.");
+            return false;
+        }
+    }
+
+    std::unique_ptr<FSEQFile> file(FSEQFile::openFSEQFile(fseqPath));
+    if (!file) {
+        spdlog::warn("TryLoadFseq: openFSEQFile failed for {}", fseqPath);
+        return false;
+    }
+
+    if (file->getVersionMajor() != 2) {
+        spdlog::info("TryLoadFseq: not a v2 fseq (got v{}); will render.",
+                     file->getVersionMajor());
+        return false;
+    }
+
+    const uint32_t fileFrames = static_cast<uint32_t>(file->getNumFrames());
+    const int fileStep = file->getStepTime();
+
+    const uint32_t expectedFrames = static_cast<uint32_t>(_seqData.NumFrames());
+    const int expectedStep = _seqData.FrameTime();
+
+    if (fileFrames != expectedFrames || fileStep != expectedStep) {
+        spdlog::info("TryLoadFseq: shape mismatch (frames {} vs {}, step {} vs {}); will render.",
+                     fileFrames, expectedFrames, fileStep, expectedStep);
+        return false;
+    }
+
+    // Sparse-range comparison is the real validity check. The on-disk channel
+    // count for a sparse fseq is the SUM of sparse-range lengths (see
+    // V2FSEQFile::writeHeader's recalculation), not the max channel address —
+    // so comparing it directly to _seqData.NumChannels() is meaningless.
+    // What we actually need is: do the file's sparse ranges match the ranges
+    // we'd compute from today's master view? If yes, the fseq covers exactly
+    // the channels we'd render and we can use it; if not (added/removed
+    // models, view change, channel reshuffling), we render.
+    auto* v2 = dynamic_cast<V2FSEQFile*>(file.get());
+    if (!v2) {
+        spdlog::warn("TryLoadFseq: failed to cast to V2FSEQFile; will render.");
+        return false;
+    }
+
+    auto expectedRanges = FSEQFileIO::ComputeSparseRanges(_sequenceElements, *this);
+    if (expectedRanges.size() != v2->m_sparseRanges.size()) {
+        spdlog::info("TryLoadFseq: sparse-range count mismatch ({} vs {}); will render.",
+                     v2->m_sparseRanges.size(), expectedRanges.size());
+        return false;
+    }
+    for (size_t i = 0; i < expectedRanges.size(); ++i) {
+        if (expectedRanges[i] != v2->m_sparseRanges[i]) {
+            spdlog::info("TryLoadFseq: sparse range #{} mismatch (file {}+{} vs expected {}+{}); will render.",
+                         i, v2->m_sparseRanges[i].first, v2->m_sparseRanges[i].second,
+                         expectedRanges[i].first, expectedRanges[i].second);
+            return false;
+        }
+    }
+
+    // Pass the actual sparse ranges to prepareRead so V2 doesn't trip its
+    // "requested range outside read ranges" warning and so we read only the
+    // bytes that are actually stored. `readFrame` then uses the same range
+    // list to scatter each compressed-frame chunk back to its absolute
+    // channel offset in `_seqData`.
+    // _seqData is already sized for the whole sequence and every frame is read
+    // in order below, so the reader can decompress blocks ahead in parallel.
+    file->setReadPattern(FSEQFile::ReadPattern::Bulk);
+    file->prepareRead(expectedRanges, 0);
+
+    const uint32_t maxChan = static_cast<uint32_t>(_seqData.NumChannels());
+    for (uint32_t fr = 0; fr < fileFrames; ++fr) {
+        std::unique_ptr<FSEQFile::FrameData> fd(file->getFrame(fr));
+        if (!fd) {
+            spdlog::warn("TryLoadFseq: getFrame({}) returned null; falling back to render.", fr);
+            return false;
+        }
+        if (!fd->readFrame(&_seqData[fr][0], maxChan)) {
+            spdlog::warn("TryLoadFseq: readFrame({}) failed; falling back to render.", fr);
+            return false;
+        }
+    }
+
+    spdlog::info("TryLoadFseq: loaded {} frames over {} sparse range(s) from {}",
+                 fileFrames, expectedRanges.size(), fseqPath);
+    return true;
+}

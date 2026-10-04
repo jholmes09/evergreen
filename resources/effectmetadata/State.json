@@ -1,0 +1,70 @@
+{
+    "effectName": "State",
+    "properties": [
+        {
+            "id": "State_StateDefinition",
+            "label": "State Definition",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "",
+            "dynamicOptions": "states",
+            "expandToFill": true,
+            "description": "Selects which state definition to use from the model's configured state maps (e.g., SingleNode, NodeRange, or custom state definitions)."
+        },
+        {
+            "id": "State_StateSource",
+            "label": "",
+            "description": "Choose between selecting a named state directly or driving states from a timing track. Each timing mark's label is matched to a state name.",
+            "type": "enum",
+            "controlType": "custom",
+            "default": ""
+        },
+        {
+            "id": "State_Mode",
+            "label": "Mode",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Default",
+                "Countdown",
+                "Time Countdown",
+                "Number",
+                "Iterate"
+            ],
+            "default": "Default",
+            "description": "Controls how timing track labels are interpreted. 'Default' uses labels as state names directly. 'Countdown' treats labels as numbers and counts down. 'Time Countdown' counts down from a time value (MM:SS). 'Number' displays digits for numeric values. 'Iterate' cycles through the listed states over the timing interval."
+        },
+        {
+            "id": "State_Color",
+            "label": "Color",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Graduate",
+                "Cycle",
+                "Allocate"
+            ],
+            "default": "Graduate",
+            "description": "Controls how palette colors are assigned to active states. 'Graduate' blends through the palette over time. 'Cycle' assigns a different palette color to each timing interval. 'Allocate' assigns a fixed palette color based on the state's index number."
+        },
+        {
+            "id": "State_Fade_Time",
+            "label": "Fade(ms)",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 1000,
+            "description": "Duration in milliseconds for states to fade in and out at the start and end of each timing interval. Set to 0 for instant on/off switching."
+        }
+    ],
+    "groups": [
+        {
+            "type": "section",
+            "label": "States",
+            "columns": 1,
+            "properties": ["State_StateSource"]
+        }
+    ]
+}

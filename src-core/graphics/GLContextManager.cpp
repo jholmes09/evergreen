@@ -1,0 +1,1308 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "GLContextManager.h"
+
+#include <algorithm>
+#include <list>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <vector>
+
+#include <log.h>
+
+// -------------------------------------------------------------------------
+// GL entry-point loader — platform-neutral.  Registered at static-init time
+// by the GL graphics TU (xlOGL3GraphicsContext.cpp) on platforms that load
+// gl* through wglGetProcAddress/glXGetProcAddress; absent on macOS/iOS.
+// -------------------------------------------------------------------------
+static bool (*s_glFunctionLoader)() = nullptr;
+
+void GLContextManager::SetGLFunctionLoader(bool (*loader)()) {
+    s_glFunctionLoader = loader;
+}
+
+bool GLContextManager::EnsureGLFunctions() {
+    // once per share-group generation would be strictly correct after a device
+    // reset, but the pointers come from the ICD, not the context, so once per
+    // process matches how the UI canvas path has always loaded them.
+    static std::once_flag once;
+    static bool ok = true;
+    std::call_once(once, []() {
+        if (s_glFunctionLoader != nullptr) {
+            ok = s_glFunctionLoader();
+        }
+    });
+    return ok;
+}
+
+// =========================================================================
+// Apple — CGL on macOS; iOS has no GL shader path (the native Metal
+// ShaderEffect handles all shader rendering) so it gets a no-op manager to
+// keep shared callers linking.
+// =========================================================================
+#if defined(__APPLE__)
+
+#include <TargetConditionals.h>
+
+#if TARGET_OS_IPHONE
+
+struct GLContextManager::PlatformState {};
+
+GLContextManager& GLContextManager::Instance() {
+    static GLContextManager instance;
+    return instance;
+}
+
+GLContextManager::~GLContextManager() {
+}
+
+void GLContextManager::Initialize(const InitParams& params) {
+    _params = params;
+    _initialized = true;
+}
+
+GLContextManager::ContextHandle GLContextManager::AcquireContext() {
+    return nullptr;
+}
+
+bool GLContextManager::MakeCurrent(ContextHandle) {
+    return false;
+}
+
+void GLContextManager::DoneCurrent(ContextHandle) {
+}
+
+void GLContextManager::ReleaseContext(ContextHandle) {
+}
+
+void GLContextManager::ExecuteOnGLThread(std::function<void()> fn) {
+    if (fn) fn();
+}
+
+void GLContextManager::Shutdown() {
+}
+
+#else // macOS — legacy CGL implementation
+
+#include <OpenGL/OpenGL.h>
+#include <OpenGL/gl3.h>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+static constexpr int kMaxPoolSize = 24;
+
+struct GLContextManager::PlatformState {
+    CGLContextObj sharedContext = nullptr;       // Master context for resource sharing
+    std::list<CGLContextObj> pool;               // Available contexts
+    int contextCount = 0;                        // Total created
+    std::mutex poolMutex;
+    std::condition_variable poolNotifier;
+};
+
+// Select the best GPU (prefer eGPU, then most VRAM) and log GL info.
+static void selectBestGPU(CGLContextObj ctx) {
+    CGLSetCurrentContext(ctx);
+
+    CGLPixelFormatObj pixelFormat = CGLGetPixelFormat(ctx);
+
+    CGLRendererInfoObj rendInfo = nullptr;
+    GLint nRenderers = 0;
+    CGLQueryRendererInfo(0xffffffff, &rendInfo, &nRenderers);
+    if (!rendInfo) return;
+
+    struct GPUInfo {
+        GLint rendererID = 0;
+        GLint videoMemoryMB = 0;
+        GLint eGpu = 0;
+        GLint virtualScreen = -1;
+    };
+
+    GLint nVirtualScreens = 0;
+    CGLDescribePixelFormat(pixelFormat, 0, kCGLPFAVirtualScreenCount, &nVirtualScreens);
+
+    std::vector<GPUInfo> gpus(nRenderers);
+    for (GLint i = 0; i < nRenderers; ++i) {
+        CGLDescribeRenderer(rendInfo, i, kCGLRPRendererID, &gpus[i].rendererID);
+        CGLDescribeRenderer(rendInfo, i, kCGLRPVideoMemoryMegabytes, &gpus[i].videoMemoryMB);
+        CGLDescribeRenderer(rendInfo, i, (CGLRendererProperty)142 /*kCGLRPIsExternalGPU*/, &gpus[i].eGpu);
+    }
+    CGLDestroyRendererInfo(rendInfo);
+
+    // Map virtual screens to renderer IDs
+    for (GLint i = 0; i < nVirtualScreens; ++i) {
+        CGLSetVirtualScreen(ctx, i);
+        GLint rid = 0;
+        CGLGetParameter(ctx, kCGLCPCurrentRendererID, &rid);
+        for (GLint j = 0; j < nRenderers; ++j) {
+            if (gpus[j].rendererID == rid) {
+                gpus[j].virtualScreen = i;
+            }
+        }
+    }
+
+    // Prefer eGPU, else most VRAM
+    bool found = false;
+    int maxMem = 0;
+    for (GLint i = 0; i < nRenderers; ++i) {
+        if (gpus[i].eGpu) {
+            CGLSetVirtualScreen(ctx, gpus[i].virtualScreen);
+            found = true;
+        } else {
+            maxMem = std::max(maxMem, gpus[i].videoMemoryMB);
+        }
+    }
+    if (!found) {
+        for (GLint i = 0; i < nRenderers; ++i) {
+            if (gpus[i].videoMemoryMB == maxMem && gpus[i].virtualScreen >= 0) {
+                CGLSetVirtualScreen(ctx, gpus[i].virtualScreen);
+                break;
+            }
+        }
+    }
+
+    const char* ver = (const char*)glGetString(GL_VERSION);
+    const char* rend = (const char*)glGetString(GL_RENDERER);
+    const char* vend = (const char*)glGetString(GL_VENDOR);
+    spdlog::info("GLContextManager - glVer: {} ({}) ({})", ver ? ver : "?", rend ? rend : "?", vend ? vend : "?");
+
+    CGLSetCurrentContext(nullptr);
+}
+
+static CGLContextObj createCGLContext(CGLContextObj shared) {
+    // Pixel format attributes — matching the original ShaderEffect createContext()
+    CGLPixelFormatAttribute attribs[] = {
+        kCGLPFAMinimumPolicy,
+        kCGLPFAAcceleratedCompute,
+        kCGLPFAAllowOfflineRenderers,
+        kCGLPFAColorSize, (CGLPixelFormatAttribute)32,
+        kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core,
+        (CGLPixelFormatAttribute)0
+    };
+
+    CGLPixelFormatObj pixelFormat = nullptr;
+    GLint numFormats = 0;
+    CGLError err = CGLChoosePixelFormat(attribs, &pixelFormat, &numFormats);
+    if (err != kCGLNoError || !pixelFormat) {
+        // Fallback without AcceleratedCompute
+        CGLPixelFormatAttribute fallback[] = {
+            kCGLPFAMinimumPolicy,
+            kCGLPFAColorSize, (CGLPixelFormatAttribute)32,
+            kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core,
+            (CGLPixelFormatAttribute)0
+        };
+        err = CGLChoosePixelFormat(fallback, &pixelFormat, &numFormats);
+        if (err != kCGLNoError || !pixelFormat) {
+            spdlog::error("GLContextManager: CGLChoosePixelFormat failed: {}", (int)err);
+            return nullptr;
+        }
+    }
+
+    CGLContextObj ctx = nullptr;
+    err = CGLCreateContext(pixelFormat, shared, &ctx);
+    CGLReleasePixelFormat(pixelFormat);
+
+    if (err != kCGLNoError || !ctx) {
+        spdlog::error("GLContextManager: CGLCreateContext failed: {}", (int)err);
+        return nullptr;
+    }
+
+    selectBestGPU(ctx);
+    return ctx;
+}
+
+GLContextManager& GLContextManager::Instance() {
+    static GLContextManager instance;
+    return instance;
+}
+
+GLContextManager::~GLContextManager() {
+    Shutdown();
+}
+
+void GLContextManager::Initialize(const InitParams& params) {
+    if (_initialized) return;
+    _params = params;
+    _platform = new PlatformState();
+
+    // Create the master shared context lazily on first AcquireContext()
+    _initialized = true;
+}
+
+GLContextManager::ContextHandle GLContextManager::AcquireContext() {
+    if (!_platform) return nullptr;
+
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+
+    // Create master shared context on first call
+    if (!_platform->sharedContext) {
+        _platform->sharedContext = createCGLContext(nullptr);
+        if (!_platform->sharedContext) return nullptr;
+    }
+
+    // Grow pool if below max
+    if (_platform->pool.empty() && _platform->contextCount < kMaxPoolSize) {
+        lock.unlock();
+        CGLContextObj ctx = createCGLContext(_platform->sharedContext);
+        lock.lock();
+        if (ctx) {
+            _platform->pool.push_front(ctx);
+            ++_platform->contextCount;
+        } else if (_platform->contextCount == 0) {
+            // First-ever creation failed and there's nothing in flight to
+            // wait for — fail fast instead of deadlocking on poolNotifier.
+            return nullptr;
+        }
+    }
+
+    // Wait for a context to become available
+    while (_platform->pool.empty()) {
+        _platform->poolNotifier.wait(lock);
+    }
+
+    CGLContextObj ctx = _platform->pool.front();
+    _platform->pool.pop_front();
+    return (ContextHandle)ctx;
+}
+
+bool GLContextManager::MakeCurrent(ContextHandle ctx) {
+    return CGLSetCurrentContext((CGLContextObj)ctx) == kCGLNoError;
+}
+
+void GLContextManager::DoneCurrent(ContextHandle /*ctx*/) {
+    CGLSetCurrentContext(nullptr);
+}
+
+void GLContextManager::ReleaseContext(ContextHandle ctx) {
+    if (!_platform || !ctx) return;
+
+    CGLSetCurrentContext(nullptr);
+
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+    _platform->pool.push_front((CGLContextObj)ctx);
+    lock.unlock();
+    _platform->poolNotifier.notify_all();
+}
+
+void GLContextManager::ExecuteOnGLThread(std::function<void()> fn) {
+    if (fn) fn();
+}
+
+void GLContextManager::Shutdown() {
+    if (!_platform) return;
+
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+    for (auto ctx : _platform->pool) {
+        CGLDestroyContext(ctx);
+    }
+    _platform->pool.clear();
+    if (_platform->sharedContext) {
+        CGLDestroyContext(_platform->sharedContext);
+        _platform->sharedContext = nullptr;
+    }
+    _platform->contextCount = 0;
+    lock.unlock();
+
+    delete _platform;
+    _platform = nullptr;
+    _initialized = false;
+}
+
+#pragma clang diagnostic pop
+
+#endif // TARGET_OS_IPHONE
+
+// =========================================================================
+// Windows — Hidden HWND + WGL implementation
+// =========================================================================
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#include <windows.h>
+
+#include <future>
+
+#include <GL/gl.h>
+#include <GL/glext.h>
+//#include <GL/wglext.h>
+//#include <GL\glu.h>
+
+// Define WGL extension function pointer if not already defined
+#ifndef WGL_ARB_create_context
+typedef HGLRC (WINAPI * PFNWGLCREATECONTEXTATTRIBSARBPROC) (HDC hDC, HGLRC hShareContext, const int *attribList);
+#define WGL_CONTEXT_MAJOR_VERSION_ARB           0x2091
+#define WGL_CONTEXT_MINOR_VERSION_ARB           0x2092
+#define WGL_CONTEXT_PROFILE_MASK_ARB            0x9126
+#define WGL_CONTEXT_CORE_PROFILE_BIT_ARB        0x00000001
+#endif
+
+// Upper bound on pool size.  In the default single-worker-thread mode the
+// pool stays at 1; the cap only matters when SetBackgroundRenderEnabled(true)
+// lets concurrent render threads acquire contexts directly.  Each HGLRC pins
+// driver state (NVIDIA contexts are MB-scale) plus a Win32 dummy window —
+// 24 matches the macOS cap and exceeds typical render thread counts.
+static constexpr int kMaxPoolSize = 24;
+
+struct GLContextManager::PlatformState {
+    HGLRC sharedContext = nullptr;        // wx UI canvas HGLRC (not used for sharing on Windows)
+    // Persistent root that every pool context shares with, so pool contexts
+    // share GL objects with each other (programs/buffers/textures survive a
+    // ShaderRenderCache swapping contexts each frame).  Not shared with the
+    // wx canvas HGLRC: NVIDIA's one-current-per-share-group restriction
+    // surfaces as wglMakeCurrent error 2004 when the UI thread holds the
+    // canvas current.
+    HWND  shaderShareRootHwnd = nullptr;
+    HDC   shaderShareRootHdc  = nullptr;
+    HGLRC shaderShareRoot     = nullptr;
+    std::queue<void*> pool;  // queue of WinGLContextInfo*
+    int contextCount = 0;
+    std::mutex poolMutex;
+    std::condition_variable poolNotifier;
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = nullptr;
+    std::once_flag bootstrapFlag;
+
+    // Internal GL worker thread.  All GL operations on Windows run here
+    // (HWND/HDC creation, wgl*, glGen*, glDelete*, draw, glReadPixels, etc.)
+    // so that drivers which misbehave when GL is touched from arbitrary
+    // render-pool threads see a stable single-thread caller.  The worker
+    // is also the thread that owns the dummy HWNDs — Windows requires
+    // window destruction on the creating thread.
+    std::thread worker;
+    std::thread::id workerThreadId;    // set when worker starts; used in diagnostics
+    std::queue<std::function<void()>> taskQueue;
+    std::mutex taskMutex;
+    std::condition_variable taskCv;
+    std::once_flag workerStartFlag;
+    bool workerStop = false;
+    bool shutdownInitiated = false;    // set at Shutdown() entry; helps detect post-shutdown calls
+
+    struct WinGLContextInfo {
+        HGLRC context;
+        HDC hdc;
+        HWND hwnd;
+    };
+};
+
+using PlatformState = GLContextManager::PlatformState;
+
+static HWND createDummyWindow() {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSA wc = {};
+        wc.lpfnWndProc = DefWindowProcA;
+        wc.hInstance = GetModuleHandle(nullptr);
+        wc.lpszClassName = "XLightsGLContextDummy";
+        RegisterClassA(&wc);
+        registered = true;
+    }
+    return CreateWindowExA(0, "XLightsGLContextDummy", "", 0, 0, 0, 1, 1,
+                           nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+}
+
+GLContextManager& GLContextManager::Instance() {
+    static GLContextManager instance;
+    return instance;
+}
+
+GLContextManager::~GLContextManager() {
+    Shutdown();
+}
+
+void GLContextManager::Initialize(const InitParams& params) {
+    if (_initialized) return;
+    _params = params;
+    _platform = new PlatformState();
+    // Shared context and WGL bootstrap deferred to first AcquireContext()
+    _initialized = true;
+}
+
+// Creates a 3.3-core (or 3.1-core fallback) HGLRC on a fresh dummy HWND.
+// On success returns the HGLRC and writes the owning HWND/HDC to outHwnd/outHdc.
+// On failure returns nullptr and releases the HWND/HDC.
+static HGLRC createCoreContext(PlatformState* ps, HGLRC share,
+                               HWND& outHwnd, HDC& outHdc) {
+    HWND hwnd = createDummyWindow();
+    HDC hdc = GetDC(hwnd);
+
+    PIXELFORMATDESCRIPTOR pfd = {};
+    pfd.nSize = sizeof(pfd);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    int pf = ChoosePixelFormat(hdc, &pfd);
+    SetPixelFormat(hdc, pf, &pfd);
+
+    int attribs33[] = {
+        WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+        WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+        WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+        0
+    };
+    HGLRC ctx = ps->wglCreateContextAttribsARB(hdc, share, attribs33);
+    if (!ctx) {
+        int attribs31[] = {
+            WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+            WGL_CONTEXT_MINOR_VERSION_ARB, 1,
+            WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+            0
+        };
+        ctx = ps->wglCreateContextAttribsARB(hdc, share, attribs31);
+    }
+
+    if (ctx) {
+        outHwnd = hwnd;
+        outHdc = hdc;
+    } else {
+        ReleaseDC(hwnd, hdc);
+        DestroyWindow(hwnd);
+    }
+    return ctx;
+}
+
+// Bootstrap WGL: create a temp legacy context to load wglCreateContextAttribsARB,
+// then obtain the shared HGLRC from the UI layer and create the shader share-root.
+//
+// Runs on the GL worker thread.  Windows requires DestroyWindow on the
+// creating thread, so the dummy HWNDs are created and destroyed here.  The
+// one piece that needs main-thread dispatch is getSharedGLContext — wx
+// canvas access is main-thread-only.
+static void bootstrapWGL(PlatformState* ps,
+                  const GLContextManager::InitParams& params) {
+    HWND tmpHwnd = createDummyWindow();
+    HDC tmpDC = GetDC(tmpHwnd);
+
+    PIXELFORMATDESCRIPTOR pfd = {};
+    pfd.nSize = sizeof(pfd);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    int pf = ChoosePixelFormat(tmpDC, &pfd);
+    SetPixelFormat(tmpDC, pf, &pfd);
+
+    HGLRC tmpCtx = wglCreateContext(tmpDC);
+    wglMakeCurrent(tmpDC, tmpCtx);
+
+    ps->wglCreateContextAttribsARB =
+        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+
+    wglMakeCurrent(nullptr, nullptr);
+    wglDeleteContext(tmpCtx);
+    ReleaseDC(tmpHwnd, tmpDC);
+    DestroyWindow(tmpHwnd);
+
+    // Obtain the shared HGLRC from the UI layer.  This callback talks to wx
+    // and must run on the main thread.
+    if (params.getSharedGLContext) {
+        if (params.mainThreadRunner) {
+            params.mainThreadRunner([&]() {
+                ps->sharedContext = (HGLRC)params.getSharedGLContext();
+            });
+        } else {
+            ps->sharedContext = (HGLRC)params.getSharedGLContext();
+        }
+    }
+
+    if (ps->wglCreateContextAttribsARB && !ps->shaderShareRoot) {
+        ps->shaderShareRoot = createCoreContext(ps, nullptr,
+                                                ps->shaderShareRootHwnd,
+                                                ps->shaderShareRootHdc);
+        if (ps->shaderShareRoot) {
+            // Prime the share-root by making it current once.  Several drivers
+            // (observed on Windows in GL-worker thread mode) refuse to make a
+            // sharing child context current until the share parent itself has
+            // been made current at least once — wglMakeCurrent on the child
+            // fails with ERROR_INVALID_HANDLE, the version-logging code below
+            // produces "? (?) (?)" output, and rendering silently disables
+            // every shader effect ("Could not create/set OpenGL Context for
+            // ShaderEffect" in the log).  macOS does the equivalent under
+            // selectBestGPU().  If priming itself fails, tear the share-root
+            // down so pool contexts fall back to non-sharing (functionally
+            // correct, programs just won't be reused across pool contexts).
+            if (wglMakeCurrent(ps->shaderShareRootHdc, ps->shaderShareRoot)) {
+                const char* ver = (const char*)glGetString(GL_VERSION);
+                const char* rend = (const char*)glGetString(GL_RENDERER);
+                const char* vend = (const char*)glGetString(GL_VENDOR);
+                spdlog::info("GLContextManager (share-root) - glVer: {} ({}) ({})",
+                             ver ? ver : "?", rend ? rend : "?", vend ? vend : "?");
+                wglMakeCurrent(ps->shaderShareRootHdc, nullptr);
+            } else {
+                spdlog::warn("GLContextManager: share-root wglMakeCurrent failed (GLE={}); "
+                             "pool contexts will not share programs/buffers",
+                             (unsigned)GetLastError());
+                wglDeleteContext(ps->shaderShareRoot);
+                if (ps->shaderShareRootHdc) {
+                    ReleaseDC(ps->shaderShareRootHwnd, ps->shaderShareRootHdc);
+                    ps->shaderShareRootHdc = nullptr;
+                }
+                if (ps->shaderShareRootHwnd) {
+                    DestroyWindow(ps->shaderShareRootHwnd);
+                    ps->shaderShareRootHwnd = nullptr;
+                }
+                ps->shaderShareRoot = nullptr;
+            }
+        } else {
+            spdlog::warn("GLContextManager: shader share-root creation failed; "
+                         "pool contexts will be isolated (program cache won't survive context shuffle)");
+        }
+    }
+}
+
+GLContextManager::ContextHandle GLContextManager::AcquireContext() {
+    if (!_platform) return nullptr;
+
+    // Callers reach AcquireContext from inside ExecuteOnGLThread, so we are
+    // already on the GL worker thread (or the calling render thread when
+    // background rendering is user-enabled).  Either way, no further
+    // dispatch is needed — bootstrap, dummy HWND creation and wglCreateContext
+    // all run on whichever thread we're on.
+    std::call_once(_platform->bootstrapFlag, [this]() {
+        bootstrapWGL(_platform, _params);
+    });
+    if (!_platform->wglCreateContextAttribsARB) return nullptr;
+
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+
+    // Grow the pool if it's empty and we're under the cap.  Drop the lock
+    // around the actual context creation — CreateWindowEx + WGL setup is
+    // slow and other threads should be able to release into the pool while
+    // we wait on the driver.  Share with the shader-internal share-root
+    // (may be null if share-root creation failed — pool contexts then end
+    // up isolated, which still works, just without cross-context resource
+    // sharing).
+    if (_platform->pool.empty() && _platform->contextCount < kMaxPoolSize) {
+        lock.unlock();
+        HWND hwnd = nullptr;
+        HDC hdc = nullptr;
+        HGLRC ctx = createCoreContext(_platform, _platform->shaderShareRoot, hwnd, hdc);
+        PlatformState::WinGLContextInfo* info = nullptr;
+        if (ctx) {
+            info = new PlatformState::WinGLContextInfo{ctx, hdc, hwnd};
+            wglMakeCurrent(hdc, ctx);
+            const char* ver = (const char*)glGetString(GL_VERSION);
+            const char* rend = (const char*)glGetString(GL_RENDERER);
+            const char* vend = (const char*)glGetString(GL_VENDOR);
+            spdlog::info("GLContextManager - glVer: {} ({}) ({})",
+                         ver ? ver : "?", rend ? rend : "?", vend ? vend : "?");
+            wglMakeCurrent(hdc, nullptr);
+        } else {
+            spdlog::error("GLContextManager: wglCreateContextAttribsARB failed");
+        }
+        lock.lock();
+        if (info) {
+            _platform->pool.push(info);
+            ++_platform->contextCount;
+        } else if (_platform->contextCount == 0) {
+            // First-ever creation failed and there's nothing in flight to
+            // wait for — fail fast instead of deadlocking on poolNotifier.
+            return nullptr;
+        }
+        // Otherwise: creation failed but other contexts exist in flight
+        // (held by other threads).  Fall through to the wait loop and pick
+        // one up when it's returned.
+    }
+
+    // Wait for a context to become available (pool capped at kMaxPoolSize).
+    while (_platform->pool.empty()) {
+        _platform->poolNotifier.wait(lock);
+    }
+
+    auto* info = (PlatformState::WinGLContextInfo*)_platform->pool.front();
+    _platform->pool.pop();
+    return (ContextHandle)info;
+}
+
+bool GLContextManager::MakeCurrent(ContextHandle ctx) {
+    auto* info = (PlatformState::WinGLContextInfo*)ctx;
+    if (!info) return false;
+    for (int x = 0; x < 10; ++x) {
+        if (wglMakeCurrent(info->hdc, info->context)) return true;
+        DWORD gle = GetLastError();
+        if (gle == ERROR_INVALID_HANDLE) {
+            // The HWND/HDC/HGLRC have been invalidated.  On NVIDIA this
+            // happens when concurrent NVDEC (FFmpeg hardware video decode)
+            // triggers a WDDM TDR reset that kills all WGL dummy windows
+            // simultaneously.  Recreate this slot in-place so rendering
+            // resumes on the next frame without user-visible failure.
+            bool onWorkerThread = (_platform->workerThreadId != std::thread::id{}) &&
+                                  (std::this_thread::get_id() == _platform->workerThreadId);
+            spdlog::warn("GLContextManager: wglMakeCurrent invalid handle - "
+                         "hwnd_valid={} dc_type={} hglrc={:p} "
+                         "on_worker_thread={} shutdown_initiated={} pool_size={} ctx_count={}"
+                         " - attempting context recreation",
+                         (int)IsWindow(info->hwnd),
+                         (int)GetObjectType(info->hdc),
+                         (void*)info->context,
+                         onWorkerThread,
+                         _platform->shutdownInitiated,
+                         _platform->pool.size(),
+                         _platform->contextCount);
+
+            if (_platform->shutdownInitiated || !_platform->wglCreateContextAttribsARB)
+                return false;
+
+            // Best-effort teardown of the now-invalid resources.
+            wglDeleteContext(info->context);
+            if (info->hdc)  ReleaseDC(info->hwnd, info->hdc);
+            if (info->hwnd && IsWindow(info->hwnd)) DestroyWindow(info->hwnd);
+            info->context = nullptr;
+            info->hdc     = nullptr;
+            info->hwnd    = nullptr;
+
+            // If TDR also killed the share-root, rebuild it first so the
+            // new pool context can re-join the share group.
+            if (_platform->shaderShareRoot &&
+                _platform->shaderShareRootHwnd &&
+                !IsWindow(_platform->shaderShareRootHwnd)) {
+                spdlog::warn("GLContextManager: share-root also invalidated by TDR, rebuilding");
+                // The whole share group dies with the root: every GL object id
+                // cached anywhere (ShaderRenderCache programs/buffers/textures)
+                // is now dangling.  Bump the generation so those caches reset
+                // instead of binding stale — or worse, recycled — ids.
+                BumpShareGroupGeneration();
+                wglDeleteContext(_platform->shaderShareRoot);
+                _platform->shaderShareRoot = nullptr;
+                if (_platform->shaderShareRootHdc) {
+                    ReleaseDC(_platform->shaderShareRootHwnd, _platform->shaderShareRootHdc);
+                    _platform->shaderShareRootHdc = nullptr;
+                }
+                _platform->shaderShareRootHwnd = nullptr;
+
+                HGLRC newRoot = createCoreContext(_platform, nullptr,
+                                                  _platform->shaderShareRootHwnd,
+                                                  _platform->shaderShareRootHdc);
+                if (newRoot && wglMakeCurrent(_platform->shaderShareRootHdc, newRoot)) {
+                    _platform->shaderShareRoot = newRoot;
+                    wglMakeCurrent(_platform->shaderShareRootHdc, nullptr);
+                    spdlog::info("GLContextManager: share-root recreated hglrc={:p}", (void*)newRoot);
+                } else {
+                    if (newRoot) {
+                        wglDeleteContext(newRoot);
+                        ReleaseDC(_platform->shaderShareRootHwnd, _platform->shaderShareRootHdc);
+                        DestroyWindow(_platform->shaderShareRootHwnd);
+                        _platform->shaderShareRootHwnd = nullptr;
+                        _platform->shaderShareRootHdc  = nullptr;
+                    }
+                    spdlog::warn("GLContextManager: share-root recreation failed; "
+                                 "pool contexts will be isolated");
+                }
+            }
+
+            // Recreate the pool context, sharing with the (possibly rebuilt) share-root.
+            HWND newHwnd = nullptr;
+            HDC  newHdc  = nullptr;
+            HGLRC newCtx = createCoreContext(_platform, _platform->shaderShareRoot,
+                                             newHwnd, newHdc);
+            if (newCtx) {
+                info->context = newCtx;
+                info->hdc     = newHdc;
+                info->hwnd    = newHwnd;
+                spdlog::info("GLContextManager: context recreated after TDR hglrc={:p}",
+                             (void*)newCtx);
+                // Loop continues — next iteration calls wglMakeCurrent on the fresh context.
+                continue;
+            }
+
+            // Recreation also failed; retire this slot so AcquireContext can
+            // allocate a fresh one next time.
+            {
+                std::unique_lock<std::mutex> lock(_platform->poolMutex);
+                --_platform->contextCount;
+            }
+            spdlog::error("GLContextManager: context recreation failed after TDR; slot retired");
+            return false;
+        }
+        if (gle == 2004) {
+            // NVIDIA driver-specific: GPU busy (typically CUDA/NVDEC contention).
+            // No point retrying in a tight loop — caller will skip this frame
+            // and return the context to the pool for the next frame.
+            spdlog::warn("GLContextManager: wglMakeCurrent GPU busy (GLE=2004), skipping frame");
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    spdlog::error("GLContextManager: wglMakeCurrent failed after retries (GLE={})", GetLastError());
+    return false;
+}
+
+void GLContextManager::DoneCurrent(ContextHandle ctx) {
+    auto* info = (PlatformState::WinGLContextInfo*)ctx;
+    if (info) {
+        wglMakeCurrent(info->hdc, nullptr);
+    }
+}
+
+void GLContextManager::ReleaseContext(ContextHandle ctx) {
+    if (!_platform || !ctx) return;
+    auto* info = (PlatformState::WinGLContextInfo*)ctx;
+    if (!info->context) {
+        // MakeCurrent already retired this slot (context recreation failed): contextCount
+        // was decremented there, so discard the dead struct rather than re-pooling it.
+        delete info;
+        return;
+    }
+    DoneCurrent(ctx);
+    {
+        if (!IsWindow(info->hwnd)) {
+            spdlog::warn("GLContextManager: ReleaseContext — HWND already invalid at release "
+                         "hwnd={:p} hdc={:p} hglrc={:p} shutdown_initiated={}",
+                         (void*)info->hwnd, (void*)info->hdc, (void*)info->context,
+                         _platform->shutdownInitiated);
+        }
+        std::unique_lock<std::mutex> lock(_platform->poolMutex);
+        _platform->pool.push(ctx);
+    }
+    _platform->poolNotifier.notify_one();
+}
+
+void GLContextManager::ExecuteOnGLThread(std::function<void()> fn) {
+    if (!fn || !_platform) return;
+
+    if (_backgroundRenderEnabled) {
+        // User opted in to direct rendering — driver expected to handle MT GL.
+        fn();
+        return;
+    }
+
+    // Lazy-start the GL worker thread on first dispatch.
+    std::call_once(_platform->workerStartFlag, [this]() {
+        _platform->worker = std::thread([this]() {
+            _platform->workerThreadId = std::this_thread::get_id();
+            for (;;) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(_platform->taskMutex);
+                    _platform->taskCv.wait(lock, [this]() {
+                        return _platform->workerStop || !_platform->taskQueue.empty();
+                    });
+                    if (_platform->taskQueue.empty()) {
+                        // Stop signal with no remaining work.
+                        return;
+                    }
+                    task = std::move(_platform->taskQueue.front());
+                    _platform->taskQueue.pop();
+                }
+                task();
+                // Pump any pending messages for dummy windows owned by this
+                // thread.  WGL drivers sometimes post internal messages; if
+                // the queue fills up wglMakeCurrent can fail on NVIDIA.
+                MSG msg;
+                while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE | PM_NOYIELD))
+                    DispatchMessageA(&msg);
+            }
+        });
+    });
+
+    auto promise = std::make_shared<std::promise<void>>();
+    auto future = promise->get_future();
+
+    {
+        std::unique_lock<std::mutex> lock(_platform->taskMutex);
+        _platform->taskQueue.push([fn = std::move(fn), promise]() {
+            try {
+                fn();
+                promise->set_value();
+            } catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        });
+    }
+    _platform->taskCv.notify_one();
+    future.get();  // re-throws any exception from fn
+}
+
+void GLContextManager::Shutdown() {
+    if (!_platform) return;
+
+    _platform->shutdownInitiated = true;
+
+    auto destroyPool = [this]() {
+        while (!_platform->pool.empty()) {
+            auto* info = (PlatformState::WinGLContextInfo*)_platform->pool.front();
+            _platform->pool.pop();
+            wglDeleteContext(info->context);
+            ReleaseDC(info->hwnd, info->hdc);
+            DestroyWindow(info->hwnd);
+            delete info;
+        }
+        _platform->contextCount = 0;
+        // Share-root must be torn down after its dependent pool contexts.
+        if (_platform->shaderShareRoot) {
+            wglDeleteContext(_platform->shaderShareRoot);
+            _platform->shaderShareRoot = nullptr;
+        }
+        if (_platform->shaderShareRootHwnd) {
+            if (_platform->shaderShareRootHdc) {
+                ReleaseDC(_platform->shaderShareRootHwnd, _platform->shaderShareRootHdc);
+                _platform->shaderShareRootHdc = nullptr;
+            }
+            DestroyWindow(_platform->shaderShareRootHwnd);
+            _platform->shaderShareRootHwnd = nullptr;
+        }
+    };
+
+    // If the worker thread is running, post pool teardown to it (so
+    // wglDeleteContext + DestroyWindow run on the thread that created the
+    // contexts and windows — Windows requires window destruction on the
+    // creating thread), then signal stop and join.
+    if (_platform->worker.joinable()) {
+        std::promise<void> drained;
+        auto drainedFuture = drained.get_future();
+        {
+            std::unique_lock<std::mutex> lock(_platform->taskMutex);
+            _platform->taskQueue.push([&]() {
+                destroyPool();
+                drained.set_value();
+            });
+        }
+        _platform->taskCv.notify_one();
+        drainedFuture.get();
+
+        {
+            std::unique_lock<std::mutex> lock(_platform->taskMutex);
+            _platform->workerStop = true;
+        }
+        _platform->taskCv.notify_one();
+        _platform->worker.join();
+    } else {
+        // Worker never started; tear down inline.  Safe because no contexts
+        // can have been created without going through the worker.
+        destroyPool();
+    }
+
+    delete _platform;
+    _platform = nullptr;
+    _initialized = false;
+}
+
+// =========================================================================
+// Linux — GLX + Pbuffer (X11/XWayland) with EGL + Pbuffer fallback (Wayland)
+//
+// Creates GL contexts entirely independent of the wx canvas hierarchy so
+// shader rendering never pollutes the state of any visible canvas.
+//
+// Strategy:
+//   1. Try GLX with a pbuffer (works on X11 and XWayland).
+//   2. If no X11 display is available (pure Wayland), fall back to EGL with
+//      a pbuffer surface using EGL_DEFAULT_DISPLAY.
+// =========================================================================
+#else
+
+#include <GL/glx.h>
+#include <GL/glxext.h>
+#include <X11/Xlib.h>
+#include <EGL/egl.h>
+#include <GL/gl.h>
+
+// One context per background render thread, plus one for the main thread.
+// Mirrors the macOS CGL pool size.
+static constexpr int kMaxPoolSize = 24;
+
+struct GLContextManager::PlatformState {
+    // GLX path (X11 / XWayland)
+    Display*     xDisplay  = nullptr;
+    GLXFBConfig  fbConfig  = nullptr;
+
+    // EGL path (native Wayland fallback)
+    EGLDisplay   eglDisplay = EGL_NO_DISPLAY;
+    EGLConfig    eglConfig  = nullptr;
+    bool         useEGL     = false;
+
+    // Persistent root every pool context shares GL objects with, so a program,
+    // buffer, renderbuffer or texture created while one pool context was
+    // current can still be named from another.  ShaderRenderCache caches those
+    // ids across frames but returns its context to the pool after each one, so
+    // without a share group the ids land in a context that never created them
+    // (GL_INVALID_OPERATION, "program id N is not a shader program").  macOS
+    // shares with sharedContext and Windows with shaderShareRoot for the same
+    // reason.  Created once during init, never made current, never rendered to.
+    GLXContext   glxShareRoot = nullptr;
+    EGLContext   eglShareRoot = EGL_NO_CONTEXT;
+
+    struct PoolEntry {
+        // GLX
+        GLXContext  glxContext = nullptr;
+        GLXPbuffer  glxPbuffer = 0;
+        // EGL
+        EGLContext  eglContext = EGL_NO_CONTEXT;
+        EGLSurface  eglSurface = EGL_NO_SURFACE;
+    };
+
+    std::list<PoolEntry>     pool;
+    int                      contextCount = 0;
+    std::mutex               poolMutex;
+    std::condition_variable  poolNotifier;
+    std::once_flag           initFlag;
+    bool                     initOk = false;
+};
+
+using PlatformStateLinux = GLContextManager::PlatformState;
+
+// ---- GLX path ----
+
+// `share` is the context the new one shares GL objects with (nullptr for the
+// share root itself).
+static GLXContext createGLXContext(PlatformStateLinux* ps, GLXContext share) {
+    GLXContext ctx = nullptr;
+
+    auto createCtxARB =
+        (GLXContext(*)(Display*, GLXFBConfig, GLXContext, Bool, const int*))
+        glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
+
+    if (createCtxARB) {
+        static const int ctx33[] = {
+            GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+            GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+            GLX_CONTEXT_PROFILE_MASK_ARB,  GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+            None
+        };
+        // glXCreateContextAttribsARB triggers an X11 protocol error (caught by
+        // the default handler, which calls exit()) if the driver rejects the
+        // requested profile.  Suppress it with a no-op error handler so the
+        // nullptr return value can be tested and the legacy fallback used.
+        auto prevHandler = XSetErrorHandler([](Display*, XErrorEvent*) { return 0; });
+        ctx = createCtxARB(ps->xDisplay, ps->fbConfig, share, True, ctx33);
+        XSync(ps->xDisplay, False);  // flush any pending X11 error
+        XSetErrorHandler(prevHandler);
+    }
+    if (!ctx) {
+        ctx = glXCreateNewContext(ps->xDisplay, ps->fbConfig, GLX_RGBA_TYPE, share, True);
+    }
+    if (!ctx) {
+        spdlog::error("GLContextManager: GLX context creation failed");
+    }
+    return ctx;
+}
+
+static bool initGLX(PlatformStateLinux* ps) {
+    ps->xDisplay = XOpenDisplay(nullptr);
+    if (!ps->xDisplay) {
+        spdlog::info("GLContextManager: no X11 display (likely pure Wayland), trying EGL");
+        return false;
+    }
+
+    int glxMaj = 0, glxMin = 0;
+    if (!glXQueryVersion(ps->xDisplay, &glxMaj, &glxMin) ||
+        glxMaj < 1 || (glxMaj == 1 && glxMin < 3)) {
+        spdlog::warn("GLContextManager: GLX 1.3+ required (got {}.{}), trying EGL", glxMaj, glxMin);
+        XCloseDisplay(ps->xDisplay);
+        ps->xDisplay = nullptr;
+        return false;
+    }
+
+    static const int fbAttribs[] = {
+        GLX_RENDER_TYPE,   GLX_RGBA_BIT,
+        GLX_DRAWABLE_TYPE, GLX_PBUFFER_BIT,
+        GLX_RED_SIZE,      8,
+        GLX_GREEN_SIZE,    8,
+        GLX_BLUE_SIZE,     8,
+        GLX_ALPHA_SIZE,    8,
+        None
+    };
+    int nConfigs = 0;
+    GLXFBConfig* configs = glXChooseFBConfig(
+        ps->xDisplay, DefaultScreen(ps->xDisplay), fbAttribs, &nConfigs);
+    if (!configs || nConfigs == 0) {
+        spdlog::warn("GLContextManager: glXChooseFBConfig failed, trying EGL");
+        XCloseDisplay(ps->xDisplay);
+        ps->xDisplay = nullptr;
+        return false;
+    }
+    ps->fbConfig = configs[0];
+    XFree(configs);
+
+    // Every pool context shares with this one, so it has to exist before the
+    // first of them.  If even this fails GLX is unusable here - let the caller
+    // fall through to EGL rather than build an unshared pool.
+    ps->glxShareRoot = createGLXContext(ps, nullptr);
+    if (!ps->glxShareRoot) {
+        spdlog::warn("GLContextManager: GLX share root creation failed, trying EGL");
+        XCloseDisplay(ps->xDisplay);
+        ps->xDisplay = nullptr;
+        ps->fbConfig = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static PlatformStateLinux::PoolEntry createGLXPoolEntry(PlatformStateLinux* ps) {
+    PlatformStateLinux::PoolEntry entry;
+
+    entry.glxContext = createGLXContext(ps, ps->glxShareRoot);
+    if (!entry.glxContext) {
+        return {};
+    }
+
+    static const int pbAttribs[] = { GLX_PBUFFER_WIDTH, 1, GLX_PBUFFER_HEIGHT, 1, None };
+    entry.glxPbuffer = glXCreatePbuffer(ps->xDisplay, ps->fbConfig, pbAttribs);
+    if (!entry.glxPbuffer) {
+        spdlog::error("GLContextManager: glXCreatePbuffer failed");
+        glXDestroyContext(ps->xDisplay, entry.glxContext);
+        return {};
+    }
+
+    glXMakeCurrent(ps->xDisplay, entry.glxPbuffer, entry.glxContext);
+    const char* ver  = (const char*)glGetString(GL_VERSION);
+    const char* rend = (const char*)glGetString(GL_RENDERER);
+    const char* vend = (const char*)glGetString(GL_VENDOR);
+    spdlog::info("GLContextManager (GLX) - glVer: {} ({}) ({})",
+                 ver ? ver : "?", rend ? rend : "?", vend ? vend : "?");
+    glXMakeCurrent(ps->xDisplay, None, nullptr);
+    return entry;
+}
+
+// ---- EGL path (Wayland fallback) ----
+
+// `share` is the context the new one shares GL objects with (EGL_NO_CONTEXT for
+// the share root itself).
+static EGLContext createEGLContext(PlatformStateLinux* ps, EGLContext share) {
+    static const EGLint ctxAttribs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 3,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_NONE
+    };
+    EGLContext ctx = eglCreateContext(ps->eglDisplay, ps->eglConfig, share, ctxAttribs);
+    if (ctx == EGL_NO_CONTEXT) {
+        // Fallback: no version constraints
+        static const EGLint ctxAttribsFallback[] = { EGL_NONE };
+        ctx = eglCreateContext(ps->eglDisplay, ps->eglConfig, share, ctxAttribsFallback);
+    }
+    if (ctx == EGL_NO_CONTEXT) {
+        spdlog::error("GLContextManager: eglCreateContext failed: 0x{:X}", eglGetError());
+    }
+    return ctx;
+}
+
+static bool initEGL(PlatformStateLinux* ps) {
+    ps->eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (ps->eglDisplay == EGL_NO_DISPLAY) {
+        spdlog::error("GLContextManager: eglGetDisplay failed");
+        return false;
+    }
+
+    EGLint major = 0, minor = 0;
+    if (!eglInitialize(ps->eglDisplay, &major, &minor)) {
+        spdlog::error("GLContextManager: eglInitialize failed: 0x{:X}", eglGetError());
+        ps->eglDisplay = EGL_NO_DISPLAY;
+        return false;
+    }
+    spdlog::info("GLContextManager: EGL {}.{} (Wayland path)", major, minor);
+
+    eglBindAPI(EGL_OPENGL_API);
+
+    static const EGLint configAttribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_SURFACE_TYPE,    EGL_PBUFFER_BIT,
+        EGL_RED_SIZE,        8,
+        EGL_GREEN_SIZE,      8,
+        EGL_BLUE_SIZE,       8,
+        EGL_ALPHA_SIZE,      8,
+        EGL_NONE
+    };
+    EGLint numConfigs = 0;
+    if (!eglChooseConfig(ps->eglDisplay, configAttribs, &ps->eglConfig, 1, &numConfigs)
+        || numConfigs == 0) {
+        spdlog::error("GLContextManager: eglChooseConfig failed: 0x{:X}", eglGetError());
+        eglTerminate(ps->eglDisplay);
+        ps->eglDisplay = EGL_NO_DISPLAY;
+        return false;
+    }
+
+    // As on the GLX path: the share root has to exist before the first pool
+    // context, and no share root means no usable pool.
+    ps->eglShareRoot = createEGLContext(ps, EGL_NO_CONTEXT);
+    if (ps->eglShareRoot == EGL_NO_CONTEXT) {
+        spdlog::error("GLContextManager: EGL share root creation failed");
+        eglTerminate(ps->eglDisplay);
+        ps->eglDisplay = EGL_NO_DISPLAY;
+        ps->eglConfig = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static PlatformStateLinux::PoolEntry createEGLPoolEntry(PlatformStateLinux* ps) {
+    PlatformStateLinux::PoolEntry entry;
+
+    entry.eglContext = createEGLContext(ps, ps->eglShareRoot);
+    if (entry.eglContext == EGL_NO_CONTEXT) {
+        return {};
+    }
+
+    static const EGLint pbAttribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+    entry.eglSurface = eglCreatePbufferSurface(ps->eglDisplay, ps->eglConfig, pbAttribs);
+    if (entry.eglSurface == EGL_NO_SURFACE) {
+        spdlog::error("GLContextManager: eglCreatePbufferSurface failed: 0x{:X}", eglGetError());
+        eglDestroyContext(ps->eglDisplay, entry.eglContext);
+        entry.eglContext = EGL_NO_CONTEXT;
+        return {};
+    }
+
+    eglMakeCurrent(ps->eglDisplay, entry.eglSurface, entry.eglSurface, entry.eglContext);
+    const char* ver  = (const char*)glGetString(GL_VERSION);
+    const char* rend = (const char*)glGetString(GL_RENDERER);
+    const char* vend = (const char*)glGetString(GL_VENDOR);
+    spdlog::info("GLContextManager (EGL) - glVer: {} ({}) ({})",
+                 ver ? ver : "?", rend ? rend : "?", vend ? vend : "?");
+    eglMakeCurrent(ps->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    return entry;
+}
+
+// ---- Common GLContextManager methods ----
+
+GLContextManager& GLContextManager::Instance() {
+    static GLContextManager instance;
+    return instance;
+}
+
+GLContextManager::~GLContextManager() {
+    Shutdown();
+}
+
+void GLContextManager::Initialize(const InitParams& params) {
+    if (_initialized) return;
+    _params = params;
+    _platform = new PlatformState();
+    _initialized = true;
+}
+
+GLContextManager::ContextHandle GLContextManager::AcquireContext() {
+    if (!_platform) return nullptr;
+
+    std::call_once(_platform->initFlag, [this]() {
+        if (initGLX(_platform)) {
+            _platform->useEGL = false;
+            _platform->initOk = true;
+        } else if (initEGL(_platform)) {
+            _platform->useEGL = true;
+            _platform->initOk = true;
+        }
+    });
+    if (!_platform->initOk) return nullptr;
+
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+
+    if (_platform->pool.empty() && _platform->contextCount < kMaxPoolSize) {
+        lock.unlock();
+        PlatformState::PoolEntry entry = _platform->useEGL
+            ? createEGLPoolEntry(_platform)
+            : createGLXPoolEntry(_platform);
+        lock.lock();
+        bool ok = _platform->useEGL
+            ? (entry.eglContext != EGL_NO_CONTEXT)
+            : (entry.glxContext != nullptr);
+        if (ok) {
+            _platform->pool.push_front(entry);
+            ++_platform->contextCount;
+        } else if (_platform->contextCount == 0) {
+            // First-ever creation failed and there's nothing in flight to wait
+            // for - fail fast instead of deadlocking on poolNotifier.
+            return nullptr;
+        }
+    }
+
+    while (_platform->pool.empty()) {
+        _platform->poolNotifier.wait(lock);
+    }
+
+    auto entry = _platform->pool.front();
+    _platform->pool.pop_front();
+    return (ContextHandle)(new PlatformState::PoolEntry(entry));
+}
+
+bool GLContextManager::MakeCurrent(ContextHandle ctx) {
+    auto* entry = (PlatformState::PoolEntry*)ctx;
+    if (!entry || !_platform) return false;
+    if (_platform->useEGL) {
+        return eglMakeCurrent(_platform->eglDisplay, entry->eglSurface, entry->eglSurface, entry->eglContext) == EGL_TRUE;
+    } else {
+        return glXMakeCurrent(_platform->xDisplay, entry->glxPbuffer, entry->glxContext) == True;
+    }
+}
+
+void GLContextManager::DoneCurrent(ContextHandle /*ctx*/) {
+    // Release the context so wx canvases can bind their own contexts freely.
+    if (!_platform) return;
+    if (_platform->useEGL) {
+        eglMakeCurrent(_platform->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    } else if (_platform->xDisplay) {
+        glXMakeCurrent(_platform->xDisplay, None, nullptr);
+    }
+}
+
+void GLContextManager::ReleaseContext(ContextHandle ctx) {
+    if (!_platform || !ctx) return;
+    // Callers (ShaderEffect::UnsetGLContext) must have already called DoneCurrent
+    // before ReleaseContext.  Do not call it again here to avoid a redundant
+    // glX/eglMakeCurrent(None) that could unset a context another caller set.
+    auto* entry = (PlatformState::PoolEntry*)ctx;
+    std::unique_lock<std::mutex> lock(_platform->poolMutex);
+    _platform->pool.push_front(*entry);
+    delete entry;
+    lock.unlock();
+    _platform->poolNotifier.notify_all();
+}
+
+void GLContextManager::ExecuteOnGLThread(std::function<void()> fn) {
+    if (fn) fn();
+}
+
+void GLContextManager::Shutdown() {
+    if (!_platform) return;
+
+    {
+        std::unique_lock<std::mutex> lock(_platform->poolMutex);
+        for (auto& e : _platform->pool) {
+            if (_platform->useEGL) {
+                if (_platform->eglDisplay != EGL_NO_DISPLAY) {
+                    eglDestroySurface(_platform->eglDisplay, e.eglSurface);
+                    eglDestroyContext(_platform->eglDisplay, e.eglContext);
+                }
+            } else if (_platform->xDisplay) {
+                glXDestroyPbuffer(_platform->xDisplay, e.glxPbuffer);
+                glXDestroyContext(_platform->xDisplay, e.glxContext);
+            }
+        }
+        _platform->pool.clear();
+    }
+
+    // The share root outlives every context that shared with it.
+    if (_platform->useEGL) {
+        if (_platform->eglShareRoot != EGL_NO_CONTEXT && _platform->eglDisplay != EGL_NO_DISPLAY) {
+            eglDestroyContext(_platform->eglDisplay, _platform->eglShareRoot);
+        }
+        _platform->eglShareRoot = EGL_NO_CONTEXT;
+    } else {
+        if (_platform->glxShareRoot && _platform->xDisplay) {
+            glXDestroyContext(_platform->xDisplay, _platform->glxShareRoot);
+        }
+        _platform->glxShareRoot = nullptr;
+    }
+
+    if (_platform->useEGL && _platform->eglDisplay != EGL_NO_DISPLAY) {
+        eglTerminate(_platform->eglDisplay);
+        _platform->eglDisplay = EGL_NO_DISPLAY;
+    } else if (_platform->xDisplay) {
+        XCloseDisplay(_platform->xDisplay);
+        _platform->xDisplay = nullptr;
+    }
+
+    delete _platform;
+    _platform = nullptr;
+    _initialized = false;
+}
+
+#endif

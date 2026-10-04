@@ -1,0 +1,35 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "RenderableEffect.h"
+
+class StrobeEffect : public RenderableEffect
+{
+    public:
+        StrobeEffect(int id);
+        virtual ~StrobeEffect();
+        virtual void Render(Effect *effect, const SettingsMap &settings, RenderBuffer &buffer) override;
+        // Tier-2: cheap serial strobe advance + a pure per-strobe draw (the
+        // type-2/4 orientation coin-flip is precomputed in the advance).
+        virtual std::unique_ptr<EffectFrameState> AdvanceState(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer) override;
+        virtual FrameParallelism GetFrameParallelism(const SettingsMap &settings) const override;
+        virtual std::list<std::string> CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache) override;
+
+        // Cached from Strobe.json by OnMetadataLoaded().
+        static int sNumberStrobesDefault;
+        static int sStrobeDurationDefault;
+        static int sStrobeTypeDefault;
+        static bool sStrobeMusicDefault;
+protected:
+        virtual void OnMetadataLoaded() override;
+    private:
+};

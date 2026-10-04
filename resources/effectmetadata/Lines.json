@@ -1,0 +1,69 @@
+{
+    "effectName": "Lines",
+    "properties": [
+        {
+            "id": "Lines_Objects",
+            "label": "Lines",
+            "type": "int",
+            "controlType": "slider",
+            "default": 2,
+            "min": 1,
+            "max": 20,
+            "lockable": true,
+            "description": "Number of independent line objects drawn on the model. Each line uses the next color from the palette."
+        },
+        {
+            "id": "Lines_Segments",
+            "label": "Points",
+            "type": "int",
+            "controlType": "slider",
+            "default": 3,
+            "min": 2,
+            "max": 6,
+            "lockable": true,
+            "description": "Number of control points per line. Lines are drawn between consecutive points, so more points create multi-segment polylines."
+        },
+        {
+            "id": "Lines_Thickness",
+            "label": "Thickness",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 1,
+            "max": 10,
+            "valueCurve": true,
+            "description": "Pixel width of each drawn line. Higher values produce thicker, bolder lines."
+        },
+        {
+            "id": "Lines_Speed",
+            "label": "Speed",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "How fast the line points move across the model. Points bounce off the edges when they reach the boundary."
+        },
+        {
+            "id": "Lines_Trails",
+            "label": "Trails",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 10,
+            "lockable": true,
+            "description": "Number of trailing afterimages left behind each line, creating a motion trail effect. Zero means no trails."
+        },
+        {
+            "id": "Lines_FadeTrails",
+            "label": "Fade Trails",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, older trail copies fade out progressively, creating a smooth motion blur. When disabled, all trail copies are drawn at full opacity."
+        }
+    ]
+}

@@ -1,0 +1,599 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "EffectMapper.h"
+
+#include "effects/BufferStyles.h"
+#include "effects/EffectManager.h"
+#include "effects/MovingHeadEffect.h"
+#include "import_export/LOREdit.h"
+#include "import_export/Vixen3.h"
+#include "models/Model.h"
+#include "models/ModelGroup.h"
+#include "render/Effect.h"
+#include "render/EffectLayer.h"
+#include "render/Element.h"
+#include "render/RenderContext.h"
+#include "render/SequenceElements.h"
+#include "render/SequenceMedia.h"
+#include "render/SequencePackage.h"
+#include "utils/string_utils.h"
+
+#include <spdlog/fmt/fmt.h>
+#include <spdlog/spdlog.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <regex>
+
+void MapXLightsEffects(EffectLayer* target, EffectLayer* src,
+                       std::vector<EffectLayer*>& mapped, bool eraseExisting,
+                       SequencePackage& xsqPkg, bool lock,
+                       const std::map<std::string, std::string>& mapping,
+                       bool convertRender,
+                       const std::map<std::string, std::string>& mappingModelType)
+{
+    if (eraseExisting)
+        target->DeleteAllEffects();
+
+    for (int x = 0; x < src->GetEffectCount(); ++x) {
+        Effect* ef = src->GetEffect(x);
+        if (!target->HasEffectsInTimeRange(ef->GetStartTimeMS(), ef->GetEndTimeMS())) {
+            std::string settingsStr;
+            if (xsqPkg.HasMedia() && xsqPkg.GetImportOptions()->IsImportActive()) {
+                // attempt to import it and fix settings
+                settingsStr = xsqPkg.FixAndImportMedia(ef, target);
+            } else {
+                spdlog::info("MapXLightsEffects: skipping media import for '{}' effect on '{}' (HasMedia={}, ImportActive={}).",
+                             ef->GetEffectName(), target->GetParentElement()->GetFullName(), xsqPkg.HasMedia(), xsqPkg.GetImportOptions()->IsImportActive());
+                settingsStr = ef->GetSettingsAsString();
+            }
+
+            // Parse into a map so the key edits below are keyed lookups/assignments
+            // rather than substring replaces on the serialized string — a prior
+            // version matched ",Key=value" (with a leading comma) and silently
+            // no-op'd whenever Key was the first/only setting in the string.
+            SettingsMap settings;
+            settings.Parse(nullptr, settingsStr, ef->GetEffectName());
+
+            // If this is a duplicate effect map the duplicate to the model the original model was mapped to
+            if (ef->GetEffectIndex() == EffectManager::eff_DUPLICATE && settings.Contains("E_CHOICE_Duplicate_Model")) {
+                auto dupModel = settings.Get("E_CHOICE_Duplicate_Model", "");
+                auto it = mapping.find(dupModel);
+                if (it != mapping.end()) {
+                    settings["E_CHOICE_Duplicate_Model"] = it->second;
+                }
+            }
+            const char* mediaKey = nullptr;
+            switch (ef->GetEffectIndex()) {
+            case EffectManager::eff_PICTURES: mediaKey = "E_TEXTCTRL_Pictures_Filename"; break;
+            case EffectManager::eff_SHADER: mediaKey = "E_0FILEPICKERCTRL_IFS"; break;
+            case EffectManager::eff_SHAPE: mediaKey = "E_FILEPICKERCTRL_SVG"; break;
+            case EffectManager::eff_RIPPLE: mediaKey = "E_FILEPICKERCTRL_Ripple_SVG"; break;
+            case EffectManager::eff_TEXT: mediaKey = "E_FILEPICKERCTRL_Text_File"; break;
+            default: break;
+            }
+            if (mediaKey != nullptr) {
+                // Embedded images/shaders/SVGs/text files must stay embedded in the target
+                auto& sm = ef->GetParentEffectLayer()->GetParentElement()->GetSequenceElements()->GetSequenceMedia();
+                auto& tm = target->GetParentElement()->GetSequenceElements()->GetSequenceMedia();
+                tm.CopyEmbeddedMedia(sm, settings.Get(mediaKey, ""));
+            }
+            if (ef->GetEffectIndex() == EffectManager::eff_FACES) {
+                // Sequence-level face definitions travel inside the .xsq, so
+                // they can be imported even from a plain (non-package) .xsq.
+                // Copy the definition the source actually rendered - model
+                // definitions win over sequence-level ones on both sides, and
+                // "Default"/empty resolves to the first model face, else the
+                // first sequence face. Package imports run FixAndImportMedia
+                // first, which also copies any external face images - this
+                // pass then no-ops via the target-store check.
+                std::string face = settings.Get("E_CHOICE_Faces_FaceDefinition", "");
+                SequenceElements* srcSE = ef->GetParentEffectLayer()->GetParentElement()->GetSequenceElements();
+                SequenceElements* tgtSE = target->GetParentElement()->GetSequenceElements();
+                if (srcSE != nullptr && tgtSE != nullptr) {
+                    const std::string& srcModelName = ef->GetParentEffectLayer()->GetParentElement()->GetModelName();
+                    if (face == "Default" || face.empty()) {
+                        const auto& seqFaces = srcSE->GetSequenceFaces().GetFaces();
+                        face = (!xsqPkg.SourceModelHasFace(srcModelName, "") && !seqFaces.empty()) ? seqFaces.begin()->first : "";
+                    } else if (xsqPkg.SourceModelHasFace(srcModelName, face)) {
+                        face.clear(); // the source rendered the model definition
+                    }
+                    const auto* srcDef = face.empty() ? nullptr : srcSE->GetSequenceFaces().GetFace(face);
+                    if (srcDef != nullptr && tgtSE->GetSequenceFaces().GetFace(face) == nullptr) {
+                        Model* tgtModel = tgtSE->GetRenderContext() != nullptr ? tgtSE->GetRenderContext()->GetModel(target->GetParentElement()->GetModelName()) : nullptr;
+                        if (tgtModel == nullptr || tgtModel->GetFaceInfo().find(face) == tgtModel->GetFaceInfo().end()) {
+                            auto& sm = srcSE->GetSequenceMedia();
+                            auto& tm = tgtSE->GetSequenceMedia();
+                            for (const auto& [key, value] : *srcDef) {
+                                if (!SequenceFaces::IsImageKey(key) || value.empty()) {
+                                    continue;
+                                }
+                                if (!tm.HasImage(value) && sm.HasImage(value)) {
+                                    auto img = sm.GetImage(value);
+                                    if (img != nullptr && img->IsEmbedded()) {
+                                        tm.AddEmbeddedImage(value, img->GetEmbeddedData());
+                                    }
+                                }
+                                tm.MarkUsedByMetadata(value);
+                            }
+                            tgtSE->GetSequenceFaces().SetFace(face, *srcDef);
+                        }
+                    }
+                }
+                // Optionally bring a source *model* Matrix face definition into the
+                // target sequence (embedded) instead of onto the mapped model. Runs
+                // for plain .xsq imports too (FixAndImportMedia isn't called there).
+                // No-op when the source rendered a sequence-level def (handled above)
+                // or a node/Coro face; idempotent across effects.
+                if (xsqPkg.IsImportFacesToSequence()) {
+                    xsqPkg.ImportModelFaceToSequence(ef, target, settings.Get("E_CHOICE_Faces_FaceDefinition", ""));
+                }
+            }
+
+            // if we are mapping the effect onto a group and it is a per preview render buffer then use the group's default camera
+            //   unless there is a non-default 3D camera assigned to the effect, and it exists in the target layout
+            if (!target->IsTimingLayer()) {
+                RenderContext* rc = target->GetParentElement()->GetSequenceElements()->GetRenderContext();
+                Model* m = rc->GetModel(target->GetParentElement()->GetModelName());
+                if (m != nullptr) {
+                    // Imported onto a different single-fixture moving-head model than the
+                    // source effect was authored for: re-key its E_TEXTCTRL_MHn_Settings
+                    // slots to this model's own fixture (xLights#7080). No-op for anything
+                    // but a single DmxMovingHead/DmxMovingHeadAdv model.
+                    if (ef->GetEffectName() == "Moving Head") {
+                        MovingHeadEffect::RemapSingleFixtureSettings(settings, m);
+                    }
+                    auto mg = dynamic_cast<const ModelGroup*>(m);
+                    if (mg != nullptr) {
+                        if (convertRender) {
+                            auto buffer = settings.Get("B_CHOICE_BufferStyle", "");
+                            if (buffer == "Per Preview" || buffer == "Default" || buffer == "Single Line") {
+                                settings["B_CHOICE_BufferStyle"] = "Per Model " + buffer;
+                            } else if (buffer.empty()) {
+                                settings["B_CHOICE_BufferStyle"] = "Per Model Default";
+                            }
+                        }
+                        // so is it a per preview render buffer
+                        auto rb = settings.Get("B_CHOICE_BufferStyle", "");
+                        if (BufferStyles::CanRenderBufferUseCamera(rb)) {
+                            if (settings.Contains("B_CHOICE_PerPreviewCamera")) {
+                                // MoC - There isn't a way to just indicate "use group's default", so instead we grab it as
+                                //   a setting for the effect.
+                                // That way if the group default changes, there is no effect on old / mapped effects
+                                auto newCamera = mg->GetDefaultCamera();
+                                auto effCamera = settings.Get("B_CHOICE_PerPreviewCamera", "");
+                                if (effCamera != "2D" && effCamera != "Default" && rc->GetNamedCamera3D(effCamera)) {
+                                    newCamera = effCamera;
+                                }
+                                settings["B_CHOICE_PerPreviewCamera"] = newCamera;
+                            } else {
+                                settings["B_CHOICE_PerPreviewCamera"] = mg->GetDefaultCamera();
+                            }
+                        }
+                    }
+                } else {
+                    spdlog::warn("MapXLightsEffects: target model '{}' not found in current layout while mapping effects.",
+                                 target->GetParentElement()->GetModelName());
+                }
+            }
+
+            Effect* ne = target->AddEffect(0, ef->GetEffectName(), settings.AsString(), ef->GetPaletteAsString(),
+                                           ef->GetStartTimeMS(), ef->GetEndTimeMS(), 0, false);
+            if (ne != nullptr) {
+                // honour the "Lock effects on import" option only; never carry the source
+                // effect's own lock status across (SetLocked() erases X_Effect_Locked from
+                // the new effect's settings map when false, regardless of whether it
+                // survived in the `settings` string above).
+                ne->SetLocked(lock);
+            }
+        }
+    }
+    mapped.push_back(src);
+}
+
+void MapXLightsStrandEffects(EffectLayer* target, const std::string& name,
+                             std::map<std::string, EffectLayer*>& layerMap,
+                             SequenceElements& seqEl,
+                             std::vector<EffectLayer*>& mapped, bool eraseExisting,
+                             SequencePackage& xsqPkg, bool lock,
+                             const std::map<std::string, std::string>& mapping,
+                             const std::map<std::string, std::string>& mappingModelType)
+{
+    EffectLayer* src = layerMap[name];
+    if (src == nullptr) {
+        Element* srcEl = seqEl.GetElement(name);
+        if (srcEl == nullptr) {
+            std::printf("Source strand %s doesn't exist\n", name.c_str());
+            return;
+        }
+        src = srcEl->GetEffectLayer(0);
+    }
+    if (src != nullptr) {
+        MapXLightsEffects(target, src, mapped, eraseExisting, xsqPkg, lock, mapping, false, mappingModelType);
+    } else {
+        std::printf("Source strand %s doesn't exist\n", name.c_str());
+    }
+}
+
+void MapXLightsEffects(Element* target,
+                       const std::string& name,
+                       SequenceElements& seqEl,
+                       std::map<std::string, Element*>& elementMap,
+                       std::map<std::string, EffectLayer*>& layerMap,
+                       std::vector<EffectLayer*>& mapped, bool eraseExisting,
+                       SequencePackage& xsqPkg, bool lock,
+                       const std::map<std::string, std::string>& mapping, bool convertRender,
+                       const std::map<std::string, std::string>& mappingModelType)
+{
+    if (target->GetType() == ElementType::ELEMENT_TYPE_STRAND) {
+        auto const strandName = fmt::format("Strand {}", ((StrandElement*)target)->GetStrand() + 1);
+        spdlog::debug("Mapping xLights effect from {} to {}{}.", name, target->GetFullName(), strandName);
+    } else {
+        spdlog::debug("Mapping xLights effect from {} to {}.", name, target->GetFullName());
+    }
+
+    EffectLayer* src = layerMap[name];
+    Element* el = elementMap[name];
+
+    std::string srcModelType = "Unknown";
+    auto it = mappingModelType.find(name);
+    if (it != mappingModelType.end()) {
+        srcModelType = it->second;
+    }
+    bool cr = convertRender;
+    if (srcModelType == "ModelGroup") {
+        cr = false;
+    }
+
+    if (src != nullptr) {
+        MapXLightsEffects(target->GetEffectLayer(0), src, mapped, eraseExisting, xsqPkg, lock, mapping, cr, mappingModelType);
+        return;
+    }
+
+    if (el == nullptr) {
+        el = seqEl.GetElement(name);
+    }
+
+    if (el == nullptr) {
+        spdlog::debug("Mapping xLights effect from {} to {} failed as the effect was not found in the source sequence.", name, target->GetName());
+        return;
+    }
+
+    while (target->GetEffectLayerCount() < el->GetEffectLayerCount()) {
+        target->AddEffectLayer();
+    }
+    for (size_t x = 0; x < el->GetEffectLayerCount(); ++x) {
+        target->GetEffectLayer(x)->SetLayerName(el->GetEffectLayer(x)->GetLayerName());
+        MapXLightsEffects(target->GetEffectLayer(x), el->GetEffectLayer(x), mapped, eraseExisting, xsqPkg, lock, mapping, cr, mappingModelType);
+    }
+}
+
+void MapS5(const EffectManager& effect_manager, int layer, EffectLayer* el, const LOREdit& lorEdit, const std::string& model, Model* m, int frequency, int offset, bool eraseExisting)
+{
+    if (el == nullptr)
+        return;
+
+    if (eraseExisting)
+        el->DeleteAllEffects();
+
+    bool channelBlock = (m != nullptr && m->GetDisplayAs() == DisplayAsType::ChannelBlock);
+
+    auto st = lorEdit.GetSequencingType(model);
+
+    if (st == loreditType::CHANNELS) {
+        auto effects = lorEdit.GetChannelEffects(model, 0, m, offset);
+
+        for (const auto& it : effects) {
+            if (!el->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                // for channel blocks we always use white as the colour comes from the channel block
+                if (channelBlock)
+                    palette = "C_BUTTON_Palette1=#ffffff,C_CHECKBOX_Palette1=1";
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    el->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        // pixel effects on a node ... not useful but whatever
+        auto effects = lorEdit.GetTrackEffects(model, layer, offset);
+
+        for (const auto& it : effects) {
+            if (!el->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    el->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    }
+}
+
+void MapS5ChannelEffects(const EffectManager& effectManager, int node, EffectLayer* nl, Model* m, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    if (nl == nullptr)
+        return;
+
+    if (eraseExisting)
+        nl->DeleteAllEffects();
+
+    bool channelBlock = (m != nullptr && m->GetDisplayAs() == DisplayAsType::ChannelBlock);
+
+    auto st = lorEdit.GetSequencingType(mapping);
+
+    if (st == loreditType::CHANNELS) {
+        auto effects = lorEdit.GetChannelEffects(mapping, node, m, offset);
+
+        for (const auto& it : effects) {
+            if (!nl->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                // for channel blocks we always use white as the colour comes from the channel block
+                if (channelBlock)
+                    palette = "C_BUTTON_Palette1=#ffffff,C_CHECKBOX_Palette1=1";
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    nl->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        // pixel effects on a node ... not useful but whatever
+        auto effects = lorEdit.GetTrackEffects(mapping, 0, offset);
+
+        for (const auto& it : effects) {
+            if (!nl->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    nl->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    }
+}
+
+void MapS5ChannelEffects(const EffectManager& effectManager, EffectLayer* layer, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    if (eraseExisting)
+        layer->DeleteAllEffects();
+
+    Model* m = layer->GetParentElement()->GetSequenceElements()->GetRenderContext()->GetModel(layer->GetParentElement()->GetModelName());
+    bool channelBlock = (m != nullptr && m->GetDisplayAs() == DisplayAsType::ChannelBlock);
+
+    static const std::regex regex(R"(\[(\d+),(\d+),(\d+)\]\[(.*)\])");
+    std::smatch mm;
+    if (std::regex_search(mapping, mm, regex)) {
+        int const row = (int)std::strtol(mm[1].str().c_str(), nullptr, 10);
+        int const col = (int)std::strtol(mm[2].str().c_str(), nullptr, 10);
+        int const color = (int)std::strtol(mm[3].str().c_str(), nullptr, 10);
+        std::string strColor = mm[4].str();
+        std::string name = mm.prefix().str() + mm.suffix().str();
+
+        auto effects = lorEdit.GetChannelEffects(name, row, col, color, offset);
+
+        for (auto& it : effects) {
+            if (!layer->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                LOREdit::setNodeColor(strColor, it);
+                std::string palette = it.GetPalette();
+                // for channel blocks we always use white as the colour comes from the channel block
+                if (channelBlock)
+                    palette = "C_BUTTON_Palette1=#ffffff,C_CHECKBOX_Palette1=1";
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    layer->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    }
+}
+
+void MapS5ChannelEffects(const EffectManager& effectManager, int node, EffectLayer* nl, int nodes, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    if (nl == nullptr)
+        return;
+
+    if (eraseExisting)
+        nl->DeleteAllEffects();
+
+    Model* m = nl->GetParentElement()->GetSequenceElements()->GetRenderContext()->GetModel(nl->GetParentElement()->GetModelName());
+    bool channelBlock = (m != nullptr && m->GetDisplayAs() == DisplayAsType::ChannelBlock);
+
+    auto st = lorEdit.GetSequencingType(mapping);
+
+    if (st == loreditType::CHANNELS) {
+        auto effects = lorEdit.GetChannelEffects(mapping, node, nodes, offset);
+
+        for (const auto& it : effects) {
+            if (!nl->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                // for channel blocks we always use white as the colour comes from the channel block
+                if (channelBlock)
+                    palette = "C_BUTTON_Palette1=#ffffff,C_CHECKBOX_Palette1=1";
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    nl->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        // pixel effects on a node ... not useful but whatever
+        auto effects = lorEdit.GetTrackEffects(mapping, 0, offset);
+
+        for (const auto& it : effects) {
+            if (!nl->HasEffectsInTimeRange(it.startMS, it.endMS)) {
+                std::string palette = it.GetPalette();
+                std::string ef = it.GetxLightsEffect();
+                if (ef != "") {
+                    std::string settings = it.GetSettings(palette);
+                    nl->AddEffect(0, ef, settings, palette, it.startMS, it.endMS, false, false);
+                }
+            }
+        }
+    }
+}
+
+void MapS5Effects(const EffectManager& effectManager, Element* model, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    auto st = lorEdit.GetSequencingType(mapping);
+    Model* m = model->GetSequenceElements()->GetRenderContext()->GetModel(model->GetModelName());
+
+    if (st == loreditType::CHANNELS) {
+        if (m->GetNodeCount() == 1) {
+            MapS5ChannelEffects(effectManager, 0, model->GetEffectLayer(0), m, lorEdit, mapping, frequency, offset, eraseExisting);
+        } else {
+            int lr, lc;
+            lorEdit.GetModelChannels(mapping, lr, lc);
+
+            if (lr == 1 && lc == 1) {
+                MapS5ChannelEffects(effectManager, 0, model->GetEffectLayer(0), m, lorEdit, mapping, frequency, offset, eraseExisting);
+            } else {
+                for (uint32_t i = 0; i < m->GetNodeCount(); i++) {
+                    NodeLayer* nl = model->GetNodeEffectLayer(i);
+                    if (nl != nullptr) {
+                        MapS5ChannelEffects(effectManager, i, nl, m, lorEdit, mapping, frequency, offset, eraseExisting);
+                    }
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        for (int i = 0; i < lorEdit.GetModelLayers(mapping); i++) {
+            if ((int)model->GetEffectLayerCount() < i + 1) {
+                model->AddEffectLayer();
+            }
+            MapS5(effectManager, i, model->GetEffectLayer(i), lorEdit, mapping, m, frequency, offset, eraseExisting);
+        }
+    }
+}
+
+void MapS5Effects(const EffectManager& effectManager, StrandElement* se, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    auto st = lorEdit.GetSequencingType(mapping);
+    Model* m = se->GetSequenceElements()->GetRenderContext()->GetModel(se->GetModelName());
+
+    if (st == loreditType::CHANNELS) {
+        if (se->GetNodeLayerCount() == 1) {
+            MapS5ChannelEffects(effectManager, 0, se->GetEffectLayer(0), 1, lorEdit, mapping, frequency, offset, eraseExisting);
+        } else {
+            int lr, lc;
+            lorEdit.GetModelChannels(mapping, lr, lc);
+
+            if (lr == 1 && lc == 1) {
+                MapS5ChannelEffects(effectManager, 0, se->GetEffectLayer(0), 1, lorEdit, mapping, frequency, offset, eraseExisting);
+            } else {
+                int nodes = se->GetNodeLayerCount();
+                for (int i = 0; i < nodes; i++) {
+                    NodeLayer* nl = se->GetNodeEffectLayer(i);
+                    if (nl != nullptr) {
+                        MapS5ChannelEffects(effectManager, i, nl, nodes, lorEdit, mapping, frequency, offset, eraseExisting);
+                    }
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        for (int i = 0; i < lorEdit.GetModelLayers(mapping); i++) {
+            if ((int)se->GetEffectLayerCount() < i + 1) {
+                se->AddEffectLayer();
+            }
+            MapS5(effectManager, i, se->GetEffectLayer(i), lorEdit, mapping, m, frequency, offset, eraseExisting);
+        }
+    }
+}
+
+void MapVixen3(Element* model, const Vixen3& vixen, const std::string& modelName, long offset, int frameMS, bool eraseExisting, int startLayer)
+{
+    if (eraseExisting) {
+        for (const auto& it : model->GetEffectLayers()) {
+            it->DeleteAllEffects();
+        }
+    }
+
+    auto effects = vixen.GetEffects(modelName);
+
+    for (const auto& it : effects) {
+        long s = Vixen3::ConvertTiming(it.start + offset, frameMS);
+        long e = Vixen3::ConvertTiming(it.end + offset, frameMS);
+
+        // Vixen can have multiple effects in one time slot so add layers as needed
+        EffectLayer* layer = nullptr;
+        for (size_t li = startLayer; li < model->GetEffectLayerCount(); ++li) {
+            if (!model->GetEffectLayer(li)->HasEffectsInTimeRange(s, e)) {
+                layer = model->GetEffectLayer(li);
+                break;
+            }
+        }
+
+        if (layer == nullptr)
+            layer = model->AddEffectLayer();
+
+        // now we need to create the effect
+        std::string newpalette = it.GetPalette();
+        std::string newsettings = it.GetSettings();
+        std::string type = it.GetXLightsType();
+        if (type != "") {
+            if (layer->GetParentElement()->GetSequenceElements()->GetEffectManager().GetEffectIndex(type) < 0) {
+                spdlog::debug("Vixen 3 import {} -> {} is not a valid effect.", it.type, type);
+            } else {
+                layer->AddEffect(0, type, newsettings, newpalette, s, e, false, false);
+            }
+        }
+    }
+}
+
+void MapVixen3Effects(const EffectManager& effectManager, Element* model, const Vixen3& vixen, const std::string& mapping, long offset, int frameMS, bool eraseExisting, int startLayer)
+{
+    spdlog::debug("Creating effects on model {} from {}", model->GetFullName(), mapping);
+    MapVixen3(model, vixen, mapping, offset, frameMS, eraseExisting, startLayer);
+}
+
+void MapS5Effects(const EffectManager& effectManager, SubModelElement* se, const LOREdit& lorEdit, const std::string& mapping, int frequency, int offset, bool eraseExisting)
+{
+    if (dynamic_cast<StrandElement*>(se) != nullptr) {
+        return MapS5Effects(effectManager, dynamic_cast<StrandElement*>(se), lorEdit, mapping, frequency, offset, eraseExisting);
+    }
+
+    auto st = lorEdit.GetSequencingType(mapping);
+    Model* m = se->GetSequenceElements()->GetRenderContext()->GetModel(se->GetModelName());
+
+    if (st == loreditType::CHANNELS) {
+        if (m->GetNodeCount() == 1) {
+            MapS5ChannelEffects(effectManager, 0, se->GetEffectLayer(0), m, lorEdit, mapping, frequency, offset, eraseExisting);
+        } else {
+            int lr, lc;
+            lorEdit.GetModelChannels(mapping, lr, lc);
+
+            if (lr == 1 && lc == 1) {
+                MapS5ChannelEffects(effectManager, 0, se->GetEffectLayer(0), m, lorEdit, mapping, frequency, offset, eraseExisting);
+            } else {
+                for (uint32_t i = 0; i < m->GetNodeCount(); i++) {
+                    NodeLayer* nl = se->GetNodeEffectLayer(i);
+                    if (nl != nullptr) {
+                        MapS5ChannelEffects(effectManager, i, nl, m, lorEdit, mapping, frequency, offset, eraseExisting);
+                    }
+                }
+            }
+        }
+    } else if (st == loreditType::TRACKS) {
+        for (int i = 0; i < lorEdit.GetModelLayers(mapping); i++) {
+            if ((int)se->GetEffectLayerCount() < i + 1) {
+                se->AddEffectLayer();
+            }
+            MapS5(effectManager, i, se->GetEffectLayer(i), lorEdit, mapping, m, frequency, offset, eraseExisting);
+        }
+    }
+}

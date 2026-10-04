@@ -1,0 +1,105 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <functional>
+#include <string>
+#include <vector>
+
+// Abstract interface replacing direct wxMessageBox / wxFileSelector /
+// wxDirDialog / wxGetNumberFromUser / wxProgressDialog calls in
+// render/, effects/, and models/ code.
+//
+// The UI layer (xLightsFrame) provides a concrete implementation that
+// delegates to wx dialogs.  Non-UI callers (tests, headless) can
+// supply stubs or alternative implementations.
+
+class UICallbacks {
+public:
+    virtual ~UICallbacks() = default;
+
+    // ---- message dialogs ----
+    // Show an informational / error message.  |caption| is the dialog title.
+    virtual void ShowMessage(const std::string& message,
+                             const std::string& caption = "xLights") const = 0;
+
+    // Ask a yes/no question.  Returns true for "yes".
+    virtual bool PromptYesNo(const std::string& message,
+                             const std::string& caption = "xLights") const = 0;
+
+    // Ask a yes/no question with Accept All / Reject All options for batch operations.
+    // Returns true to accept (take base version), false to reject.
+    // Sets acceptAll=true if "Yes to All" was selected; rejectAll=true if "No to All".
+    // If acceptAll is already true on entry, returns true without prompting.
+    // If rejectAll is already true on entry, returns false without prompting.
+    // The default implementation ignores the all-state and falls back to PromptYesNo.
+    virtual bool PromptYesNoAll(const std::string& message,
+                                const std::string& caption,
+                                bool& acceptAll,
+                                bool& rejectAll) const {
+        if (acceptAll) return true;
+        if (rejectAll) return false;
+        return PromptYesNo(message, caption);
+    }
+
+    // ---- file / directory pickers ----
+    // Returns the chosen path, or empty string if cancelled.
+    virtual std::string PromptForDirectory(const std::string& message,
+                                           const std::string& defaultPath = "") const = 0;
+
+    virtual std::string PromptForFile(const std::string& message,
+                                      const std::string& wildcard = "",
+                                      const std::string& defaultPath = "") const = 0;
+
+    // ---- number input ----
+    // Returns the entered number, or |defaultValue| if cancelled.
+    virtual long PromptForNumber(const std::string& message,
+                                 const std::string& caption,
+                                 long defaultValue,
+                                 long min, long max) const = 0;
+
+    // ---- text input ----
+    // Returns the entered text, or |defaultValue| if cancelled.
+    virtual std::string PromptForText(const std::string& message,
+                                      const std::string& caption,
+                                      const std::string& defaultValue = "") const = 0;
+
+    // ---- list chooser (multi-select) ----
+    // Present a list of options and let the user select one or more.
+    // Returns the selected items, or empty vector if cancelled.
+    virtual std::vector<std::string> ChooseFromList(
+        const std::string& prompt,
+        const std::vector<std::string>& options) const { return {}; }
+
+    // Overload with pre-selected items (checkbox-style).
+    // Items in |preSelected| start checked.  Returns the final selection, or empty if cancelled.
+    virtual std::vector<std::string> ChooseFromList(
+        const std::string& prompt,
+        const std::vector<std::string>& options,
+        const std::vector<std::string>& preSelected) const { return ChooseFromList(prompt, options); }
+
+    // ---- configuration queries ----
+    virtual bool IsCheckSequenceOptionDisabled(const std::string& option) const { return false; }
+    virtual std::string GetRenameModelAliasPromptBehavior() const { return "Always Prompt"; }
+
+    // ---- progress reporting ----
+    // Begin a progress operation.  Returns a token that the caller passes
+    // to UpdateProgress / EndProgress.  |maximum| is the upper bound of
+    // the progress range (0 .. maximum).
+    using ProgressToken = int;
+    static constexpr ProgressToken INVALID_PROGRESS = -1;
+
+    virtual ProgressToken BeginProgress(const std::string& message,
+                                        int maximum = 100) = 0;
+    virtual void UpdateProgress(ProgressToken token, int value,
+                                const std::string& newMessage = "") = 0;
+    virtual void EndProgress(ProgressToken token) = 0;
+};

@@ -1,0 +1,1330 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <cassert>
+#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+
+#include <pugixml.hpp>
+
+#include <spdlog/fmt/fmt.h>
+#include <vector>
+
+#include "CustomModel.h"
+#include "../render/RenderContext.h"
+#include "../render/UICallbacks.h"
+#include "xLightsVersion.h"
+#include "outputs/Controller.h"
+#include "UtilFunctions.h"
+#include "../utils/AppCallbacks.h"
+#include "../utils/string_utils.h"
+#include "outputs/OutputManager.h"
+#include "../graphics/IModelPreview.h"
+#include "../graphics/xlGraphicsAccumulators.h"
+#include "../graphics/xlGraphicsContext.h"
+#include "../utils/xlImage.h"
+#include "RulerObject.h"
+#include "../XmlSerializer/XmlSerializer.h"
+#include "../XmlSerializer/XmlNodeKeys.h"
+
+#include <log.h>
+
+CustomModel::CustomModel(const ModelManager &manager) : ModelWithScreenLocation(manager)
+{
+    DisplayAs = DisplayAsType::Custom;
+    _depth = 1;
+    _strings = 1;
+    screenLocation.SetSupportsZScaling(true);
+    screenLocation.SetStartOnXAxis(true);
+    _locations.resize(1);
+    _locations.back().resize(1);
+    _locations.back().back().resize(1);
+}
+
+CustomModel::~CustomModel()
+{
+    _locations.clear();
+    for (auto& it : _bkg_images) {
+        delete it.second;
+    }
+    _bkg_images.clear();
+}
+
+
+std::tuple<int, int, int> FindNode(int node, const std::vector<std::vector<std::vector<int>>>& locations)
+{
+    for (int l = 0; l < (int)locations.size(); l++) {
+        for (int r = 0; r < (int)locations[l].size(); r++) {
+            for (int c = 0; c < (int)locations[l][r].size(); c++) {
+                if (locations[l][r][c] == node + 1) {
+                    return { l, r, c };
+                }
+            }
+        }
+    }
+    assert(false);
+    return { -1,-1,-1 };
+}
+
+int CustomModel::GetStrandLength(int strand) const
+{
+    return Nodes.size();
+}
+
+int CustomModel::MapToNodeIndex(int strand, int node) const
+{
+    return node;
+}
+
+void CustomModel::UpdateModel(int width, int height, int depth, const std::vector<std::vector<std::vector<int>>>& modelData) {
+    _customWidth = width;
+    _customHeight = height;
+    _depth = depth;
+    _locations = modelData;
+    Setup();
+}
+
+void CustomModel::InitModel()
+{
+    InitCustomMatrix();
+    //CopyBufCoord2ScreenCoord();
+    screenLocation.SetRenderSize(_customWidth, _customHeight, _depth);
+    if (_depth > 1) {
+        screenLocation.SetPerspective2D(0.1f); // if i dont do this you cant see the back nodes in 2D
+    }
+}
+
+void CustomModel::SetCustomWidth(long w)
+{
+    _customWidth = w;
+}
+
+void CustomModel::SetCustomHeight(long h)
+{
+    _customHeight = h;
+}
+
+void CustomModel::SetCustomDepth(long d)
+{
+    _depth = d;
+    if (_depth < 1) _depth = 1;
+}
+
+const std::string CustomModel::GetCustomData() const
+{
+    // TODO:  Delete ToCustom  and move its contents here
+    return CustomModel::ToCustomModel(_locations);
+}
+
+const std::string CustomModel::GetCompressedData() const
+{
+    // TODO:  Delete ToCompressed and move its contents here
+    return CustomModel::ToCompressed(_locations);
+}
+
+void CustomModel::SetCustomData(const std::vector<std::vector<std::vector<int>>>& data)
+{
+    _locations = data;
+    Setup();
+}
+
+void CustomModel::SetCustomBackground(std::string background)
+{
+    _custom_background = background;
+    for (auto& it : _bkg_images) {
+        delete it.second;
+    }
+    _bkg_images.clear();
+}
+
+void CustomModel::DisplayModelOnWindow(IModelPreview* preview, xlGraphicsContext* ctx,
+                                       xlGraphicsProgram* solidProgram, xlGraphicsProgram* transparentProgram, bool is_3d,
+                                       const xlColor* color, bool allowSelected, bool wiring,
+                                       bool highlightFirst, int highlightpixel,
+                                       float* boundingBox)
+{
+    if (!_custom_background.empty() && FileExists(_custom_background)) {
+        xlTexture* texture = _bkg_images[preview->getName()];
+        if (texture == nullptr) {
+            xlImage img;
+            if (img.LoadFromFile(_custom_background)) {
+                texture = ctx->createTexture(img, GetName() + "_bkg", true);
+                _bkg_images[preview->getName()] = texture;
+            }
+        }
+        if (texture) {
+            // Node positions are offset by half a cell, so center the image accordingly.
+            static const float kHalfCellOffset = -0.5f;
+            float hw = (GetModelScreenLocation().GetRenderWi() / 2.0f) * _bkg_scale / 100.0f;
+            float hh = (GetModelScreenLocation().GetRenderHt() / 2.0f) * _bkg_scale / 100.0f;
+            float cx = kHalfCellOffset;
+            float cy = kHalfCellOffset;
+            // Push the background behind the back-most node layer so it never shares a
+            // z-plane with the pixels (avoids z-fighting when the 3D view is rotated).
+            float bkgZ = -((float)(_depth - 1) / 2.0f) - 0.5f;
+            xlVertexTextureAccumulator* va = ctx->createVertexTextureAccumulator();
+            va->PreAlloc(6);
+            va->AddVertex(cx - hw, cy - hh, bkgZ, 0.0f, 1.0f);
+            va->AddVertex(cx + hw, cy - hh, bkgZ, 1.0f, 1.0f);
+            va->AddVertex(cx - hw, cy + hh, bkgZ, 0.0f, 0.0f);
+            va->AddVertex(cx - hw, cy + hh, bkgZ, 0.0f, 0.0f);
+            va->AddVertex(cx + hw, cy - hh, bkgZ, 1.0f, 1.0f);
+            va->AddVertex(cx + hw, cy + hh, bkgZ, 1.0f, 0.0f);
+            GetModelScreenLocation().PrepareToDraw(is_3d, allowSelected);
+            uint8_t alpha = (uint8_t)std::lround((100 - _bkg_transparency) * 255.0 / 100.0);
+            solidProgram->addStep([=, this](xlGraphicsContext* ctx) {
+                ctx->PushMatrix();
+                if (!is_3d) {
+                    ctx->ScaleViewMatrix(1.0f, 1.0f, 0.0f);
+                }
+                GetModelScreenLocation().ApplyModelViewMatrices(ctx);
+                ctx->drawTexture(va, texture, _bkg_brightness, alpha, 0, va->getCount());
+                ctx->PopMatrix();
+                delete va;
+            });
+        }
+    }
+    Model::DisplayModelOnWindow(preview, ctx, solidProgram, transparentProgram, is_3d,
+                                color, allowSelected, wiring, highlightFirst, highlightpixel, boundingBox);
+}
+
+void CustomModel::DisplayEffectOnWindow(IModelPreview* preview, double pointSize)
+{
+    bool mustEnd = false;
+    xlGraphicsContext* ctx = preview->getCurrentGraphicsContext();
+    if (ctx == nullptr) {
+        if (!preview->StartDrawing(pointSize)) {
+            return;
+        }
+        ctx = preview->getCurrentGraphicsContext();
+        mustEnd = true;
+    }
+
+    if (!_custom_background.empty() && FileExists(_custom_background)) {
+        xlTexture* texture = _bkg_images[preview->getName()];
+        if (texture == nullptr) {
+            xlImage img;
+            if (img.LoadFromFile(_custom_background)) {
+                texture = ctx->createTexture(img, GetName() + "_bkg", true);
+                _bkg_images[preview->getName()] = texture;
+            }
+        }
+        if (texture) {
+            int w, h;
+            float scale = GetPreviewDimScale(preview, w, h);
+            float ml, mb;
+            GetMinScreenXY(ml, mb);
+            ml += GetModelScreenLocation().RenderWi / 2;
+            mb += GetModelScreenLocation().RenderHt / 2;
+
+            float hw = (GetModelScreenLocation().GetRenderWi() / 2.0f) * _bkg_scale / 100.0f;
+            float hh = (GetModelScreenLocation().GetRenderHt() / 2.0f) * _bkg_scale / 100.0f;
+
+            // Push the background behind the back-most node layer so it never shares a
+            // z-plane with the pixels (avoids z-fighting when the 3D view is rotated).
+            float bkgZ = -((float)(_depth - 1) / 2.0f) - 0.5f;
+            xlVertexTextureAccumulator* va = ctx->createVertexTextureAccumulator();
+            va->PreAlloc(6);
+            va->AddVertex(-hw, -hh, bkgZ, 0.0f, 1.0f);
+            va->AddVertex(+hw, -hh, bkgZ, 1.0f, 1.0f);
+            va->AddVertex(-hw, +hh, bkgZ, 0.0f, 0.0f);
+            va->AddVertex(-hw, +hh, bkgZ, 0.0f, 0.0f);
+            va->AddVertex(+hw, -hh, bkgZ, 1.0f, 1.0f);
+            va->AddVertex(+hw, +hh, bkgZ, 1.0f, 0.0f);
+
+            int brightness = _bkg_brightness;
+            uint8_t alpha = (uint8_t)std::lround((100 - _bkg_transparency) * 255.0 / 100.0);
+            preview->getCurrentSolidProgram()->addStep([=](xlGraphicsContext* ctx) {
+                ctx->PushMatrix();
+                ctx->Translate(w / 2.0f - ml * scale, h / 2.0f - mb * scale, 0.0f);
+                ctx->Scale(scale, scale, 1.0f);
+                ctx->drawTexture(va, texture, brightness, alpha, 0, va->getCount());
+                ctx->PopMatrix();
+                delete va;
+            });
+        }
+    }
+
+    // Let the base class add its node-rendering step after the background.
+    // Since ctx is non-null here, the base won't call StartDrawing or EndDrawing itself.
+    Model::DisplayEffectOnWindow(preview, pointSize);
+
+    if (mustEnd) {
+        preview->EndDrawing();
+    }
+}
+
+bool CustomModel::CleanupFileLocations(RenderContext* ctx)
+{
+    bool rc = false;
+    if (FileExists(_custom_background)) {
+        if (!ctx->IsInShowFolder(_custom_background)) {
+            _custom_background = ctx->MoveToShowFolder(_custom_background, std::string(1, std::filesystem::path::preferred_separator) + "Images");
+            Setup();
+            rc = true;
+        }
+    }
+
+    return Model::CleanupFileLocations(ctx) || rc;
+}
+
+bool CustomModel::IsAllNodesUnique() const
+{
+    if (Nodes.size() == 0)
+        return false; // this is a special case where i want to treat it like it is not unique
+    for (const auto& n : Nodes) {
+        if (n->Coords.size() > 1)
+            return false;
+    }
+    return true;
+}
+
+std::list<std::string> CustomModel::GetFileReferences()
+{
+    std::list<std::string> res;
+    if (FileExists(_custom_background)) {
+        res.push_back(_custom_background);
+    }
+    return res;
+}
+
+void CustomModel::SetNumStrings(int strings)
+{
+    _strings = strings;
+}
+
+void CustomModel::SetStringStartChannels(int NumberOfStrings, int StartChannel, int ChannelsPerString)
+{
+    int maxval = GetCustomMaxChannel();
+    // fix NumberOfStrings
+    if (SingleNode) {
+        NumberOfStrings = maxval;
+    }
+    else {
+        ChannelsPerString = maxval * GetNodeChannelCount(StringType) / _strings;
+    }
+
+    if (_strings == 1) {
+        Model::SetStringStartChannels(NumberOfStrings, StartChannel, ChannelsPerString);
+    }
+    else if (_hasIndivChans) {
+        // Use individual start channels from the base class mechanism
+        Model::SetStringStartChannels(_strings, StartChannel, ChannelsPerString);
+    }
+    else {
+        stringStartChan.clear();
+        stringStartChan.resize(_strings);
+        for (int i = 0; i < _strings; i++) {
+            int node = (i < (int)_indivStartNodes.size()) ? _indivStartNodes[i] : 0;
+            if (node == 0) {
+                node = ((ChannelsPerString * i) / GetNodeChannelCount(StringType)) + 1;
+            }
+            if (node > maxval) node = maxval;
+            stringStartChan[i] = (StartChannel - 1) + (node - 1) * GetNodeChannelCount(StringType);
+        }
+    }
+}
+
+int CustomModel::NodesPerString() const
+{
+    int nodes = GetChanCount() / std::max(GetChanCountPerNode(), 1);
+
+    int ts = GetSmartTs();
+    if (ts <= 1) {
+        return nodes;
+    }
+    else {
+        return nodes * ts;
+    }
+}
+
+static std::vector<std::string> CUSTOM_BUFFERSTYLES =
+{
+    "Default",
+    "Per Preview",
+    "Single Line",
+    "As Pixel",
+    "Stacked X Horizontally",
+    "Stacked Y Horizontally",
+    "Stacked Z Horizontally",
+    "Stacked X Vertically",
+    "Stacked Y Vertically",
+    "Stacked Z Vertically",
+    "Overlaid X",
+    "Overlaid Y",
+    "Overlaid Z",
+    "Unique X and Y X",
+    "Unique X and Y Y",
+    "Unique X and Y Z",
+};
+
+const std::vector<std::string>& CustomModel::GetBufferStyles() const
+{
+    return CUSTOM_BUFFERSTYLES;
+}
+
+void CustomModel::GetBufferSize(const std::string& tp, const std::string& camera, const std::string& transform, int& BufferWi, int& BufferHi, int stagger) const
+{
+    int width = _customWidth;
+    int height = _customHeight;
+    int depth = _depth;
+    std::string type = tp.starts_with("Per Model ") ? tp.substr(10) : tp;
+
+    if ((SingleNode || SingleChannel) && IsMultiCoordsPerNode())
+    {
+        BufferWi = GetCustomMaxChannel();
+        BufferHi = 1;
+    }
+    else if (StartsWith(type, "Per Preview") || type == "Single Line" || type == "As Pixel" ||
+        type == "Horizontal Per Strand" || type == "Vertical Per Strand" ||
+        type == "Horizontal Per Model/Strand" || type == "Vertical Per Model/Strand") {
+        Model::GetBufferSize(type, camera, transform, BufferWi, BufferHi, stagger);
+    }
+    else if (type == "Stacked X Horizontally") {
+        BufferHi = height;
+        BufferWi = width * depth;
+    }
+    else if (type == "Stacked Y Horizontally") {
+        BufferHi = depth;
+        BufferWi = width * height;
+    }
+    else if (type == "Default" || type == "Stacked Z Horizontally") {
+        BufferHi = height;
+        BufferWi = width * depth;
+    }
+    else if (type == "Stacked X Vertically") {
+        BufferHi = height * width;
+        BufferWi = depth;
+    }
+    else if (type == "Stacked Y Vertically") {
+        BufferHi = height * depth;
+        BufferWi = width;
+    }
+    else if (type == "Stacked Z Vertically") {
+        BufferWi = width;
+        BufferHi = depth * height;
+    }
+    else if (type == "Overlaid X") {
+        BufferWi = depth;
+        BufferHi = height;
+    }
+    else if (type == "Overlaid Y") {
+        BufferWi = width;
+        BufferHi = depth;
+    }
+    else if (type == "Overlaid Z") {
+        BufferWi = width;
+        BufferHi = height;
+    }
+    else if (type == "Unique X and Y X") {
+        BufferWi = height * width;
+        BufferHi = depth * width;
+    }
+    else if (type == "Unique X and Y Y") {
+        BufferWi = width * height;
+        BufferHi = depth * height;
+    }
+    else if (type == "Unique X and Y Z") {
+        BufferWi = width * depth;
+        BufferHi = height * depth;
+    }
+    else {
+        assert(false);
+    }
+
+    AdjustForTransform(transform, BufferWi, BufferHi);
+}
+
+void CustomModel::InitRenderBufferNodes(const std::string& tp, const std::string& camera, const std::string& transform, std::vector<NodeBaseClassPtr>& Nodes, int& BufferWi, int& BufferHi, int stagger, bool deep) const
+{
+    int width = _customWidth;
+    int height = _customHeight;
+    int depth = _depth;
+    std::string type = tp.starts_with("Per Model ") ? tp.substr(10) : tp;
+
+    assert(width > 0 && height > 0 && depth > 0);
+
+    int startNodeSize = Nodes.size();
+    Model::InitRenderBufferNodes(type, camera, transform, Nodes, BufferWi, BufferHi, stagger);
+
+    if ((SingleChannel || SingleNode) && IsMultiCoordsPerNode()) {
+        // I am not 100% about this change but it makes sense to me
+        // While the custom model may have a height and width if it is single channel then the render buffer really should be Nodes x 1
+        // and all nodes should point to one cell.
+        // Without this change effects like twinkle do really strange things
+        BufferWi = (int)Nodes.size() - startNodeSize;
+        BufferHi = 1;
+        int x = 0;
+        while (startNodeSize < (int)Nodes.size()) {
+            for (auto& it2 : Nodes[startNodeSize]->Coords) {
+                it2.bufX = x;
+                it2.bufY = 0;
+            }
+            x++;
+            startNodeSize++;
+        }
+        return;
+    }
+    else if (SingleChannel || SingleNode) {
+        return;
+    }
+
+    if (StartsWith(type, "Per Preview") || type == "Single Line" || type == "As Pixel" ||
+        StartsWith(type, "Horizontal Per ") || StartsWith(type, "Vertical Per ")) {
+        return;
+    }
+
+    GetBufferSize(type, camera, transform, BufferWi, BufferHi, stagger);
+    if (type == "Stacked X Horizontally") {
+        for (auto n = 0; n < (int)Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = depth - std::get<0>(loc) - 1 + std::get<2>(loc) * depth;
+            Nodes[n]->Coords[0].bufY = height - std::get<1>(loc) - 1;
+        }
+    }
+    else if (type == "Stacked Y Horizontally") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc) + std::get<1>(loc) * width;
+            Nodes[n]->Coords[0].bufY = std::get<0>(loc);
+        }
+    }
+    else if (type == "Default" || type == "Stacked Z Horizontally") {
+        // dont need to do anything
+    }
+    else if (type == "Stacked X Vertically") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = depth - std::get<0>(loc) - 1;
+            Nodes[n]->Coords[0].bufY = std::get<1>(loc) + height * std::get<2>(loc);
+        }
+    }
+    else if (type == "Stacked Y Vertically") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc);
+            Nodes[n]->Coords[0].bufY = std::get<0>(loc) + depth * std::get<1>(loc);
+        }
+    }
+    else if (type == "Stacked Z Vertically") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc);
+            Nodes[n]->Coords[0].bufY = std::get<1>(loc) + depth * std::get<0>(loc);
+        }
+    }
+    else if (type == "Overlaid X") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = depth - std::get<0>(loc) - 1;
+            Nodes[n]->Coords[0].bufY = height - std::get<1>(loc) - 1;
+        }
+    }
+    else if (type == "Overlaid Y") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc);
+            Nodes[n]->Coords[0].bufY = std::get<0>(loc);
+        }
+    }
+    else if (type == "Overlaid Z") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc);
+            Nodes[n]->Coords[0].bufY = height - std::get<1>(loc) - 1;
+        }
+    }
+    else if (type == "Unique X and Y X") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = depth - std::get<0>(loc) - 1 + std::get<2>(loc) * depth;
+            Nodes[n]->Coords[0].bufY = std::get<1>(loc) + std::get<2>(loc) * height;
+        }
+    }
+    else if (type == "Unique X and Y Y") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc) + std::get<1>(loc) * width;
+            Nodes[n]->Coords[0].bufY = std::get<0>(loc) + std::get<1>(loc) * depth;
+        }
+    }
+    else if (type == "Unique X and Y Z") {
+        for (size_t n = 0; n < Nodes.size(); n++) {
+            auto loc = FindNode(n, _locations);
+            Nodes[n]->Coords[0].bufX = std::get<2>(loc) + std::get<0>(loc) * width;
+            Nodes[n]->Coords[0].bufY = std::get<1>(loc) + (height - std::get<1>(loc) - 1) * height;
+        }
+    }
+    else {
+        assert(false);
+    }
+}
+
+int CustomModel::GetCustomMaxChannel() const
+{
+    int maxval = 0;
+    int layer = 0;
+    for (const auto& l : _locations) {
+        size_t row = 0;
+        for (const auto& r : l) {
+            size_t col = 0;
+            for (const auto& c : r) {
+                if (c > maxval) {
+                    maxval = c;
+                }
+                ++col;
+            }
+            ++row;
+        }
+        ++layer;
+    }
+    return maxval;
+}
+
+std::string CustomModel::CustomModelToCompressed(const std::string& customModel)
+{
+    return CustomModel::ToCompressed(XmlSerialize::ParseCustomModel(customModel));
+}
+
+std::string CustomModel::CompressedToCustomModel(const std::string& compressed)
+{
+    return CustomModel::ToCustomModel(XmlSerialize::ParseCompressed(compressed));
+}
+
+std::string CustomModel::ToCompressed(const std::vector<std::vector<std::vector<int>>>& model) {
+
+    // we only compress if nodes to cells < 20%
+    int nodes = 0;
+    int cells = model.size() * model[0].size() * model[0][0].size();
+    for (const auto& l : model) {
+		for (const auto& r : l) {
+			for (const auto& c : r) {
+				if (c >= 0) {
+					nodes++;
+				}
+			}
+		}
+	}
+
+    if (nodes > 0.80 * cells)
+        return "";
+
+    int layers = model.size();
+    std::string compressed = "";
+    for (int l = 0; l < (int)model.size(); l++) {
+		for (int r = 0; r < (int)model[l].size(); r++) {
+			for (int c = 0; c < (int)model[l][r].size(); c++) {
+				if (model[l][r][c] >= 0) {
+					if (!compressed.empty()) {
+						compressed += ";";
+					}
+					compressed += std::to_string(model[l][r][c]) + "," + std::to_string(r) + "," + std::to_string(c);
+					if (layers > 1) {
+						compressed += "," + std::to_string(l);
+					}
+				}
+			}
+		}
+	}
+
+    return compressed;
+}
+
+std::string CustomModel::ToCustomModel(const std::vector<std::vector<std::vector<int>>>& model) {
+    std::string customModel = "";
+	for (int l = 0; l < (int)model.size(); l++) {
+		if (!customModel.empty()) {
+			customModel += "|";
+		}
+		for (int r = 0; r < (int)model[l].size(); r++) {
+			if (r > 0) {
+				customModel += ";";
+			}
+			for (int c = 0; c < (int)model[l][r].size(); c++) {
+				if (c > 0) {
+					customModel += ",";
+				}
+				if (model[l][r][c] >= 0) {
+					customModel += std::to_string(model[l][r][c]);
+				}
+			}
+		}
+	}
+	return customModel;
+}
+
+void CustomModel::InitCustomMatrix() {
+
+    uint32_t depth = _locations.size();
+    uint32_t height = _locations[0].size();
+    uint32_t width = _locations[0][0].size();
+
+    int maxval = 0;
+    int minRow = (int)height - 1, maxRow = 0;
+    int minCol = (int)width - 1, maxCol = 0;
+    int minLayer = (int)depth - 1, maxLayer = 0;
+    for (size_t l = 0; l < _locations.size(); ++l) {
+        for (size_t r = 0; r < _locations[l].size(); ++r) {
+            for (size_t c = 0; c < _locations[l][r].size(); ++c) {
+                int val = _locations[l][r][c];
+                if (val > 0) {
+                    maxval = std::max(maxval, val);
+                    if ((int)r < minRow) minRow = (int)r;
+                    if ((int)r > maxRow) maxRow = (int)r;
+                    if ((int)c < minCol) minCol = (int)c;
+                    if ((int)c > maxCol) maxCol = (int)c;
+                    if ((int)l < minLayer) minLayer = (int)l;
+                    if ((int)l > maxLayer) maxLayer = (int)l;
+                }
+            }
+        }
+    }
+    if (maxval == 0) {
+        minRow = 0; maxRow = (int)height - 1;
+        minCol = 0; maxCol = (int)width - 1;
+        minLayer = 0; maxLayer = (int)depth - 1;
+    }
+    float centerRow   = (minRow + maxRow) / 2.0f;
+    float centerCol   = (minCol + maxCol) / 2.0f;
+    float centerLayer = (minLayer + maxLayer) / 2.0f;
+
+    std::vector<int> nodemap;
+    nodemap.resize(maxval + 1, -1);
+
+    int32_t firstStartChan = 999999999;
+    for (auto it : stringStartChan) {
+        firstStartChan = std::min(it, firstStartChan);
+    }
+
+    int cpn = -1;
+
+    // now populate the nodes
+    size_t layer = 0;
+    for (const auto& l : _locations) {
+        size_t row = 0;
+        for (const auto& r : l) {
+            size_t col = 0;
+            for (const auto& c : r) {
+                if (c > 0) {
+                    int idx = c - 1;//index is zero based
+                    // is node already defined in map?
+                    if (nodemap[idx] < 0) {
+                        // unmapped - so add a node
+                        nodemap[idx] = Nodes.size();
+                        SetNodeCount(1, 0, rgbOrder); // this creates a node of the correct class
+                        Nodes.back()->StringNum = idx;
+                        if (cpn == -1) {
+                            cpn = GetChanCountPerNode();
+                        }
+                        Nodes.back()->ActChan = firstStartChan + idx * cpn;
+                        if (idx < (int)nodeNames.size() && !nodeNames[idx].empty()) {
+                            Nodes.back()->SetName(nodeNames[idx]);
+                        } else {
+                            Nodes.back()->SetName("Node " + std::to_string(idx + 1));
+                        }
+
+                        Nodes.back()->AddBufCoord(layer * ((float)width) + col, ((float)height) - row - 1);
+                        auto& cc = Nodes[nodemap[idx]]->Coords.back();
+                        cc.screenX = (float)col - centerCol;
+                        cc.screenY = centerRow - (float)row;
+                        cc.screenZ = centerLayer - (float)layer;
+                    } else {
+                        // mapped - so add a coord to existing node
+                        Nodes[nodemap[idx]]->AddBufCoord(layer * ((float)width) + col, ((float)height) - row - 1);
+                        auto& c = Nodes[nodemap[idx]]->Coords.back();
+                        c.screenX = (float)col - centerCol;
+                        c.screenY = centerRow - (float)row;
+                        c.screenZ = centerLayer - (float)layer;
+                    }
+                }
+                ++col;
+            }
+            ++row;
+        }
+        ++layer;
+    }
+
+    for (size_t x = 0; x < Nodes.size(); x++) {
+        for (size_t y = x + 1; y < Nodes.size(); y++) {
+            if (Nodes[y]->StringNum < Nodes[x]->StringNum) {
+                Nodes[x].swap(Nodes[y]);
+            }
+        }
+    }
+
+    for (size_t x = 0; x < Nodes.size(); x++) {
+        if (Nodes[x]->GetName().empty()) {
+            Nodes[x]->SetName(GetNodeName(Nodes[x]->StringNum));
+        }
+    }
+
+    // we have 2 sources of truth for the width, height and depth but we take the parm settings rather than the data
+    //SetBufferSize(height, width * depth);
+    SetBufferSize(_customHeight, _customWidth * _depth);
+    if (screenLocation.RenderDp < 10.0f) {
+        screenLocation.RenderDp = 10.0f;  // give the bounding box a little depth
+    }
+}
+
+int CustomModel::GetCustomNodeStringNumber(int node) const
+{
+    if (_strings == 1) {
+        return 1;
+    }
+
+    int stringStart = -1;
+    int string = -1;
+    for (int i = 0; i < _strings; i++) {
+        int startNode = 1;
+        if (_hasIndivNodes) {
+            startNode = (i < (int)_indivStartNodes.size()) ? _indivStartNodes[i] : ComputeStringStartNode(i);
+        } else {
+            startNode = ComputeStringStartNode(i);
+        }
+        if (node >= startNode && startNode >= stringStart) {
+            string = i;
+            stringStart = startNode;
+        }
+    }
+    return string + 1;
+}
+
+std::string CustomModel::GetNodeName(size_t x, bool def) const {
+    if (x < Nodes.size()) {
+        return Nodes[x]->GetName();
+    }
+    if (def) {
+        return std::string("Node ") + std::to_string(x + 1);
+    }
+    return "";
+}
+
+#define PERFORMANCE_IMPACT_SIZE 300
+std::list<std::string> CustomModel::CheckModelSettings()
+{
+    std::list<std::string> res;
+
+    // check for no nodes
+    if (GetNodeCount() == 0) {
+        res.push_back(fmt::format("    ERR: Custom model '{}' has no nodes defined.", GetName()));
+    }
+
+    auto* uiCallbacks = GetModelManager().GetUICallbacks();
+    if (!uiCallbacks || !uiCallbacks->IsCheckSequenceOptionDisabled("CustomSizeCheck")) {
+        if (_customWidth > PERFORMANCE_IMPACT_SIZE || _customHeight > PERFORMANCE_IMPACT_SIZE || _depth > PERFORMANCE_IMPACT_SIZE) {
+            float pop = ((float)GetNodeCount() * 100) / (float)(_customWidth * _customHeight);
+            if (pop < 10.0) { // allow models which have more than 1 in 10 cells used as these likely need to be that large
+                res.push_back(fmt::format("    WARN: Custom model '{}' dimensions are really large ({} x {} x {} : Nodes {} => {:.2f}%). This may impact xLights render performance.", GetName(), _customWidth, _customHeight, _depth, GetNodeCount(), pop));
+            }
+        }
+    }
+
+    // if multiple strings then check the start nodes
+    // one string should start at 1
+    // all should be less than the number of nodes
+    // there should be no duplicates
+    auto nm = StartNodeAttrName(0);
+    if (_strings > 1 && _hasIndivNodes) {
+        bool oneFound = false;
+        std::vector<int> prevStart;
+        int nodes = GetChanCount() / std::max(GetChanCountPerNode(), 1);
+        for (int i = 0; i < _strings; i++) {
+            nm = StartNodeAttrName(i);
+            auto val = (i < (int)_indivStartNodes.size()) ? _indivStartNodes[i] : 0;
+            if (val == 1) {
+                oneFound = true;
+            }
+            if (std::find(begin(prevStart), end(prevStart), val) != end(prevStart)) {
+                res.push_back(fmt::format("    ERR: Custom model '{}' String {} starts at a node {} which has already been used by another string.", GetName(), i, val));
+            }
+            if (val == 0 || val > nodes) {
+                res.push_back(fmt::format("    ERR: Custom model '{}' String {} starts at a node {} outside the node count {} in the model.", GetName(), i+1, val, nodes));
+            }
+            prevStart.push_back(val);
+        }
+        if (!oneFound)             {
+            res.push_back(fmt::format("    ERR: Custom model '{}' Multiple strings but none starting at node 1.", GetName()));
+        }
+    }
+
+    // check for node gaps
+    int maxn = 0;
+    for (size_t ii = 0; ii < GetNodeCount(); ii++) {
+        int nn = GetNodeStringNumber(ii);
+        if (nn > maxn) maxn = nn;
+    }
+    maxn++;
+    int chssize = (maxn + 1) * sizeof(int);
+    //spdlog::debug("    CheckSequence: Checking custom model {} nodes", maxn);
+    int* chs = (int*)malloc(chssize);
+    if (chs == nullptr) {
+        res.push_back(fmt::format("    WARN: Could not check Custom model '{}' for missing nodes. Error allocating memory for {} nodes.", GetName(), maxn));
+    }
+    else {
+        memset(chs, 0x00, chssize);
+
+        for (size_t ii = 0; ii < GetNodeCount(); ii++) {
+            int nn = GetNodeStringNumber(ii);
+            chs[nn + 1]++;
+        }
+
+        long lastStart = -1;
+        for (int ii = 1; ii <= maxn; ii++) {
+            if (chs[ii] == 0) {
+                if (lastStart == -1) {
+                    lastStart = ii;
+                }
+            }
+            else {
+                if (lastStart != -1) {
+                    if (lastStart == ii - 1) {
+                        res.push_back(fmt::format("    WARN: Custom model '{}' missing node {}.", GetName(), lastStart));
+                    }
+                    else {
+                        res.push_back(fmt::format("    WARN: Custom model '{}' missing nodes {}-{}.", GetName(), lastStart, ii - 1));
+                    }
+                    lastStart = -1;
+                }
+            }
+        }
+
+        int multinodecount = 0;
+        for (size_t ii = 0; ii < GetNodeCount(); ii++) {
+            std::vector<xlPoint> pts;
+            GetNodeCoords(ii, pts);
+            if (pts.size() > 1) {
+                multinodecount++;
+            }
+        }
+
+        // >0% but less than 10% multi-nodes ... these may be accidental duplicates
+        if (multinodecount > 0 && multinodecount < 0.1 * maxn) {
+            for (size_t ii = 0; ii < GetNodeCount(); ii++) {
+                std::vector<xlPoint> pts;
+                GetNodeCoords(ii, pts);
+                if (pts.size() > 1) {
+                    res.push_back(fmt::format("    WARN: Custom model '{}' {} node has {} instances but multi instance nodes are rare in this model so this may be unintended.",
+                        GetName(),
+                        Ordinal(ii + 1),
+                        (int)pts.size()));
+                }
+            }
+        }
+
+        free(chs);
+    }
+
+    res.splice(res.end(), Model::CheckModelSettings());
+    return res;
+}
+
+int CustomModel::NodesPerString(int string) const
+{
+    if (_strings == 1) {
+        return NodesPerString();
+    }
+
+    int32_t lowestStartChannel = 2000000000;
+    for (int i = 0; i < _strings; i++) {
+        if (stringStartChan[i] < lowestStartChannel) lowestStartChannel = stringStartChan[i];
+    }
+
+    int32_t ss = stringStartChan[string];
+    int32_t len = GetChanCount() - (ss - lowestStartChannel);
+    for (int i = 0; i < _strings; i++) {
+        if (i != string) {
+            if (stringStartChan[i] > ss && len > stringStartChan[i] - ss) {
+                len = stringStartChan[i] - ss;
+            }
+        }
+    }
+    return len / GetNodeChannelCount(StringType);
+}
+
+std::string CustomModel::ChannelLayoutHtml(OutputManager* outputManager, bool darkMode) {
+    size_t NodeCount = GetNodeCount();
+    std::vector<int> chmap;
+    chmap.resize(BufferHt * BufferWi, 0);
+    std::string direction = "n/a";
+
+    int32_t sc;
+    Controller* c = outputManager->GetController(this->GetFirstChannel()+ 1, sc);
+
+    std::string html = "<html><body><table border=0>";
+    html += "<tr><td>Name:</td><td>" + name + "</td></tr>";
+    html += "<tr><td>Display As:</td><td>" + DisplayAsTypeToString(DisplayAs) + "</td></tr>";
+    html += "<tr><td>String Type:</td><td>" + StringType + "</td></tr>";
+    html += "<tr><td>Start Corner:</td><td>" + direction + "</td></tr>";
+    html += fmt::format("<tr><td>Total nodes:</td><td>{}</td></tr>", (int)NodeCount);
+    html += fmt::format("<tr><td>Width:</td><td>{}</td></tr>", BufferWi);
+    html += fmt::format("<tr><td>Height:</td><td>{}</td></tr>", BufferHt);
+    if (c != nullptr)
+        html += fmt::format("<tr><td>Controller:</td><td>{}</td></tr>", c->GetLongDescription());
+    if ("" != GetControllerProtocol())
+    {
+        html += fmt::format("<tr><td>Pixel protocol:</td><td>{}</td></tr>", GetControllerProtocol());
+        if (_strings == 1)
+        {
+            html += fmt::format("<tr><td>Controller Connection:</td><td>{}</td></tr>", GetControllerPort());
+        }
+        else
+        {
+            html += fmt::format("<tr><td>Controller Connection:</td><td>{}-{}</td></tr>", GetControllerPort(), GetControllerPort() + _strings - 1);
+        }
+    }
+    html += "</table><p>Node numbers starting with 1 followed by string number:</p><table border=1>";
+
+    std::string data = GetCustomData();
+    if (data == "") {
+        html += "<tr><td>No custom data</td></tr>";
+    }
+    else {
+        std::vector<std::vector<std::vector<std::string>>> _data;
+        int cols = _customWidth;
+        auto layers = Split(data, '|');
+        for (const auto& l : layers) {
+            std::vector<std::vector<std::string>> ll;
+            auto rows = Split(l, ';');
+            for (const auto& r : rows) {
+                std::vector<std::string> rr;
+                auto columns = Split(r, ',');
+                for (const auto& c : columns) {
+                    rr.push_back(c);
+                }
+                while (rr.size() < (size_t)cols) rr.push_back("");
+                ll.push_back(rr);
+            }
+            // This should never happen but i have seen files where it did so lets just pad it and not crash
+            while (ll.size() < (size_t)_customHeight) {
+                std::vector<std::string> rr;
+                while (rr.size() < (size_t)cols) rr.push_back("");
+                ll.push_back(rr);
+            }
+            _data.push_back(ll);
+        }
+
+        while (_data.size() < (size_t)_depth) {
+            std::vector<std::vector<std::string>> ll;
+            while (ll.size() < (size_t)_customHeight) {
+                std::vector<std::string> rr;
+                while (rr.size() < (size_t)cols) rr.push_back("");
+                ll.push_back(rr);
+            }
+            _data.push_back(ll);
+        }
+	
+        for (int r = 0; r < _customHeight; r++) {
+            html += "<tr>";
+            for (int l = 0; l < _depth; l++) {
+                for (int c = 0; c < _customWidth; c++) {
+                    const std::string& value = _data[l][r][c];
+                    if (!value.empty() && value != "0") {
+                        if (_strings == 1) {
+                            if( darkMode ) {
+                                html += "<td bgcolor='#962B09'>n" + value + "</td>";
+                            } else {
+                                html += "<td bgcolor='#ADD8E6'>n" + value + "</td>";
+                            }
+                        }
+                        else {
+                            int string = GetCustomNodeStringNumber((int)std::strtol(value.c_str(), nullptr, 10));
+                            std::string bgcolor;
+                            switch (string % 4)
+                            {
+                            case 0:
+                                bgcolor = darkMode ? "#7a577a" : "#eed1a4"; // purple / yellow
+                                break;
+                            case 1:
+                                bgcolor = darkMode ? "#3f7c85" : "#8aa2bb"; // teal / blue
+                                break;
+                            case 2:
+                                bgcolor = darkMode ? "#520120" : "#ec9396"; // maroon / red
+                                break;
+                            case 3:
+                                bgcolor = darkMode ? "#08403e" : "#86d0c3"; // dark teal / green
+                                break;
+                            }
+                            html += "<td bgcolor='" + bgcolor + "'>n" + value + "s" + std::to_string(string) + "</td>";
+                        }
+                    }
+                    else {
+                        html += "<td>&nbsp&nbsp&nbsp</td>";
+                    }
+                }
+            }
+            html += "</tr>";
+        }
+    }
+
+    html += "</table></body></html>";
+    return html;
+}
+
+void RemoveDuplicatePixels(std::list<std::list<xlPoint>>& chs)
+{
+    std::list<xlPoint> flat;
+    std::list<xlPoint> duplicates;
+
+    for (const auto& ch : chs) {
+        for (const auto& it : ch) {
+            flat.push_back(xlPoint(it.x, it.y));
+        }
+    }
+
+    flat.sort();
+
+    for (auto it = flat.begin(); it != flat.end(); ++it) {
+        auto it2 = it;
+        ++it2;
+
+        if (it2 != flat.end()) {
+            if (it->x == it2->x && it->y == it2->y &&
+                (duplicates.size() == 0 || duplicates.back().x != it->x || duplicates.back().y != it->y)) {
+                duplicates.push_back(*it);
+            }
+        }
+    }
+
+    for (const auto& d : duplicates) {
+        bool first = true;
+
+        for (auto ch = chs.begin(); ch != chs.end(); ++ch) {
+            auto it = ch->begin();
+            while (it != ch->end()) {
+                if (it->x == d.x && it->y == d.y) {
+                    if (first) {
+                        first = false;
+                        ++it;
+                    } else {
+                        ch->erase(it++);
+                    }
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+}
+
+bool HasDuplicates(float divisor, std::list<std::list<xlPoint>> chs)
+{
+    std::list<xlPoint> scaled;
+
+    
+    spdlog::debug("Checking for duplicates at scale {}.", divisor);
+
+    for (const auto& ch : chs) {
+        for (const auto& it : ch) {
+            scaled.push_back(xlPoint((int)((float)it.x * divisor), (int)((float)it.y * divisor)));
+        }
+    }
+
+    scaled.sort();
+
+    for (auto it = scaled.begin(); it != scaled.end(); ++it) {
+        auto it2 = it;
+        ++it2;
+
+        if (it2 != scaled.end()) {
+            if (it->x == it2->x && it->y == it2->y)
+                return true;
+        }
+    }
+
+    return false;
+}
+
+bool CustomModel::ImportLORModel(std::string const& filename, float& min_x, float& max_x, float& min_y, float& max_y)
+{
+    
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(filename.c_str());
+
+    if (result) {
+        spdlog::debug("Loading LOR model {}.", (const char*)filename.c_str());
+
+        pugi::xml_node root = doc.document_element();
+
+        std::list<std::list<xlPoint>> chs;
+
+        for (pugi::xml_node n1 = root.first_child(); n1; n1 = n1.next_sibling()) {
+            if (std::string_view(n1.name()) == "DrawObjects") {
+                for (pugi::xml_node n2 = n1.first_child(); n2; n2 = n2.next_sibling()) {
+                    if (std::string_view(n2.name()) == "DrawObject") {
+                        for (pugi::xml_node n3 = n2.first_child(); n3; n3 = n3.next_sibling()) {
+                            if (std::string_view(n3.name()) == "DrawPoints") {
+                                std::list<xlPoint> points;
+                                for (pugi::xml_node n4 = n3.first_child(); n4; n4 = n4.next_sibling()) {
+                                    if (std::string_view(n4.name()) == "DrawPoint") {
+                                        points.push_back(xlPoint((int)std::strtol(n4.attribute("X").as_string("-5"), nullptr, 10) / 5, (int)std::strtol(n4.attribute("Y").as_string("-1"), nullptr, 10) / 5));
+                                    }
+                                }
+                                chs.push_back(points);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        std::string newname = GetModelManager().GenerateModelName(std::filesystem::path(filename).stem().string());
+        SetName(newname);
+
+        AddASAPWork(OutputModelManager::WORK_RELOAD_MODEL_CHANGE, "CustomModel::ImportLORModel");
+
+        if (chs.size() == 0) {
+            spdlog::error("No model data found.");
+            if (auto* ui = GetModelManager().GetUICallbacks()) {
+                ui->ShowMessage("Unable to import model data.");
+            }
+            return false;
+        }
+
+        int minx = 999999999;
+        int maxx = -1;
+        int miny = 999999999;
+        int maxy = -1;
+
+        for (auto ch = chs.begin(); ch != chs.end(); ++ch) {
+            for (auto it = ch->begin(); it != ch->end(); ++it) {
+                if (it->x >= 0) {
+                    if (it->x < minx)
+                        minx = it->x;
+                    if (it->x > maxx)
+                        maxx = it->x;
+                }
+                if (it->y >= 0) {
+                    if (it->y < miny)
+                        miny = it->y;
+                    if (it->y > maxy)
+                        maxy = it->y;
+                }
+            }
+        }
+
+        for (auto ch = chs.begin(); ch != chs.end(); ++ch) {
+            for (auto it = ch->begin(); it != ch->end(); ++it) {
+                it->x = (it->x - minx);
+                it->y = (it->y - miny);
+            }
+        }
+
+        maxx -= minx;
+        maxy -= miny;
+
+        float divisor = 0.1f;
+        if (HasDuplicates(1.0, chs)) {
+            DisplayWarning("This model is not going to import correctly as one or more pixels overlap.");
+
+            RemoveDuplicatePixels(chs);
+        }
+
+        while (HasDuplicates(divisor, chs)) {
+            divisor += 0.1f;
+
+            if (divisor >= 1.0f)
+                break;
+        }
+
+        divisor -= 0.1f + 0.01f;
+
+        while (HasDuplicates(divisor, chs)) {
+            divisor += 0.01f;
+
+            if (divisor >= 1.0f)
+                break;
+        }
+
+        maxx = ((float)maxx * divisor) + 1;
+        maxy = ((float)maxy * divisor) + 1;
+
+        spdlog::debug("Divisor chosen {}. Model dimensions {},{}", divisor, maxx + 1, maxy + 1);
+
+        _customWidth = maxx;
+        _customHeight = maxy;
+
+        int* data = (int*)malloc(maxx * maxy * sizeof(int));
+        memset(data, 0x00, maxx * maxy * sizeof(int));
+
+        int c = 1;
+
+        for (auto ch = chs.begin(); ch != chs.end(); ++ch) {
+            for (auto it = ch->begin(); it != ch->end(); ++it) {
+                int x = (float)it->x * divisor;
+                int y = (float)it->y * divisor;
+
+                assert(x >= 0 && x < maxx);
+                assert(y >= 0 && y < maxy);
+
+                data[y * maxx + x] = c;
+            }
+            c++;
+        }
+
+        std::string cm = "";
+        for (int y = 0; y < maxy; ++y) {
+            for (int x = 0; x < maxx; ++x) {
+                if (data[y * maxx + x] != 0) {
+                    cm += std::to_string(data[y * maxx + x]);
+                }
+                if (x != maxx - 1)
+                    cm += ",";
+            }
+
+            if (y != maxy - 1)
+                cm += ";";
+        }
+        free(data);
+
+        _locations = XmlSerialize::ParseCustomModel(cm);
+
+        spdlog::debug("Model import done.");
+        return true;
+    } else {
+        DisplayError("Failure loading LOR model file.");
+        return false;
+    }
+}
+
+int CustomModel::GetNumPhysicalStrings() const
+{
+    int ts = GetSmartTs();
+    if (ts <= 1) {
+        return _strings;
+    } else {
+        int strings = _strings / ts;
+        if (strings == 0)
+            strings = 1;
+        return strings;
+    }
+}
+
+bool CustomModel::ChangeStringCount(long count, std::string& message)
+{
+    if (count == _strings) {
+        return true;
+    }
+
+    _strings = count;
+    _hasIndivNodes = (count > 1);
+    if (count != 1) {
+        _indivStartNodes.resize(count);
+        for (int x = 0; x < count; x++) {
+            _indivStartNodes[x] = ComputeStringStartNode(x);
+        }
+    }
+
+    AddASAPWork(OutputModelManager::WORK_RELOAD_MODEL_CHANGE |
+                OutputModelManager::WORK_RELOAD_MODELLIST |
+                OutputModelManager::WORK_CALCULATE_START_CHANNELS |
+                OutputModelManager::WORK_MODELS_REWORK_STARTCHANNELS, "MatrixModel::ChangeStringCount::MatrixStringCount");
+    return true;
+}

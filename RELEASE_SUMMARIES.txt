@@ -1,0 +1,80 @@
+=== macOS App Store (limit 4000) ===
+xLights 2026.18 - October 2, 2026
+
+New
+- Sequencer grid: hold Shift to keep timing in place while dragging, and a collision slide now stops at the obstruction.
+- "Show All Timing Tracks" is available from any view and from right-clicking a timing row.
+- Selecting an effect in the Select Effects panel scrolls the grid to it.
+- Filter and search boxes match words in any order, ignore separators, and support * ? wildcards and /regex/.
+- Import Effects: filter the mapping tree and source list, right-click a source group to add it to your layout and map it, and optionally record the sequence you imported from so you can reopen it later. Auto Map on large shows no longer stalls for 30+ seconds.
+- Moving Head: warnings for a drawn Path that does a bad flip, and Position Zones can be exported to and imported from other moving heads.
+- Perspectives now also save the Layout tab's panel arrangement, including panels on a second monitor.
+- Layout: Match Depth in 3D mode, the model picked in the Visualiser is highlighted, and the Controllers page highlights the selected controller with adjustable label size.
+- Display Elements gets a find bar for the Added models list.
+- Check Sequence has a redesigned report with a table of contents and next/previous issue stepping.
+- Media Manager can check a sequence's audio and video for formats future versions won't render.
+- A new toolbar for Batch Render, Bulk Controller Upload, Check Sequence and FPP Connect, plus a keybinding to toggle the video preview.
+- FPP Connect uploads submodels and model groups for FPP overlay effects (FPP 10+) and warns when models on FPP no longer match your layout.
+
+Changed
+- The sequencer prop filter is no longer saved into the sequence.
+
+Fixed
+- Fixed a number of crashes in the sequencer grid, and when models changed or a sequence closed while a render was running.
+- Fixed crashes and wrong output in the Candle, Butterfly, Plasma, Pinwheel, Fan, Video and Text effects, and Faces with Auto eyes rarely blinking.
+- Shader effects: no more solid frame at the lowest Zoom, GPU shaders no longer start a frame early, and a shader that can't get GPU resources shows yellow instead of closing the app.
+- Moving Head: fixed a one-frame jump at each Cycles repeat, effects rendering nothing after being moved or pasted, pasting onto a group collapsing settings, Path and Dimmer tab issues, and crashes in the path sketch editor.
+- Effect settings with a leading space in older sequences no longer render as 0.
+- Paste Effects on a submodel or group row no longer wipes every submodel's effects.
+- Presets saved as Relative now stay Relative.
+- Older shows with 3D moving heads load again, and one unloadable model no longer stops the whole layout from loading.
+- Background images and dimming curve files are found again after moving the show folder to another location or machine.
+- Import Effects keeps embedded media embedded, copies referenced media into your show folder, and flags missing media right away.
+- Fixed .fseq files that could read back wrong or crash when truncated, and a hang saving an .fseq.
+- Fixed several Layout issues: Arches start location, blank model names, Polyline Z-axis handle dragging, model group cloning and the preview opening on Unassigned.
+- Fixed crashes in the Test dialog, and the global controller settings show again when no controller is selected.
+- Controller fixes for FPP Connect discovery and saved settings, Falcon colour order and media lists, HinksPix export, Minleon, DDP, Experience and Twinkly.
+- Controller Visualiser Print Preview responds to clicks, and FPP Connect rows no longer show black.
+- Uncompressed .mov files at certain widths are no longer wrongly flagged as unsupported.
+- Older Macs with little video memory fall back to the CPU instead of crashing when a GPU buffer can't be allocated.
+- Fixed a crash on exit when using a 3D mouse.
+
+=== iPad App Store (limit 4000) ===
+xLights 2026.18 - October 2, 2026
+
+Improved
+- Undo after dragging, aligning or distributing a Model Set member now moves the whole Set back, and an align, flip, match size or bulk edit on several models undoes in one step.
+
+Fixed
+- Package Sequence could leave out external shader files after the app freed memory.
+- Fixed crashes and wrong output in the Candle, Butterfly, Plasma, Pinwheel, Fan, Video and Text effects.
+- The Faces effect with Auto eyes blinks properly again on tightly sung timing tracks.
+- Shader effects no longer render a solid frame at the lowest Zoom, no longer start one frame early, and a shader that can't get GPU resources shows yellow instead of closing the app.
+- Moving Head effects with a drawn Path and multiple Cycles no longer jump for one frame at each repeat.
+- Effect settings with a leading space in older sequences no longer render as 0.
+- A layer that can't get a GPU buffer renders on the CPU instead of crashing.
+- Older shows with 3D moving heads load again, and one unloadable model no longer stops the whole layout from loading.
+- Custom model background images and dimming curve files are found again after a show folder is moved.
+- Fixed .fseq files that could read back wrong or crash when truncated, and a hang saving an .fseq.
+- Fixed a crash loading sequences with damaged effect references.
+
+=== Windows Store (limit 1500) ===
+xLights 2026.18 - October 2, 2026
+
+New
+- Sequencer grid: Shift holds timing while dragging; collision slides stop at the obstruction.
+- Show All Timing Tracks from any view; Select Effects scrolls the grid to the effect.
+- Search boxes match words in any order and support wildcards and /regex/.
+- Import Effects: filtering, add-and-map source groups, and much faster Auto Map.
+- Perspectives save the Layout tab's panels; Check Sequence has a redesigned report.
+- Moving Head bad-flip warnings and Position Zone export/import.
+
+Fixed
+- Windows 11 Smart App Control no longer blocks xLights from starting.
+- Fixed many crashes in the sequencer grid, the Test dialog, and during renders.
+- Fixed Candle, Butterfly, Plasma, Pinwheel, Fan, Video, Text, Faces and Shader effect problems.
+- Moving Head path, paste and cycle-repeat fixes.
+- Presets saved as Relative stay Relative; Paste Effects on submodel rows no longer wipes effects.
+- Older shows with 3D moving heads load again.
+- Background images found after moving the show folder.
+- .fseq read/save fixes, plus controller fixes for FPP Connect, Falcon and others.

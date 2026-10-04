@@ -1,0 +1,114 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "Model.h"
+
+class CubeModel : public ModelWithScreenLocation<BoxedScreenLocation>
+{
+    public:
+        enum class CubeShape { Cube = 0, Cylinder = 1 };
+        enum class RowOffset { None = 0, Positive = 1, Negative = 2 };
+    
+        CubeModel(const ModelManager &manager);
+        virtual ~CubeModel();
+
+        [[nodiscard]] virtual const std::vector<std::string> &GetBufferStyles() const override;
+        virtual void GetBufferSize(const std::string &type, const std::string &camera, const std::string &transform, int &BufferWi, int &BufferHi, int stagger) const override;
+        [[nodiscard]] virtual int GetNumPhysicalStrings() const override;
+        [[nodiscard]] virtual bool SupportsWiringView() const override { return true; }
+        virtual void InitRenderBufferNodes(const std::string &type, const std::string &camera, const std::string &transform,
+            std::vector<NodeBaseClassPtr> &Nodes, int &BufferWi, int &BufferHi, int stagger, bool deep = false) const override;
+        [[nodiscard]] virtual int NodeRenderOrder() override { return 1; }
+        [[nodiscard]] virtual int GetStrandLength(int strand) const override { return _strandLength; }
+        [[nodiscard]] virtual int GetNumStrands() const override { return _strands; };
+        [[nodiscard]] virtual int MapToNodeIndex(int strand, int node) const override;
+        virtual void ExportAsCustomXModel3D(BaseSerializingVisitor& visitor) const override;
+        [[nodiscard]] virtual bool SupportsExportAsCustom3D() const override { return true; }
+        [[nodiscard]] virtual bool SupportsExportAsCustom() const override { return false; }
+        [[nodiscard]] virtual int NodesPerString() const override;
+
+        [[nodiscard]] virtual std::string ChannelLayoutHtml(OutputManager * outputManager, bool darkMode = false) override;
+
+        void Accept(BaseObjectVisitor& visitor) const override { return visitor.Visit(*this); }
+
+        virtual int GetNumStrings() const override { return 1; }
+
+        [[nodiscard]] int GetCubeWidth() const { return _cubeWidth; }
+        [[nodiscard]] int GetCubeHeight() const { return _cubeHeight; }
+        [[nodiscard]] int GetCubeDepth() const { return _cubeDepth; }
+        void SetCubeWidth(int val) { _cubeWidth = val; }
+        void SetCubeHeight(int val) { _cubeHeight = val; }
+        void SetCubeDepth(int val) { _cubeDepth = val; }
+
+        [[nodiscard]] std::string GetCubeStyle() const;
+        [[nodiscard]] std::string GetStrandStyle() const;
+        [[nodiscard]] int GetCubeStrings() const { return _cubeStrings; }
+        [[nodiscard]] std::string GetCubeStart() const;
+        [[nodiscard]] bool IsStrandPerLayer() const { return _strandPerLayer; }
+
+        void SetCubeStyle(const std::string & style);
+        void SetStrandStyle(const std::string & style);
+        void SetCubeStrings(int strings) { _cubeStrings = strings; }
+        void SetCubeStart(const std::string & start);
+        [[nodiscard]] int GetCubeStartIndex() const { return _cubeStart; }
+        [[nodiscard]] int GetCubeStyleIndex() const { return _cubeStyle; }
+        [[nodiscard]] int GetStrandStyleIndex() const { return _strandStyle; }
+        void SetCubeStartIndex(int idx) { _cubeStart = idx; }
+        void SetCubeStyleIndex(int idx) { _cubeStyle = idx; }
+        void SetStrandStyleIndex(int idx) { _strandStyle = idx; }
+        void SetStrandPerLayer(bool val) { _strandPerLayer = val; }
+
+        [[nodiscard]] int GetCubeShape() const { return static_cast<int>(_cubeShape); }
+        void SetCubeShape(int val) { _cubeShape = (val == static_cast<int>(CubeShape::Cylinder)) ? CubeShape::Cylinder : CubeShape::Cube; }
+        [[nodiscard]] bool IsCylinder() const { return _cubeShape == CubeShape::Cylinder; }
+        [[nodiscard]] int GetHollowPct() const { return _hollowPct; }
+        void SetHollowPct(int val) {
+            if (val < 0) { _hollowPct = 0; }
+            else if (val > 99) { _hollowPct = 99; }
+            else { _hollowPct = val; }
+        }
+        [[nodiscard]] int GetRowOffset() const { return static_cast<int>(_rowOffset); }
+        void SetRowOffset(int val) {
+            if (val == static_cast<int>(RowOffset::Positive)) _rowOffset = RowOffset::Positive;
+            else if (val == static_cast<int>(RowOffset::Negative)) _rowOffset = RowOffset::Negative;
+            else _rowOffset = RowOffset::None;
+        }
+
+    protected:
+        void FlipX(std::tuple<int, int, int>& pt, int width) const;
+        void RotateX90Degrees(std::tuple<int, int, int>& pt, int by, int height, int depth) const;
+        void RotateY90Degrees(std::tuple<int, int, int>& pt, int by, int width, int depth) const;
+        void RotateZ90Degrees(std::tuple<int, int, int>& pt, int by, int width, int height) const;
+        [[nodiscard]] int CalcTransformationIndex() const;
+        [[nodiscard]] std::vector<std::tuple<int, int, int>> BuildCube() const;
+        [[nodiscard]] virtual std::string GetStartLocation() const override;
+        void DumpNodes(std::vector<std::tuple<int, int, int>> nodes,int width, int height, int depth) const;
+        [[nodiscard]] int FindNodeIndex(std::vector<std::tuple<int, int, int>> nodes, int x, int y, int z) const;
+        void DumpNode(const std::string desc, const std::tuple<int, int, int>& node, int width, int height, int depth) const;
+
+        virtual void InitModel() override;
+        
+    private:
+        int _cubeWidth = 1;
+        int _cubeHeight = 1;
+        int _cubeDepth = 1;
+        int _strandLength = 1;
+        int _strands = 1;
+        int _cubeStart = 0;
+        int _cubeStrings = 1;
+        int _cubeStyle = 0;
+        int _strandStyle = 0;
+        bool _strandPerLayer = false;
+        CubeShape _cubeShape = CubeShape::Cube;
+        int _hollowPct = 0;
+        RowOffset _rowOffset = RowOffset::None;
+};

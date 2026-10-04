@@ -1,0 +1,152 @@
+=========================================================
+xLights Windows build instructions
+=========================================================
+
+xLights can be built and run on Linux, Mac OS/X, or Windows. This
+document describes how **developers** should set up their tool chain to build
+xLights on Windows.
+
+If you are a Windows user, installation packages are available at
+https://xlights.org/releases/
+
+xLights is written in C++ and uses the wxWidgets library as a compatibility layer across operating systems.
+xLights uses a forked version of wxWidgets with some custom patches
+(https://github.com/xLightsSequencer/wxWidgets), but you do not need to build it
+yourself: a prebuilt copy ships in the shared dependency bundle described below,
+and the build downloads it for you.
+
+The Windows build takes wxWidgets, FFmpeg, curl, SDL, Lua, zlib, zstd and the
+rest from that bundle - built from one set of pinned versions in
+https://github.com/xLightsSequencer/xLights-dependencies so every platform links
+identical libraries. None of it is committed to this repository.
+
+We support the Visual Studio/MS Visual C++ compiler for Windows builds. 
+
+Instructions for MS Visual Studio C++
+=====================================
+
+Here are the steps to compile xLights for Windows using the Visual Studio compiler.
+
+  a) Install Visual Studio 2026 ... the community edition is fine
+    - xLights x64 builds with the v145 toolset, which VS 2022 does not have.
+      Building with VS 2022 fails with "MSB8020: The build tools for v145
+      cannot be found".
+    - Install the "Desktop development with C++" workload, which brings the
+      Windows SDK the projects use.
+
+  b) Select a base directory to place all your source code in. From now on this is represented as <basedir>
+
+  c) Dependencies - nothing to do
+
+    The prebuilt bundle (wxWidgets, FFmpeg, curl, SDL, Lua, zlib, zstd, hidapi,
+    LiquidFun, glslang, ...), the KLightMapper library and the Visual C++
+    redistributable used by the installer are all downloaded automatically. The
+    xLights project runs ci_scripts\fetch_dependencies.ps1 before it compiles,
+    which stages them into dependencies-bundle\, lib\windows64\ and bin64\.
+    A fully staged tree costs it about a fifth of a second, so it simply runs
+    every build and re-downloads only what is missing.
+
+    If you are working ON wxWidgets rather than with it, set the WXWIDGETS_ROOT
+    environment variable to your own wxWidgets checkout. Both the include and
+    library paths look there first, so your build wins over the bundle's copy -
+    and because it wins for both, the headers and the libraries stay in step.
+    Build that checkout from the same tag the bundle uses, which is recorded in
+    the xLights-dependencies repository; otherwise you are testing against a
+    different wxWidgets than everyone else. Leave WXWIDGETS_ROOT unset for
+    normal work.
+
+  d) Download, install and setup ISPC
+  
+    ISPC is a compiler for a variant of the C programming language, with extensions for "single program, multiple data" (SPMD) programming. 
+    It is used in xLights for the generation of AVX1, AVX2, SEE2 and SSE4 optimized code.
+
+    1) Download ISPC from
+        https://github.com/ispc/ispc/releases/download/v1.31.0/ispc-v1.31.0-windows.zip
+    2) Extract the zip file to a folder of your choice.
+    3) Add the path to the ISPC executable to your PATH environment variable.
+  
+  e) Download and install the Vulkan SDK
+
+    xLights renders many effects on the GPU via a Vulkan compute backend on
+    Windows (the analogue of Metal on macOS). Building it requires glslc, the
+    GLSL -> SPIR-V compiler that ships with the LunarG Vulkan SDK. glslc is a
+    build tool here, like ISPC: the xLights.vcxproj "CompileVulkanShaders"
+    pre-build step (x64 Debug and Release) compiles the .comp compute kernels to
+    the SPIR-V headers the build #includes. The SDK is required for the x64
+    build; without it the build fails at the pre-build step.
+
+    1) Download the Vulkan SDK from
+        https://vulkan.lunarg.com/sdk/home#windows
+    2) Run the installer. The default components are sufficient; the runtime
+        component is not needed to build.
+    3) The installer sets the VULKAN_SDK environment variable, which the build
+        uses to locate glslc (VULKAN_SDK\Bin\glslc.exe). No PATH change needed;
+        a CMake build also honors it.
+
+    NOTE: The Vulkan headers, volk, and VulkanMemoryAllocator come from git
+    submodules (dependencies\Vulkan-Headers, dependencies\volk,
+    dependencies\VulkanMemoryAllocator), so make sure you clone xLights with
+    --recurse-submodules (step f) or the build will not find <volk.h>.
+
+  f) Download and build xLights for Windows
+       
+       1) If you plan on contributing to the main repo, create a fork on GitHub
+       2) Now clone that fork to your <basedir>:
+       
+            cd <basedir>
+            git clone  --recurse-submodules https://github.com/<youruser>/xLights.git
+   
+       3) Open the xLights project <basedir>\xLights\xLights\xLights.sln and build the project in x64 Debug mode
+
+       4) The project's post-build step copies bin\ and bin64\ next to the
+          executable, so there is nothing to copy by hand. If xLights fails to
+          start with a missing-DLL error, bin64\ is incomplete - run
+          ci_scripts\fetch_dependencies.ps1 directly to see what it stages.
+
+       5) From now on you can Edit/Compile/Debug from within Visual Studio
+
+
+Windows Installer
+=================
+
+    We use Inno Setup to create the setup.exe for xLights
+    http://www.jrsoftware.org/isinfo.php
+
+    The packaged build driver, build_scripts\msw\build_VS_x64.cmd, also needs
+    Python on PATH: it runs prepmap.py to condense the linker map into the
+    symbol table the crash handler reads. Building from the Visual Studio IDE
+    does not need it.
+
+    build_scripts\msw\xLights_4_64bit_VS.iss is used to create the release
+    setup.exe. Building it needs the tree built first: the script packages
+    xLights.exe, xlDo.exe and fseq_convert.exe along with the runtime DLLs from
+    bin64\ and the fetched Visual C++ redistributable.
+
+
+The instructions below are for informational purpose right now as we deprecate and remove
+support for building with mingw/gcc.   The information will be removed soon.
+
+
+Instructions for Setting up Code::Blocks for Editing UI Files
+================================================
+
+Most the GUIs in xLights use .wxs files Generated by the wxSmith plugin in Code::Blocks.
+Code::Blocks will auto-generate the .h/.cpp files from these .wxs files. Do not edit the code in the
+generated sections as they will be overridden by Code::Blocks.
+
+Here are the steps to Code::Blocks for Editing .wxs files in Windows.
+
+  a) Install Code::Blocks nightly for Windows (currently using The 30 July 2024 build 13538)
+
+     Download the codeblocks '.exe' and 'DLLs' from here:
+        http://sourceforge.net/projects/codeblocks/files/Binaries/Nightlies/2024/CB_20240730_rev13538_win64.7z
+    https://sourceforge.net/projects/codeblocks/files/Binaries/Nightlies/Prerequisites/wxmsw32u_gcc_cb_wx325_2D_gcc1410-mingw64.7z
+    http://sourceforge.net/projects/codeblocks/files/Binaries/Nightlies/Prerequisites/Mingw64dlls14.1.0.7z
+
+  b) Extract all the EXE and DLLs from above to one folder i.e "C:\Codeblocks_nightly_7_30"
+
+  c) Launch 'codeblocks.exe' from the folder to open Code::Blocks
+    
+  d) Now you are ready to use Code::Blocks to Edit xLights UI Files
+     by double-clicking on the .cbp file in the xLights directory.
+     Then Open a Dialog, Panel, or Frame in the Left Panel to edit it.

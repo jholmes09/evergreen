@@ -1,0 +1,126 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "Model.h"
+
+class xlTexture;
+
+class CustomModel : public ModelWithScreenLocation<BoxedScreenLocation>
+{
+    public:
+        CustomModel(const ModelManager &manager);
+        virtual ~CustomModel();
+
+        void UpdateModel(int width, int height, int depth, const std::vector<std::vector<std::vector<int>>>& modelData);
+
+        void Accept(BaseObjectVisitor& visitor) const override { return visitor.Visit(*this); }
+
+        virtual const std::vector<std::string> &GetBufferStyles() const override;
+        virtual void GetBufferSize(const std::string &type, const std::string &camera, const std::string &transform, int &BufferWi, int &BufferHi, int stagger) const override;
+        virtual void InitRenderBufferNodes(const std::string &type, const std::string &camera, const std::string &transform,
+            std::vector<NodeBaseClassPtr> &Nodes, int &BufferWi, int &BufferHi, int stagger, bool deep = false) const override;
+
+        [[nodiscard]] virtual int GetStrandLength(int strand) const override;
+        [[nodiscard]] virtual int MapToNodeIndex(int strand, int node) const override;
+
+
+        [[nodiscard]] virtual std::list<std::string> GetFileReferences() override;
+        [[nodiscard]] virtual bool CleanupFileLocations(RenderContext* ctx) override;
+
+        virtual void DisplayModelOnWindow(IModelPreview* preview, xlGraphicsContext *ctx,
+                                          xlGraphicsProgram *solidProgram, xlGraphicsProgram *transparentProgram, bool is_3d = false,
+                                          const xlColor* color = nullptr, bool allowSelected = false, bool wiring = false,
+                                          bool highlightFirst = false, int highlightpixel = 0,
+                                          float *boundingBox = nullptr) override;
+
+        virtual void DisplayEffectOnWindow(IModelPreview* preview, double pointSize) override;
+
+        [[nodiscard]] virtual std::string GetStartLocation() const override { return "n/a"; }
+
+        [[nodiscard]] bool IsAllNodesUnique() const;
+        [[nodiscard]] long GetCustomWidth() const { return _customWidth;}
+        [[nodiscard]] long GetCustomHeight() const { return _customHeight;}
+        [[nodiscard]] long GetCustomDepth() const { return _depth;}
+        void SetCustomWidth(long w);
+        void SetCustomHeight(long u);
+        void SetCustomDepth(long d);
+        void SetNumStrings(int strings);
+        [[nodiscard]] virtual int NodesPerString() const override;
+        virtual int GetNumStrings() const override{ return _strings; }
+
+        [[nodiscard]] virtual int GetNumPhysicalStrings() const override;
+        [[nodiscard]] bool SupportsChangingStringCount() const override{ return true; };
+        [[nodiscard]] bool ChangeStringCount(long count, std::string& message) override;
+
+        [[nodiscard]] const std::string GetCustomData() const;
+        [[nodiscard]] const std::string GetCompressedData() const;
+        void SetCustomData(const std::vector<std::vector<std::vector<int>>>& data);
+
+        [[nodiscard]] std::string GetCustomBackground() const {return _custom_background;}
+        void SetCustomBackground(std::string background);
+        [[nodiscard]] long GetCustomLightness() const { return _lightness; }
+        void SetCustomLightness(long lightness) { _lightness = lightness; }
+        [[nodiscard]] int GetCustomBkgScale() const { return _bkg_scale; }
+        void SetCustomBkgScale(int scale) { _bkg_scale = scale; }
+        [[nodiscard]] int GetCustomBkgBrightness() const { return _bkg_brightness; }
+        void SetCustomBkgBrightness(int brightness) { _bkg_brightness = brightness; }
+        [[nodiscard]] int GetCustomBkgTransparency() const { return _bkg_transparency; }
+        void SetCustomBkgTransparency(int transparency) { _bkg_transparency = transparency; }
+
+        [[nodiscard]] virtual bool SupportsExportAsCustom() const override { return false; }
+        [[nodiscard]] virtual bool SupportsWiringView() const override { return true; }
+        [[nodiscard]] bool ImportLORModel(std::string const& filename, float& min_x, float& max_x, float& min_y, float& max_y);
+
+        [[nodiscard]] virtual std::string ChannelLayoutHtml(OutputManager* outputManager, bool darkMode = false) override;
+        [[nodiscard]] virtual std::string GetNodeName(size_t x, bool def = false) const override;
+        [[nodiscard]] virtual std::list<std::string> CheckModelSettings() override;
+        [[nodiscard]] virtual int NodesPerString(int string) const override;
+
+        [[nodiscard]] static std::string CustomModelToCompressed(const std::string& customModel);
+        [[nodiscard]] static std::string CompressedToCustomModel(const std::string& compressed);
+        [[nodiscard]] static std::string ToCompressed(const std::vector<std::vector<std::vector<int>>>& model);
+        [[nodiscard]] static std::string ToCustomModel(const std::vector<std::vector<std::vector<int>>>& model);
+        [[nodiscard]] std::vector<std::vector<std::vector<int>>> & GetData() { return _locations; }  // letting the XmlSerializer functions access this member data for speed
+        [[nodiscard]] int GetCustomNodeStringNumber(int node) const;
+        // On a custom model StringNum holds the zero-based custom node number
+        // (InitModel sets it from the grid value), not a string number, so the
+        // base implementation would return nonsense. -1 means "unknown".
+        [[nodiscard]] int GetNodePhysicalStringIndex(size_t nodenum) const override {
+            if (nodenum >= Nodes.size() || Nodes[nodenum] == nullptr) return -1;
+            return GetCustomNodeStringNumber((int)Nodes[nodenum]->StringNum + 1) - 1;
+        }
+
+        [[nodiscard]] const std::string StartNodeAttrName(int idx) const override
+        {
+            return std::string("NodeStart") + std::to_string(idx + 1);
+        }
+
+    protected:
+        virtual void InitModel() override;
+        virtual void SetStringStartChannels(int NumberOfStrings, int StartChannel, int ChannelsPerString) override;
+
+    private:
+        [[nodiscard]] int GetCustomMaxChannel() const;
+        void InitCustomMatrix();
+
+        long _customWidth = 1;
+        long _customHeight = 1;
+        long _depth = 1;
+        std::string _custom_background;
+        int _bkg_scale = 100;
+        int _bkg_brightness = 20;
+        int _bkg_transparency = 0;
+        std::map<std::string, xlTexture*> _bkg_images;
+        int _strings = 1;
+        long _lightness = 0;
+        std::vector<std::vector<std::vector<int>>> _locations;
+};

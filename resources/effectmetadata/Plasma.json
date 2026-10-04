@@ -1,0 +1,55 @@
+{
+    "effectName": "Plasma",
+    "properties": [
+        {
+            "id": "Plasma_Color",
+            "label": "Color Choice",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Normal",
+                "Preset Colors 1",
+                "Preset Colors 2",
+                "Preset Colors 3",
+                "Preset Colors 4"
+            ],
+            "default": "Normal",
+            "lockable": true,
+            "description": "Color scheme for the plasma pattern. Normal uses the effect's palette colors; the preset options use built-in color combinations with different hue ranges."
+        },
+        {
+            "id": "Plasma_Style",
+            "label": "Add Twist to Effect",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 1,
+            "max": 10,
+            "lockable": true,
+            "description": "Selects the mathematical formula used to generate the plasma pattern. Higher values produce more complex, twisted interference patterns."
+        },
+        {
+            "id": "Plasma_Line_Density",
+            "label": "Line Density",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 1,
+            "max": 10,
+            "lockable": true,
+            "description": "Controls how tightly packed the plasma wave lines are. Higher values produce finer, more detailed patterns with more color transitions across the model."
+        },
+        {
+            "id": "Plasma_Speed",
+            "label": "Speed",
+            "type": "int",
+            "controlType": "slider",
+            "default": 10,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "How fast the plasma pattern animates and flows. Higher values make the waves move more quickly."
+        }
+    ]
+}

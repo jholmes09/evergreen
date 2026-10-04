@@ -1,0 +1,593 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "GalaxyEffect.h"
+
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+#include "UtilFunctions.h"
+#include "Parallel.h"
+#include "ispc/GalaxyFunctions.ispc.h"
+
+#include "../../include/galaxy-16.xpm"
+#include "../../include/galaxy-24.xpm"
+#include "../../include/galaxy-32.xpm"
+#include "../../include/galaxy-48.xpm"
+#include "../../include/galaxy-64.xpm"
+
+// Max palette colors the ISPC gather fast-path supports (matches MAX_GALAXY_COLORS in the kernel).
+static constexpr int MAX_GALAXY_ISPC_COLORS = 8;
+
+// Fallback defaults (used until OnMetadataLoaded replaces them with Galaxy.json values).
+int GalaxyEffect::sCenterXDefault = 50;
+int GalaxyEffect::sCenterXMin = 0;
+int GalaxyEffect::sCenterXMax = 100;
+int GalaxyEffect::sCenterYDefault = 50;
+int GalaxyEffect::sCenterYMin = 0;
+int GalaxyEffect::sCenterYMax = 100;
+int GalaxyEffect::sStartRadiusDefault = 1;
+int GalaxyEffect::sStartRadiusMin = 0;
+int GalaxyEffect::sStartRadiusMax = 250;
+int GalaxyEffect::sEndRadiusDefault = 10;
+int GalaxyEffect::sEndRadiusMin = 0;
+int GalaxyEffect::sEndRadiusMax = 250;
+int GalaxyEffect::sStartAngleDefault = 0;
+int GalaxyEffect::sStartAngleMin = 0;
+int GalaxyEffect::sStartAngleMax = 360;
+int GalaxyEffect::sRevolutionsDefault = 1440; // pre-divisor (= JSON 4.0 * divisor 360)
+int GalaxyEffect::sRevolutionsMin = 0;
+int GalaxyEffect::sRevolutionsMax = 3600;
+int GalaxyEffect::sRevolutionsDivisor = 360;
+int GalaxyEffect::sStartWidthDefault = 5;
+int GalaxyEffect::sStartWidthMin = 0;
+int GalaxyEffect::sStartWidthMax = 255;
+int GalaxyEffect::sEndWidthDefault = 5;
+int GalaxyEffect::sEndWidthMin = 0;
+int GalaxyEffect::sEndWidthMax = 255;
+int GalaxyEffect::sDurationDefault = 20;
+int GalaxyEffect::sDurationMin = 0;
+int GalaxyEffect::sDurationMax = 100;
+int GalaxyEffect::sAccelDefault = 0;
+int GalaxyEffect::sAccelMin = -10;
+int GalaxyEffect::sAccelMax = 10;
+bool GalaxyEffect::sReverseDefault = false;
+bool GalaxyEffect::sBlendEdgesDefault = true;
+bool GalaxyEffect::sInwardDefault = false;
+bool GalaxyEffect::sScaleDefault = true;
+
+GalaxyEffect::GalaxyEffect(int id) : RenderableEffect(id, "Galaxy", galaxy_16, galaxy_24, galaxy_32, galaxy_48, galaxy_64)
+{
+    //ctor
+}
+
+GalaxyEffect::~GalaxyEffect()
+{
+    //dtor
+}
+
+void GalaxyEffect::OnMetadataLoaded()
+{
+    sCenterXDefault = GetIntDefault("Galaxy_CenterX", sCenterXDefault);
+    sCenterXMin = (int)GetMinFromMetadata("Galaxy_CenterX", sCenterXMin);
+    sCenterXMax = (int)GetMaxFromMetadata("Galaxy_CenterX", sCenterXMax);
+    sCenterYDefault = GetIntDefault("Galaxy_CenterY", sCenterYDefault);
+    sCenterYMin = (int)GetMinFromMetadata("Galaxy_CenterY", sCenterYMin);
+    sCenterYMax = (int)GetMaxFromMetadata("Galaxy_CenterY", sCenterYMax);
+    sStartRadiusDefault = GetIntDefault("Galaxy_Start_Radius", sStartRadiusDefault);
+    sStartRadiusMin = (int)GetMinFromMetadata("Galaxy_Start_Radius", sStartRadiusMin);
+    sStartRadiusMax = (int)GetMaxFromMetadata("Galaxy_Start_Radius", sStartRadiusMax);
+    sEndRadiusDefault = GetIntDefault("Galaxy_End_Radius", sEndRadiusDefault);
+    sEndRadiusMin = (int)GetMinFromMetadata("Galaxy_End_Radius", sEndRadiusMin);
+    sEndRadiusMax = (int)GetMaxFromMetadata("Galaxy_End_Radius", sEndRadiusMax);
+    sStartAngleDefault = GetIntDefault("Galaxy_Start_Angle", sStartAngleDefault);
+    sStartAngleMin = (int)GetMinFromMetadata("Galaxy_Start_Angle", sStartAngleMin);
+    sStartAngleMax = (int)GetMaxFromMetadata("Galaxy_Start_Angle", sStartAngleMax);
+    // Galaxy_Revolutions JSON default is post-divisor (4.0) but Render uses the
+    // pre-divisor tick count. Multiply by divisor to convert.
+    sRevolutionsDivisor = GetDivisorFromMetadata("Galaxy_Revolutions", sRevolutionsDivisor);
+    sRevolutionsDefault = (int)(GetDoubleDefault("Galaxy_Revolutions", (double)sRevolutionsDefault / sRevolutionsDivisor) * sRevolutionsDivisor);
+    sRevolutionsMin = (int)GetMinFromMetadata("Galaxy_Revolutions", sRevolutionsMin);
+    sRevolutionsMax = (int)GetMaxFromMetadata("Galaxy_Revolutions", sRevolutionsMax);
+    sStartWidthDefault = GetIntDefault("Galaxy_Start_Width", sStartWidthDefault);
+    sStartWidthMin = (int)GetMinFromMetadata("Galaxy_Start_Width", sStartWidthMin);
+    sStartWidthMax = (int)GetMaxFromMetadata("Galaxy_Start_Width", sStartWidthMax);
+    sEndWidthDefault = GetIntDefault("Galaxy_End_Width", sEndWidthDefault);
+    sEndWidthMin = (int)GetMinFromMetadata("Galaxy_End_Width", sEndWidthMin);
+    sEndWidthMax = (int)GetMaxFromMetadata("Galaxy_End_Width", sEndWidthMax);
+    sDurationDefault = GetIntDefault("Galaxy_Duration", sDurationDefault);
+    sDurationMin = (int)GetMinFromMetadata("Galaxy_Duration", sDurationMin);
+    sDurationMax = (int)GetMaxFromMetadata("Galaxy_Duration", sDurationMax);
+    sAccelDefault = GetIntDefault("Galaxy_Accel", sAccelDefault);
+    sAccelMin = (int)GetMinFromMetadata("Galaxy_Accel", sAccelMin);
+    sAccelMax = (int)GetMaxFromMetadata("Galaxy_Accel", sAccelMax);
+    sReverseDefault = GetBoolDefault("Galaxy_Reverse", sReverseDefault);
+    // NOTE: sBlendEdgesDefault intentionally NOT read from metadata. The cpp
+    // pre-migration called SettingsMap.GetBool("CHECKBOX_Galaxy_Blend_Edges")
+    // with no default, which returns false for missing keys, while Galaxy.json
+    // lists default=true. Behavior is preserved by leaving sBlendEdgesDefault
+    // at its fallback value of false.
+    sInwardDefault = GetBoolDefault("Galaxy_Inward", sInwardDefault);
+    sScaleDefault = GetBoolDefault("Galaxy_Scale", sScaleDefault);
+}
+
+int GalaxyEffect::DrawEffectBackground(const Effect *e, int x1, int y1, int x2, int y2,
+                                       xlVertexColorAccumulator &backgrounds, xlColor* colorMask, bool ramps) {
+    int head_duration = e->GetSettings().GetInt("E_SLIDER_Galaxy_Duration", sDurationDefault);
+    int num_colors = e->GetPaletteSize();
+    xlColor head_color = e->GetPalette()[0];
+    head_color.ApplyMask(colorMask);
+    int x_mid = (int)((float)(x2-x1) * (float)head_duration / 100.0) + x1;
+    if( x_mid > x1 )
+    {
+        backgrounds.AddHBlendedRectangleAsTriangles(x1, y1+1, x_mid, y2-1, head_color, head_color);
+    }
+    int color_length = (x2 - x_mid) / num_colors;
+    for(int i = 0; i < num_colors; i++ )
+    {
+        int cx1 = x_mid + (i*color_length);
+        if( i == (num_colors-1) ) // fix any roundoff error for last color
+        {
+            xlColor c1 = e->GetPalette()[i];
+            c1.ApplyMask(colorMask);
+            xlColor c2 = e->GetPalette()[i];
+            c2.ApplyMask(colorMask);
+            backgrounds.AddHBlendedRectangleAsTriangles(cx1, y1+4, x2, y2-4, c1, c2);
+        }
+        else
+        {
+            xlColor c1 = e->GetPalette()[i];
+            c1.ApplyMask(colorMask);
+            xlColor c2 = e->GetPalette()[i + 1];
+            c2.ApplyMask(colorMask);
+            backgrounds.AddHBlendedRectangleAsTriangles(cx1, y1+4, cx1+color_length, y2-4, c1, c2);
+        }
+    }
+    return 2; // draw small icon
+}
+
+bool GalaxyEffect::needToAdjustSettings(const std::string& version) {
+    return IsVersionOlder("2025.04", version);
+}
+
+void GalaxyEffect::adjustSettings(const std::string& version, Effect* effect, bool removeDefaults) {
+    // give the base class a chance to adjust any settings
+    if (RenderableEffect::needToAdjustSettings(version)) {
+        RenderableEffect::adjustSettings(version, effect, removeDefaults);
+    }
+
+    SettingsMap& settings = effect->GetSettings();
+
+    if (IsVersionOlder("2025.04", version)) {
+        settings["E_CHECKBOX_Galaxy_Scale"] = "0";
+    }
+}
+
+#define ToRadians(x) ((double)x * PI / (double)180.0)
+
+void CalcEndpointColor(double end_angle, double start_angle,
+                       double head_end_of_tail, double color_length, int num_colors,
+                       RenderBuffer& buffer, xlColor& color)
+{
+    double cv = (head_end_of_tail - end_angle) / color_length;
+    int ci = (int)cv;
+    double cp = cv - (double)ci;
+    int c2 = std::min(ci + 1, num_colors - 1);
+    if (ci < c2) {
+        buffer.Get2ColorBlend(ci, c2, std::min(cp, 1.0), color);
+    } else {
+        buffer.palette.GetColor(c2, color);
+    }
+}
+
+double GetStep(double radius)
+{
+    if( radius < 5 ) {
+        return 0.1;
+    }
+    return (0.5 * 360.0 / (2.0 * PI * radius));
+}
+
+namespace {
+// Narrow the radius interval [lo,hi] to the sub-range where axis*radius stays within
+// (boundMin, boundMax). axis*radius is monotone in radius, so the constraint maps to a
+// single interval. Returns false when nothing survives.
+inline bool ClipRadiusToAxis(double axis, double boundMin, double boundMax, double& lo, double& hi) {
+    if (axis > 1e-9) {
+        lo = std::max(lo, boundMin / axis);
+        hi = std::min(hi, boundMax / axis);
+    } else if (axis < -1e-9) {
+        lo = std::max(lo, boundMax / axis);
+        hi = std::min(hi, boundMin / axis);
+    } else if (!(boundMin < 0.0 && 0.0 < boundMax)) {
+        return false; // coordinate is pinned to the center and the center is off-buffer
+    }
+    return lo <= hi;
+}
+
+// The Galaxy draw loops sweep r over [inside_radius, current_radius], plotting the point at
+// radius r and its mirror at radius (2*current_radius - r). On a very wide/short (or
+// tall/narrow) buffer - e.g. a "Single Line" 2832x1 render - nearly every one of those
+// points lands off-buffer and is discarded, yet the loop still runs the full width. This
+// returns the sub-range of r that can actually touch the buffer so the caller can skip the
+// guaranteed misses. Radii outside the range only ever produce out-of-bounds pixels (which
+// SetPixel/SetTempPixel drop), so clipping to it leaves the rendered output unchanged. The
+// (-1,W)/(-1,H) bounds match the (int) truncation that maps coords in (-1,0) to index 0.
+// Returns false when the whole ray misses the buffer.
+inline bool GalaxyVisibleRRange(double sinA, double cosA, double pos_x, double pos_y,
+                                int bufWi, int bufHt, double inside_radius, double current_radius,
+                                double& r_start, double& r_end) {
+    double lo = inside_radius;
+    double hi = 2.0 * current_radius - inside_radius; // outermost radius the loop touches
+    if (!ClipRadiusToAxis(sinA, -1.0 - pos_x, (double)bufWi - pos_x, lo, hi)) return false;
+    if (!ClipRadiusToAxis(cosA, -1.0 - pos_y, (double)bufHt - pos_y, lo, hi)) return false;
+    double twoCR = 2.0 * current_radius;
+    // Map the visible radius interval back onto r: the point uses radius r, its mirror uses
+    // 2*current_radius - r. One radius unit of slack absorbs rounding at the edges.
+    r_start = std::max(inside_radius, std::min(lo, twoCR - hi) - 1.0);
+    r_end = std::min(current_radius, std::max(hi, twoCR - lo) + 1.0);
+    return r_start <= r_end;
+}
+}
+
+void GalaxyEffect::Render(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    double eff_pos = buffer.GetEffectTimeIntervalPosition();
+    int center_x = GetValueCurveInt("Galaxy_CenterX", sCenterXDefault, SettingsMap, eff_pos, sCenterXMin, sCenterXMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int center_y = GetValueCurveInt("Galaxy_CenterY", sCenterYDefault, SettingsMap, eff_pos, sCenterYMin, sCenterYMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int start_radius = GetValueCurveInt("Galaxy_Start_Radius", sStartRadiusDefault, SettingsMap, eff_pos, sStartRadiusMin, sStartRadiusMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int end_radius = GetValueCurveInt("Galaxy_End_Radius", sEndRadiusDefault, SettingsMap, eff_pos, sEndRadiusMin, sEndRadiusMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int start_angle = GetValueCurveInt("Galaxy_Start_Angle", sStartAngleDefault, SettingsMap, eff_pos, sStartAngleMin, sStartAngleMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int revolutions = GetValueCurveInt("Galaxy_Revolutions", sRevolutionsDefault, SettingsMap, eff_pos, sRevolutionsMin, sRevolutionsMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), sRevolutionsDivisor);
+    int start_width = GetValueCurveInt("Galaxy_Start_Width", sStartWidthDefault, SettingsMap, eff_pos, sStartWidthMin, sStartWidthMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int end_width = GetValueCurveInt("Galaxy_End_Width", sEndWidthDefault, SettingsMap, eff_pos, sEndWidthMin, sEndWidthMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int duration = GetValueCurveInt("Galaxy_Duration", sDurationDefault, SettingsMap, eff_pos, sDurationMin, sDurationMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int acceleration = GetValueCurveInt("Galaxy_Accel", sAccelDefault, SettingsMap, eff_pos, sAccelMin, sAccelMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    bool reverse_dir = SettingsMap.GetBool("CHECKBOX_Galaxy_Reverse", sReverseDefault);
+    bool blend_edges = SettingsMap.GetBool("CHECKBOX_Galaxy_Blend_Edges", sBlendEdgesDefault);
+    bool inward = SettingsMap.GetBool("CHECKBOX_Galaxy_Inward", sInwardDefault);
+    bool scale = SettingsMap.GetBool("CHECKBOX_Galaxy_Scale", sScaleDefault);
+
+    if (revolutions == 0)
+        return;
+
+    int num_colors = buffer.palette.Size();
+    double eff_pos_adj = buffer.calcAccel(eff_pos, acceleration);
+    double revs = (double)revolutions;
+
+    double pos_x = buffer.BufferWi * center_x / 100.0;
+    double pos_y = buffer.BufferHt * center_y / 100.0;
+
+    double head_duration = duration / 100.0; // time the head is in the frame
+    double tail_length = revs * (1.0 - head_duration);
+    double color_length = tail_length / num_colors;
+    if (color_length < 1.0)
+        color_length = 1.0;
+
+    double tail_end_of_tail = ((revs + tail_length) * eff_pos_adj) - tail_length;
+    double head_end_of_tail = tail_end_of_tail + tail_length;
+
+    double radius1 = start_radius;
+    double radius2 = end_radius;
+    double width1 = start_width;
+    double width2 = end_width;
+
+    if (scale) { // convert to percentage of buffer, i.e 100 is 100% of buffer size
+        double bufferMax = std::max(buffer.BufferHt, buffer.BufferWi);
+        radius1 = radius1 * (bufferMax / 200.0); // 200 bc radius is half of the width
+        radius2 = radius2 * (bufferMax / 200.0);
+        width1 = width1 * (bufferMax / 100.0);
+        width2 = width2 * (bufferMax / 100.0);
+    }
+
+    // The spiral never writes a pixel further than maxR from the center (outermost arm
+    // center + its half-width; the rounded caps stay within current_radius + half_width).
+    // The blend-down passes below therefore only need to scan this bounding box instead
+    // of the full W*H buffer - a large win on big 2D buffers (e.g. an 800x600 group).
+    double maxR = std::max(radius1, radius2) + std::max(width1, width2) / 2.0 + 2.0;
+    int blendX0 = std::max(0, (int)std::floor(pos_x - maxR));
+    int blendX1 = std::min(buffer.BufferWi, (int)std::ceil(pos_x + maxR));
+    int blendY0 = std::max(0, (int)std::floor(pos_y - maxR));
+    int blendY1 = std::min(buffer.BufferHt, (int)std::ceil(pos_y + maxR));
+
+    size_t npix = (size_t)buffer.BufferWi * buffer.BufferHt;
+    if (!buffer.IsDmxBuffer()
+        && num_colors > 0 && num_colors <= MAX_GALAXY_ISPC_COLORS
+        && npix <= buffer.GetPixelCount()
+        && blendX1 > blendX0 && blendY1 > blendY0) {
+
+        ispc::GalaxyISPCData gd;
+        gd.width = buffer.BufferWi;
+        gd.height = buffer.BufferHt;
+        gd.pos_x = (float)pos_x;
+        gd.pos_y = (float)pos_y;
+        gd.radius1 = (float)radius1;
+        gd.radius2 = (float)radius2;
+        gd.width1 = (float)width1;
+        gd.width2 = (float)width2;
+        gd.revs = (float)revs;
+        gd.start_angle = (float)start_angle;
+        gd.reverse_dir = reverse_dir ? 1 : 0;
+        gd.inward = inward ? 1 : 0;
+        gd.blend_edges = blend_edges ? 1 : 0;
+        gd.head_end_of_tail = (float)head_end_of_tail;
+        gd.tail_end_of_tail = (float)tail_end_of_tail;
+        gd.color_length = (float)color_length;
+        gd.num_colors = num_colors;
+        for (int i = 0; i < MAX_GALAXY_ISPC_COLORS; i++) {
+            if (i < num_colors) {
+                xlColor c;
+                buffer.palette.GetColor(i, c);
+                gd.palR[i] = c.red; gd.palG[i] = c.green; gd.palB[i] = c.blue;
+            } else {
+                gd.palR[i] = gd.palG[i] = gd.palB[i] = 0;
+            }
+        }
+        xlColor* pixels = buffer.GetPixels();
+        int wi = buffer.BufferWi;
+        // Parallelize across box rows only when the box is big enough to cover the thread
+        // overhead; small galaxies dispatch single-threaded (faster than paying for a fan-out).
+        if ((size_t)(blendY1 - blendY0) * (blendX1 - blendX0) >= 20000) {
+            parallel_for(blendY0, blendY1, [&gd, pixels, wi, blendX0, blendX1](int y) {
+                ispc::GalaxyEffectISPC(&gd, y * wi + blendX0, y * wi + blendX1, (ispc::uint8_t4*)pixels);
+            });
+        } else {
+            for (int y = blendY0; y < blendY1; y++) {
+                ispc::GalaxyEffectISPC(&gd, y * wi + blendX0, y * wi + blendX1, (ispc::uint8_t4*)pixels);
+            }
+        }
+        return;
+    }
+
+    const int bufHt = buffer.BufferHt;
+    // Flat W*H scratch buffers (index = x*bufHt + y). A vector-of-vectors allocated
+    // BufferWi tiny inner vectors every frame - costly on wide buffers (2832x1 single line).
+    std::vector<double> temp_colors_pct(buffer.BufferWi * bufHt, 0.0);
+    std::vector<double> pixel_age(buffer.BufferWi * bufHt, 0.0);
+
+    double half_width = 1;
+
+    buffer.ClearTempBuf();
+
+    double last_check = (inward ? std::min(head_end_of_tail, revs) : std::max(0.0, tail_end_of_tail)) + (double)start_angle;
+
+    // This section rounds off the head / tail
+    // It draws whichever end is underneath as it spirals.  Head when Inward is true otherwise this draws the tail.
+    double adj_angle;
+    double end_angle = (inward ? std::min(head_end_of_tail, revs) : std::max(0.0, tail_end_of_tail));
+    xlColor color;
+    CalcEndpointColor(end_angle, start_angle, head_end_of_tail, color_length, num_colors, buffer, color);
+    double pct1 = end_angle / revs;
+    double current_radius = radius2 * pct1 + radius1 * (1.0 - pct1);
+    double current_width = width2 * pct1 + width1 * (1.0 - pct1);
+    ;
+    double current_delta = 0.0;
+    double current_distance = 0.0;
+    half_width = current_width / 2.0;
+    double step = GetStep(current_radius + half_width);
+
+    if (current_radius >= half_width && half_width > 0.0) {
+        for (double i = end_angle; current_distance <= half_width; (inward ? i += step : i -= step)) {
+            adj_angle = i + (double)start_angle;
+            if (reverse_dir) {
+                adj_angle *= -1.0;
+            }
+            current_delta = std::abs(end_angle - i);
+            current_distance = (2.0 * PI * current_radius * current_delta) / 360.0;
+            HSVValue hsv(color);
+            double full_brightness = hsv.value;
+            if (half_width > current_distance) {
+                current_width = std::sqrt(half_width * half_width - current_distance * current_distance);
+                double inside_radius = std::max(0.0, current_radius - current_width);
+                double sinA = buffer.sin(ToRadians(adj_angle));
+                double cosA = buffer.cos(ToRadians(adj_angle));
+                double r_start, r_end;
+                if (GalaxyVisibleRRange(sinA, cosA, pos_x, pos_y, buffer.BufferWi, buffer.BufferHt, inside_radius, current_radius, r_start, r_end)) {
+                    double head_fade_pct = std::min(1.0, std::max(0.0, 1.0 - (current_distance / half_width)));
+                    for (double r = inside_radius + 0.5 * std::floor((r_start - inside_radius) / 0.5);; r += 0.5) {
+                        if (r > current_radius)
+                            r = current_radius;
+                        double x1 = sinA * r + pos_x;
+                        double y1 = cosA * r + pos_y;
+                        double outside_radius = current_radius + (current_radius - r);
+                        double x2 = sinA * outside_radius + pos_x;
+                        double y2 = cosA * outside_radius + pos_y;
+                        double color_pct2 = ((r - inside_radius) / (current_radius - inside_radius)) * head_fade_pct;
+                        if (blend_edges) {
+                            if (hsv.value > 0.0) {
+                                if ((int)x1 >= 0 && (int)x1 < buffer.BufferWi && (int)y1 >= 0 && (int)y1 < buffer.BufferHt) {
+                                    buffer.SetTempPixel((int)x1, (int)y1, color);
+                                    temp_colors_pct[(int)x1 * bufHt + (int)y1] = color_pct2;
+                                }
+                                if ((int)x2 >= 0 && (int)x2 < buffer.BufferWi && (int)y2 >= 0 && (int)y2 < buffer.BufferHt) {
+                                    buffer.SetTempPixel((int)x2, (int)y2, color);
+                                    temp_colors_pct[(int)x2 * bufHt + (int)y2] = color_pct2;
+                                }
+                            }
+                        } else {
+                            hsv.value = full_brightness * color_pct2;
+                            if (hsv.value > 0.0) {
+                                buffer.SetPixel(x1, y1, hsv);
+                                buffer.SetPixel(x2, y2, hsv);
+                            }
+                        }
+                        if (r >= current_radius || r >= r_end)
+                            break;
+                    }
+                }
+            }
+            step = GetStep(current_radius + half_width);
+        }
+    }
+
+    // This section draws the main Galaxy spiral
+    for (double i = (inward ? std::min(head_end_of_tail, revs) : std::max(0.0, tail_end_of_tail));
+         (inward ? i >= std::max(0.0, tail_end_of_tail) : i <= std::min(head_end_of_tail, revs));
+         (inward ? i -= step : i += step)) {
+        double adj_angle = i + (double)start_angle;
+        if (reverse_dir) {
+            adj_angle *= -1.0;
+        }
+        double color_val = (head_end_of_tail - i) / color_length;
+        int color_int = (int)color_val;
+        double color_pct = color_val - (double)color_int;
+        int color2 = std::min(color_int + 1, num_colors - 1);
+        if (color_int < color2) {
+            buffer.Get2ColorBlend(color_int, color2, std::min(color_pct, 1.0), color);
+        } else {
+            buffer.palette.GetColor(color2, color);
+        }
+        HSVValue hsv(color);
+        double full_brightness = hsv.value;
+        double pct = i / revs;
+        current_radius = radius2 * pct + radius1 * (1.0 - pct);
+        double current_width = width2 * pct + width1 * (1.0 - pct);
+        half_width = current_width / 2.0;
+        double inside_radius = current_radius - half_width;
+        double sinA = buffer.sin(ToRadians(adj_angle));
+        double cosA = buffer.cos(ToRadians(adj_angle));
+        double pixelAge = abs(adj_angle);
+        double r_start, r_end;
+        if (GalaxyVisibleRRange(sinA, cosA, pos_x, pos_y, buffer.BufferWi, buffer.BufferHt, inside_radius, current_radius, r_start, r_end)) {
+            for (double r = inside_radius + 0.5 * std::floor((r_start - inside_radius) / 0.5);; r += 0.5) {
+                if (r > current_radius)
+                    r = current_radius;
+                double x1 = sinA * r + pos_x;
+                double y1 = cosA * r + pos_y;
+                double outside_radius = current_radius + (current_radius - r);
+                double x2 = sinA * outside_radius + pos_x;
+                double y2 = cosA * outside_radius + pos_y;
+                double color_pct2 = (r - inside_radius) / (current_radius - inside_radius);
+                if (blend_edges) {
+                    if (hsv.value > 0.0) {
+                        if ((int)x1 >= 0 && (int)x1 < buffer.BufferWi && (int)y1 >= 0 && (int)y1 < buffer.BufferHt) {
+                            buffer.SetTempPixel((int)x1, (int)y1, color);
+                            temp_colors_pct[(int)x1 * bufHt + (int)y1] = color_pct2;
+                            pixel_age[(int)x1 * bufHt + (int)y1] = pixelAge;
+                        }
+                        if ((int)x2 >= 0 && (int)x2 < buffer.BufferWi && (int)y2 >= 0 && (int)y2 < buffer.BufferHt) {
+                            buffer.SetTempPixel((int)x2, (int)y2, color);
+                            temp_colors_pct[(int)x2 * bufHt + (int)y2] = color_pct2;
+                            pixel_age[(int)x2 * bufHt + (int)y2] = pixelAge;
+                        }
+                    }
+                } else {
+                    hsv.value = full_brightness * color_pct2;
+                    if (hsv.value > 0.0) {
+                        buffer.SetPixel(x1, y1, hsv);
+                        buffer.SetPixel(x2, y2, hsv);
+                    }
+                }
+                if (r >= current_radius || r >= r_end)
+                    break;
+            }
+        }
+
+        // blend old data down into final buffer
+        if (blend_edges && ((inward ? (last_check - abs(adj_angle)) : (abs(adj_angle) - last_check)) >= 90.0)) {
+            for (int x = blendX0; x < blendX1; x++) {
+                for (int y = blendY0; y < blendY1; y++) {
+                    int idx = x * bufHt + y;
+                    if (temp_colors_pct[idx] > 0.0 && ((inward ? (pixel_age[idx] - abs(adj_angle)) : (abs(adj_angle) - pixel_age[idx])) >= 180.0)) {
+                        xlColor c_new;
+                        buffer.GetTempPixel(x, y, c_new);
+                        xlColor c_old;
+                        buffer.GetPixel(x, y, c_old);
+                        xlColor colour;
+                        buffer.Get2ColorAlphaBlend(c_old, c_new, temp_colors_pct[idx], colour);
+                        buffer.SetPixel(x, y, colour);
+                        temp_colors_pct[idx] = 0.0;
+                        pixel_age[idx] = 0.0;
+                    }
+                }
+            }
+            last_check = abs(adj_angle);
+        }
+        step = GetStep(current_radius + half_width);
+    }
+
+    // This section rounds off the head / tail
+    // Draws whichever end wasn't drawn in the top section.
+    end_angle = inward ? std::max(0.1, tail_end_of_tail) : std::min(head_end_of_tail, revs);
+    CalcEndpointColor(end_angle, start_angle, head_end_of_tail, color_length, num_colors, buffer, color);
+    current_distance = 0.0;
+    if (current_radius >= half_width && half_width > 0.0) {
+        for (double i = end_angle; current_distance <= half_width; (inward ? i -= step : i += step)) {
+            adj_angle = i + (double)start_angle;
+            if (reverse_dir) {
+                adj_angle *= -1.0;
+            }
+            current_delta = std::abs(end_angle - i);
+            current_distance = (2.0 * PI * current_radius * current_delta) / 360.0;
+            HSVValue hsv(color);
+            double full_brightness = hsv.value;
+            if (half_width > current_distance) {
+                current_width = std::sqrt(half_width * half_width - current_distance * current_distance);
+                double inside_radius = std::max(0.0, current_radius - current_width);
+                double sinA = buffer.sin(ToRadians(adj_angle));
+                double cosA = buffer.cos(ToRadians(adj_angle));
+                double r_start, r_end;
+                if (GalaxyVisibleRRange(sinA, cosA, pos_x, pos_y, buffer.BufferWi, buffer.BufferHt, inside_radius, current_radius, r_start, r_end)) {
+                    double head_fade_pct = std::min(1.0, std::max(0.0, 1.0 - (current_distance / half_width)));
+                    for (double r = inside_radius + 0.5 * std::floor((r_start - inside_radius) / 0.5);; r += 0.5) {
+                        if (r > current_radius)
+                            r = current_radius;
+                        double x1 = sinA * r + pos_x;
+                        double y1 = cosA * r + pos_y;
+                        double outside_radius = current_radius + (current_radius - r);
+                        double x2 = sinA * outside_radius + pos_x;
+                        double y2 = cosA * outside_radius + pos_y;
+                        double color_pct2 = ((r - inside_radius) / (current_radius - inside_radius)) * head_fade_pct;
+                        if (blend_edges) {
+                            if (hsv.value > 0.0) {
+                                if ((int)x1 >= 0 && (int)x1 < buffer.BufferWi && (int)y1 >= 0 && (int)y1 < buffer.BufferHt) {
+                                    buffer.SetTempPixel((int)x1, (int)y1, color);
+                                    temp_colors_pct[(int)x1 * bufHt + (int)y1] = color_pct2;
+                                }
+                                if ((int)x2 >= 0 && (int)x2 < buffer.BufferWi && (int)y2 >= 0 && (int)y2 < buffer.BufferHt) {
+                                    buffer.SetTempPixel((int)x2, (int)y2, color);
+                                    temp_colors_pct[(int)x2 * bufHt + (int)y2] = color_pct2;
+                                }
+                            }
+                        } else {
+                            hsv.value = full_brightness * color_pct2;
+                            if (hsv.value > 0.0) {
+                                buffer.SetPixel(x1, y1, hsv);
+                                buffer.SetPixel(x2, y2, hsv);
+                            }
+                        }
+                        if (r >= current_radius || r >= r_end)
+                            break;
+                    }
+                }
+            }
+            step = GetStep(current_radius + half_width);
+        }
+    }
+
+    // blend remaining data down into final buffer
+    if (blend_edges) {
+        parallel_for(blendX0, blendX1, [&buffer, &temp_colors_pct, bufHt, blendY0, blendY1](int x) {
+            for (int y = blendY0; y < blendY1; y++) {
+                int idx = x * bufHt + y;
+                if (temp_colors_pct[idx] > 0.0) {
+                    xlColor c_new;
+                    buffer.GetTempPixel(x, y, c_new);
+                    xlColor c_old;
+                    buffer.GetPixel(x, y, c_old);
+                    xlColor colour;
+                    buffer.Get2ColorAlphaBlend(c_old, c_new, temp_colors_pct[idx], colour);
+                    buffer.SetPixel(x, y, colour);
+                }
+            }
+        });
+    }
+}
+

@@ -1,0 +1,993 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+// iPadRenderContext — RenderContext for loading, rendering, and displaying
+// sequences on iPad.  Includes RenderEngine for effect rendering.
+
+#include "render/RenderContext.h"
+#include "render/xLightsShowContext.h"
+#include "render/SequenceData.h"
+#include "render/SequenceElements.h"
+#include "render/SequenceFile.h"
+#include "render/SequenceViewManager.h"
+#include "render/RenderEngine.h"
+#include "render/RenderCache.h"
+#include "render/IRenderProgressSink.h"
+#include "render/ViewpointMgr.h"
+#include "effects/EffectManager.h"
+#include "effects/EffectPresetManager.h"
+#include "outputs/OutputManager.h"
+#include "models/ModelManager.h"
+#include "models/OutputModelManager.h"
+#include "models/ViewObjectManager.h"
+#include "utils/JobPool.h"
+#include "lyrics/PhonemeDictionary.h"
+#include "utils/xlImage.h"
+
+#include <atomic>
+#include <list>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <deque>
+#include <set>
+#include <string>
+#include <vector>
+
+class iPadRenderContext : public xLightsShowContext {
+public:
+    iPadRenderContext();
+    ~iPadRenderContext() override;
+
+    // Hold one of these for the whole of any operation that tears down, rebuilds
+    // or merges AllModels / AllObjects. It blocks new renders from starting for
+    // its entire lifetime and drains the ones already running, which a bare
+    // AbortRender cannot do - that only empties the queue at one instant, and
+    // every such operation runs for seconds afterwards with the main run loop
+    // free to start another. `ok()` is false when the gate or the drain timed
+    // out; the caller MUST NOT touch the managers in that case, because live
+    // render workers still hold Model* into them.
+    class ModelMutationScope {
+    public:
+        explicit ModelMutationScope(iPadRenderContext& ctx, int maxWaitMs = 5000);
+        bool ok() const { return _ok; }
+        ModelMutationScope(const ModelMutationScope&) = delete;
+        ModelMutationScope& operator=(const ModelMutationScope&) = delete;
+    private:
+        std::unique_lock<std::timed_mutex> _lock;
+        bool _ok = false;
+    };
+
+    // Show folder management
+    bool LoadShowFolder(const std::string& showDir);
+    bool LoadShowFolder(const std::string& showDir,
+                        const std::list<std::string>& mediaFolders);
+
+    // Sequence management
+    bool OpenSequence(const std::string& path);
+
+    // Shared-open hook: convert iOS-undecodable animated-GIF Video effects to
+    // Pictures effects (base default is a no-op).
+    void OnSequenceElementsLoaded(SequenceFile& file) override;
+
+    // Write the rendered sequence to a v2/zstd/sparse .fseq file matching
+    // desktop's `xLightsFrame::WriteFalconPiFile` format. Sparse ranges come
+    // from the master view (each ELEMENT_TYPE_MODEL row contributes its
+    // channel range, ModelGroups expand to their children). Embeds 'mf' (media
+    // filename), 'sp' (source), and FE/FC (FPP Effects/Commands) variable
+    // headers when applicable. Returns false on I/O failure or if no sequence
+    // is loaded; returns true even if `_sequenceData` is empty (writes a
+    // header-only file) — callers should ensure a render has completed first.
+    bool WriteFseq(const std::string& path);
+
+    // Try to short-circuit a render by loading frame data from `path`. Returns
+    // true only if the file opens, the fseq's mtime is >= the xsq's mtime, and
+    // the channel/frame/step shape matches the currently-loaded sequence.
+    // On success `_sequenceData` is populated and the caller can skip
+    // `RenderAll`. On any mismatch returns false and leaves `_sequenceData`
+    // untouched so a normal render can proceed.
+    bool TryLoadFseq(const std::string& fseqPath, const std::string& xsqPath);
+
+    // RenderContext implementation. IsInShow*Folder, MakeRelativePath,
+    // IsSequenceLoaded, GetCurrentMediaManager, AbortRender and CloseSequence
+    // are provided by the base (xLightsShowContext).
+    // Copy `file` into `<showDir>/<subdirectory>`, returning the final
+    // absolute path. Appends `_N` on name collision unless `reuse` and
+    // the existing file's contents already match. Returns `file`
+    // unchanged on failure (no show folder configured, copy error) —
+    // matches desktop's xLightsFrame::MoveToShowFolder contract, since
+    // callers store the result as the new reference.
+    std::string MoveToShowFolder(const std::string& file,
+                                  const std::string& subdirectory,
+                                  bool reuse) override;
+
+    // Same as MoveToShowFolder but the destination root is one of the
+    // configured media folders (`mediaFolderPath` must appear in
+    // `_mediaFolders` or we refuse). Used by the iPad fileImporter
+    // "destination: Media Folder X" branch.
+    std::string CopyToMediaFolder(const std::string& file,
+                                   const std::string& mediaFolderPath,
+                                   const std::string& subdirectory);
+    SequenceViewManager& GetSequenceViewManager() { return _sequenceViewManager; }
+    const std::string& GetHeaderInfo(HEADER_INFO_TYPES type) const override;
+
+    // B43: alt audio track selection. -1 = main, 0..N-1 = alt index.
+    // Drives both the waveform display and playback, matching desktop
+    // (`xLightsFrame::GetPlaybackAudio` returns the selected track's
+    // AudioManager). Falls back to the main track when the requested
+    // alt index is out of range or its AudioManager hasn't loaded.
+    int GetWaveformTrackIndex() const { return _waveformTrackIndex; }
+    void SetWaveformTrackIndex(int idx);
+    AudioManager* GetWaveformMedia() const;
+    // Audio the transport should drive. Same resolution as
+    // GetWaveformMedia — named separately because the two are distinct
+    // concepts on desktop and callers should say which they mean.
+    AudioManager* GetPlaybackMedia() const { return GetWaveformMedia(); }
+    int GetAltTrackCount() const;
+    std::string GetAltTrackDisplayName(int idx) const;
+
+    Model* GetModel(const std::string& name) const override;
+
+    // PRE-1 — persistent effect preset library. Mirrors
+    // xLightsFrame::_effectPresetManager. Loaded at show-folder load
+    // (JSON file with XML-effects-node fallback) and saved back to
+    // `<showDir>/xlights_effectpresets.json` (+ .jbkp backup) so
+    // presets round-trip with the desktop format. The bridge funnels
+    // every preset mutation through this manager.
+    EffectPresetManager& GetEffectPresetManager() { return _effectPresetManager; }
+    // Persist the preset library to disk. Writes the backup copy first
+    // (best-effort), then the main JSON file. Returns false on write
+    // failure of the main file.
+    bool SaveEffectPresets();
+
+    // #6450 — read-only preset library loaded from the base show
+    // folder's `xlights_effectpresets.json`, surfaced as the desktop's
+    // "From Base" section. Apply-only on iPad: never mutated or saved.
+    EffectPresetManager& GetBasePresetManager() { return _basePresetManager; }
+    // (Re)load the base preset library from the configured base show
+    // directory. Clears the manager when no base folder is set or it has
+    // no presets file. Returns true when at least one base preset loaded.
+    bool LoadBasePresets();
+
+    void RenderEffectForModel(const std::string& model, int startms, int endms, bool clear) override;
+
+    // Render-dependency sweep. An effect can depend on a timing track
+    // or on another model (Kaleidoscope, Shockwave's timing-track
+    // trigger, per-model canvas reads); when the thing it depends on
+    // changes, core records the dependent model in
+    // `SequenceElements::modelsToRender`. Desktop drains that set on
+    // every output tick (tabSequencer.cpp:2757-2767) — nothing drained
+    // it here, so a dependent model kept its stale render until the
+    // next Render All. Returns the number of models it kicked off.
+    int RenderDependentModels();
+    // Render a single model over the whole sequence and BLOCK until the
+    // render workers finish (or maxTimeMs elapses). Used by the
+    // Convert-To-Effect bridge, which must read fully-rendered
+    // `_sequenceData` node values immediately after. Returns true if the
+    // render completed within the timeout.
+    bool RenderModelAndWait(const std::string& model, int maxTimeMs = 60000);
+    TimingElement* AddTimingElement(const std::string& name,
+                                    const std::string& subType = "") override;
+    void SuspendAutoSave(bool) override {}
+    // Opt-in app preference (default OFF = full-definition render). See the
+    // .cpp — reads the `render.lowDefinition` UserDefaults key the SwiftUI
+    // toggle writes. Defaulting off matches desktop and keeps final FSEQ output
+    // full-resolution; on is a deliberate memory-relief escape hatch.
+    bool IsLowDefinitionRender() const override;
+
+    // Rendering
+    // Returns true when a render pass was actually registered with the
+    // engine. Returns false when the pass was skipped — the model-mutation
+    // gate is held (a base-show merge or show-folder load is in flight), the
+    // previous render would not drain, or there is no valid sequence data.
+    // A false return means `_seqData` was NOT re-rendered, so callers must
+    // not treat the (immediately true) render-done flag as completion, and
+    // must never persist the buffer.
+    bool RenderAll();
+    // TOOLS-1b: drop all on-disk render-cache items for this sequence
+    // (mirrors desktop xLightsFrame::OnMenuItem_PurgeRenderCacheSelected).
+    void PurgeRenderCache() { _renderCache.Purge(&_sequenceElements, true); }
+    // TOOLS-1: drop the shared downloaded-file cache (vendor catalog,
+    // palette/model images, shader/model downloads). Frees disk/iCloud
+    // quota; the next catalog/download repopulates. Defined in the .cpp
+    // so the CachedFileDownloader header stays out of this header.
+    void PurgeDownloadCache();
+    void SetModelColors(int frameMS);
+    SequenceData& GetSequenceData() { return _seqData; }
+
+    // Set while a house-preview video export renders offscreen on a background
+    // thread. The live on-screen preview skips drawing so it doesn't race the
+    // export over per-model node colours (both call SetModelColors).
+    void SetExportInProgress(bool v) { _exportInProgress.store(v); }
+    bool IsExportInProgress() const { return _exportInProgress.load(); }
+
+    // Live house-preview camera snapshot. The on-screen house-preview bridge
+    // publishes its 2D/3D cameras + active mode + canvas size here on every
+    // draw; the offscreen video exporter reads the latest so the rendered
+    // movie matches the user's current pan / rotation / 2D-3D framing (the
+    // 2D pan is in window pixels, so the exporter rescales it to the export
+    // resolution — see XLHousePreviewVideoExporter). canvasW/H are the live
+    // pane's drawable size at snapshot time. _hpCamValid stays false until the
+    // first house-preview draw, in which case the exporter falls back to a
+    // reset/fit camera.
+    void SetHousePreviewCamera(const PreviewCamera& cam2d, const PreviewCamera& cam3d,
+                               bool is3d, int canvasW, int canvasH) {
+        _hpCamera2d = cam2d;
+        _hpCamera3d = cam3d;
+        _hpCameraIs3d = is3d;
+        _hpCameraCanvasW = canvasW;
+        _hpCameraCanvasH = canvasH;
+        _hpCamValid = true;
+    }
+    bool GetHousePreviewCamera(PreviewCamera& cam2d, PreviewCamera& cam3d,
+                               bool& is3d, int& canvasW, int& canvasH) const {
+        if (!_hpCamValid) return false;
+        cam2d = _hpCamera2d;
+        cam3d = _hpCamera3d;
+        is3d = _hpCameraIs3d;
+        canvasW = _hpCameraCanvasW;
+        canvasH = _hpCameraCanvasH;
+        return true;
+    }
+
+    // True when the most recent render had at least one job aborted
+    // (via SignalAbort — typically from HandleMemoryWarning or an
+    // explicit AbortRender). Counter resets at every Render() start
+    // (`_abortedRenderJobs = 0` in RenderEngine::Render).
+    bool WasRenderAborted() const;
+
+    // Coarse fraction (0..1) of the in-flight Render() call's frame work
+    // that has completed. Walks every active RenderProgressInfo's per-row
+    // job and sums each `IRenderJobStatus::GetCurrentFrame()` against the
+    // total frame range. Returns 1.0 when no render is active so a UI
+    // can use this directly without racing IsRenderDone().
+    float GetRenderProgressFraction() const;
+
+    // Per-model render progress — the data behind desktop's
+    // RenderProgressDialog (one gauge + status tooltip per job,
+    // RenderUI.cpp:44-56). Desktop pushes it through an
+    // IRenderProgressSink because its gauges are wx windows built at
+    // job-setup time; there is nothing to pre-build here, so the same
+    // job list is read straight off RenderProgressInfo, exactly as
+    // GetRenderProgressFraction does. Empty when no render is active.
+    struct RenderJobProgress {
+        std::string model;
+        int percent = 0;
+        std::string status;
+    };
+    std::vector<RenderJobProgress> GetRenderJobProgress() const;
+
+    // === Preset model / preview rendering =================================
+    // Mirrors xLightsFrame's standalone preset-render scaffolding: a 64×64
+    // RGB `MatrixModel` owned by its own `ModelManager`, plus a dedicated
+    // `SequenceElements` / `SequenceData` pair. Used to render an effect
+    // in isolation for media-picker thumbnails (shader previews, future
+    // preset GIFs, etc.) without touching the user's real sequence.
+    void EnsurePresetModel();
+    Model* GetPresetModel() { EnsurePresetModel(); return _presetModel; }
+    SequenceElements& GetPresetSequenceElements() { return _presetSequenceElements; }
+    SequenceData& GetPresetSequenceData() { return _presetSequenceData; }
+
+    // Render an effect sitting in `seqElements` on `matrixModel` for
+    // `numFrames` frames at `frameTimeMs`. Returns the per-frame RGBA
+    // rasterisation as `xlImage`s (same layout `ShaderPreviewGenerator`
+    // stores via `MediaCacheEntry::SetPreviewFrames`). Synchronously
+    // blocks the calling thread until the render completes (iPad path:
+    // call from a utility queue, not the main thread). Ports
+    // `xLightsFrame::RenderEffectToFrames` from
+    // `src-ui-wx/app-shell/TabConvert.cpp:856`.
+    std::vector<std::shared_ptr<xlImage>> RenderEffectToFrames(
+        Model* matrixModel,
+        SequenceData& seqData,
+        SequenceElements& seqElements,
+        size_t numFrames,
+        int frameTimeMs);
+
+    // Fill a `ShaderMediaCacheEntry`'s preview-frame strip by rendering
+    // the shader on the preset matrix model at default parameter
+    // values. No-op if the entry already has a preview cached. Ports
+    // `GenerateShaderPreview` from
+    // `src-ui-wx/media/ShaderPreviewGenerator.cpp`. Synchronous; call
+    // from a utility-priority thread.
+    void GenerateShaderPreview(class ShaderMediaCacheEntry* entry);
+
+    // Memory-pressure response. Called from Swift when the system signals
+    // memory warning / critical. Aborts any in-flight render and purges the
+    // render cache so we don't hold onto frame buffers we no longer need.
+    void HandleMemoryWarning();
+    void HandleMemoryCritical();
+
+    // Accessors
+    OutputManager& GetOutputManager() { return _outputManager; }
+    ModelManager& GetModelManager() { return AllModels; }
+    ViewObjectManager& GetAllObjects() { return AllObjects; }
+    // J-7 — null-safe checks. `GetModelManager()` / `GetAllObjects()`
+    // dereference the unique_ptr without guarding, so callers that
+    // can run before `LoadShowFolder` must check via these first.
+    // `GetModelsForActivePreview()` does this internally; methods
+    // that call `GetModels()` direct do not.
+    // The model / view-object managers are now the base's eager value members
+    // (always constructed). "Has…" therefore means "a show has been loaded",
+    // which the show directory being set indicates.
+    bool HasModelManager() const { return !showDirectory.empty(); }
+    bool HasViewObjectManager() const { return !showDirectory.empty(); }
+    SequenceFile* GetSequenceFile() { return _sequenceFile.get(); }
+    // B49: expose the render engine so the export-model bridge can
+    // call `RenderEngine::ExportModelData` without creating a
+    // second engine. Engine may be null before `EnsureRenderEngine`
+    // has been called.
+    RenderEngine* GetRenderEngine() { EnsureRenderEngine(); return _renderEngine.get(); }
+
+    // B85 — lazy-loaded phoneme dictionary. First call loads
+    // `standard_dictionary` / `extended_dictionary` /
+    // `user_dictionary` / `phoneme_mapping` from the bundled
+    // `dictionaries/` resource folder (+ the show dir for
+    // user overrides). Thread-safe is NOT required — callers are
+    // on the main thread.
+    PhonemeDictionary& GetPhonemeDictionary();
+    // Drop the cached dictionary so the next GetPhonemeDictionary()
+    // re-reads the show folder's `user_dictionary` — used after the
+    // User Lyric Dictionary editor rewrites that file.
+    void ReloadPhonemeDictionary() { _phonemeDict.reset(); }
+    // Virtual preview canvas size from <settings><previewWidth/Height>
+    // in xlights_rgbeffects.xml, defaulted to desktop's 1280×720 when
+    // absent. Consumed by iPadModelPreview in House Preview mode so the
+    // 2D ortho projection maps world coords onto pixel coords the same
+    // way desktop does.
+    int GetPreviewWidth() const { return _previewWidth; }
+    int GetPreviewHeight() const { return _previewHeight; }
+
+    // <settings><Display2DCenter0 value="1"/>. When set, desktop places
+    // world X=0 at the horizontal centre of the preview (shows with
+    // models laid out around a centered origin, e.g. -600..+600 rather
+    // than 0..1200). Ignoring this flag was the cause of the House
+    // Preview rendering blank for center-origin shows.
+    bool GetDisplay2DCenter0() const { return _display2DCenter0; }
+
+    // Layout-editor display toggles (Phase J-0). Read from <settings>
+    // in xlights_rgbeffects.xml; default off / 100-unit grid spacing.
+    // Read-only on iPad in J-0 — setters land alongside layout-editor
+    // mutation in J-1+.
+    bool GetDisplay2DGrid() const { return _display2DGrid; }
+    long GetDisplay2DGridSpacing() const { return _display2DGridSpacing; }
+    bool GetDisplay2DBoundingBox() const { return _display2DBoundingBox; }
+
+    // <settings><ShowGUID value="..."/>. Random id identifying the show
+    // itself -- not the device or the user -- minted by whichever client
+    // opens the show first and never rewritten after that. Lets submitted
+    // crash reports be counted once per show instead of once per crash, and
+    // is what ties the same show together across Mac, Windows and iPad.
+    // Empty when the show folder was not writable at load.
+    const std::string& GetShowGuid() const { return _showGuid; }
+
+    // Mints a replacement id and writes it back. For the one case where an
+    // existing id is wrong rather than missing: a show folder copied to make a
+    // base show directory carries the original's id, so two shows claim to be
+    // one. Returns false if the folder cannot be written, leaving the id alone.
+    bool RegenerateShowGuid();
+
+    // <settings><LayoutMode3D value="1"/>. Desktop's last-used 3D vs 2D
+    // preference for the House Preview, read at show-folder load.
+    // iPad uses this as the initial value for House Preview's is3D
+    // toggle (the user can still flip it per-session via the overlay
+    // picker; we don't write back since layout editing is desktop-only).
+    bool GetLayoutMode3D() const { return _layoutMode3D; }
+
+    // House Preview background image + brightness/alpha/scale — values
+    // come from `<settings>` in xlights_rgbeffects.xml and are read-only
+    // on iPad (editing lives in the desktop Layout panel, out of iPad
+    // scope). Path is FixFile-resolved against the show directory; empty
+    // string means "no background".
+    //
+    // These are the DEFAULT-group values. Use GetActiveBackground*()
+    // below to pick between these and the named-group overrides when a
+    // non-Default layout group is active.
+    const std::string& GetBackgroundImage() const { return _backgroundImage; }
+    int GetBackgroundBrightness() const { return _backgroundBrightness; }
+    int GetBackgroundAlpha() const { return _backgroundAlpha; }
+    bool GetScaleBackgroundImage() const { return _scaleBackgroundImage; }
+
+    // Named layout groups from <layoutGroups> in rgbeffects.xml. Each
+    // carries its own background settings and scopes the House Preview
+    // to a filtered set of models (those whose `layout_group` matches
+    // the group name, plus any marked "All Previews"). The "Default"
+    // group is implicit (driven by the top-level <settings> values
+    // above) — it is NOT listed in GetNamedLayoutGroups().
+    struct NamedLayoutGroup {
+        std::string name;
+        std::string backgroundImage;
+        int backgroundBrightness = 100;
+        int backgroundAlpha = 100;
+        bool scaleBackgroundImage = false;
+    };
+    const std::vector<NamedLayoutGroup>& GetNamedLayoutGroups() const { return _namedLayoutGroups; }
+
+    // Append a brand-new empty layout group. Returns true if the
+    // group was added; false if `name` is empty, equals "Default",
+    // collides with an existing entry, or is one of the reserved
+    // sentinels desktop disallows ("All Models" / "Unassigned").
+    // Marks the background-group dirty set so the next
+    // SaveLayoutChanges writes a `<layoutGroups><layoutGroup name=…/>`
+    // entry.
+    bool AddNamedLayoutGroup(const std::string& name);
+
+    // Delete a named layout group. Models assigned to it are moved to
+    // "Unassigned" rather than left pointing at a group that no longer
+    // exists — desktop does the same (LayoutPanel.cpp:11854-11860).
+    // Refuses "Default", which is implicit and has no entry to remove.
+    // Returns false if the name isn't a known group.
+    bool DeleteNamedLayoutGroup(const std::string& name);
+
+    // Rename a named layout group, carrying its models with it. Same
+    // reserved-name and collision rules as AddNamedLayoutGroup.
+    bool RenameNamedLayoutGroup(const std::string& oldName, const std::string& newName);
+
+    // Layout groups removed since the last save. SaveLayoutChanges
+    // drops their `<layoutGroup>` entries; without this a deleted group
+    // would come back on the next load.
+    const std::set<std::string>& GetDeletedLayoutGroups() const { return _deletedLayoutGroups; }
+
+    // Active House-Preview layout group. "Default" means the implicit
+    // default preview (models with layout_group == "Default" or
+    // "All Previews"); other values must match a named group from
+    // GetNamedLayoutGroups(). Unknown names fall back to "Default".
+    const std::string& GetActiveLayoutGroup() const { return _activeLayoutGroup; }
+    void SetActiveLayoutGroup(const std::string& name);
+
+    // Active-group view of the background settings. Picks the correct
+    // source (Default vs. a named group) so callers don't need to
+    // switch on GetActiveLayoutGroup() themselves.
+    const std::string& GetActiveBackgroundImage() const;
+    int GetActiveBackgroundBrightness() const;
+    int GetActiveBackgroundAlpha() const;
+    bool GetActiveScaleBackgroundImage() const;
+
+    // J-8 (2D Background pseudo-object) — write through to the
+    // correct storage (default <settings> or named group) and
+    // record the group name in `_dirtyBackgroundGroups`. The save
+    // patcher rewrites the matching XML attributes in place. Each
+    // setter returns YES iff the value actually changed (matching
+    // the layout-property setter convention).
+    bool SetActiveBackgroundImage(const std::string& path);
+    bool SetActiveBackgroundBrightness(int brightness);
+    bool SetActiveBackgroundAlpha(int alpha);
+    bool SetActiveScaleBackgroundImage(bool scale);
+
+    // Expanded list of models to render for the active layout group.
+    // Filters by layout_group and expands ModelGroup children exactly
+    // like desktop UpdateModelsList (TabSequence.cpp:1209), minus
+    // duplicate suppression. Call once per frame.
+    std::vector<Model*> GetModelsForActivePreview() const;
+
+    // Whether the active group draws view objects. Only "Default"
+    // draws them (matching desktop — view objects are hard-coded to
+    // layout_group "Default").
+    bool ActivePreviewShowsViewObjects() const { return _activeLayoutGroup == "Default"; }
+
+    // Saved camera views (viewpoints). Loaded from the `<Viewpoints>`
+    // node in xlights_rgbeffects.xml; each camera is flagged 2D or 3D
+    // and named. UI filters by the preview's current mode before
+    // showing them.
+    ViewpointMgr& GetViewpointMgr() { return viewpoint_mgr; }
+    const ViewpointMgr& GetViewpointMgr() const { return viewpoint_mgr; }
+    void GetRenderPreviewSize(int& w, int& h) const override {
+        w = _previewWidth;
+        h = _previewHeight;
+    }
+
+    // Check-Sequence per-check disable flags (desktop parity with the
+    // CheckSequence preferences panel). The bridge populates this set
+    // from @AppStorage before running a sequence check; both the
+    // SequenceChecker callbacks and the model/effect-level checks
+    // (CustomModel / SketchEffect, which route through GetUICallbacks)
+    // consult it. Option ids match desktop: "DupUniv", "NonContigChOnPort",
+    // "PreviewGroup", "DupNodeMG", "TransTime", "CustomSizeCheck",
+    // "SketchImage".
+    void SetDisabledCheckOptions(const std::set<std::string>& options) { _disabledCheckOptions = options; }
+    bool IsCheckOptionDisabled(const std::string& option) const { return _disabledCheckOptions.count(option) > 0; }
+    UICallbacks* GetUICallbacks() override;
+
+    // Rewrite just the `<Viewpoints>` subtree of the on-disk
+    // xlights_rgbeffects.xml so saved-as / delete survive app restart.
+    // Preserves every other node (models, layoutGroups, settings, …)
+    // by re-reading the file, replacing the Viewpoints child, and
+    // writing back. Returns false if the file couldn't be read /
+    // serialized. Heavy-ish (one disk round-trip per save), but
+    // viewpoint edits are a rare user action.
+    bool SaveViewpoints();
+
+    // Rewrite just the `<views>` subtree of the on-disk
+    // xlights_rgbeffects.xml, same load-modify-write shape as
+    // SaveViewpoints(). View definitions (name + ordered model list)
+    // live in the show file, not the sequence, so a view edit is only
+    // durable once this runs.
+    bool SaveViews();
+
+    // Mark a model as having dirty in-memory <stateInfo> so the next
+    // SaveModelStates() call rewrites its on-disk entry. DMX state
+    // saves are the current caller; future model-edit flows can
+    // tag the same path.
+    void MarkModelStateDirty(const std::string& modelName) {
+        if (!modelName.empty()) _dirtyStateModels.insert(modelName);
+    }
+
+    // For each model in `_dirtyStateModels`, locate its `<model>` node
+    // in xlights_rgbeffects.xml, drop the existing `<stateInfo>` children,
+    // and rewrite them from the live `Model::GetStateInfo()` map via
+    // `Model::WriteStateInfo`. One disk round-trip per call. Clears
+    // the dirty set on success. Returns false on read/write failure;
+    // missing model nodes are skipped with a warning but don't fail
+    // the save.
+    bool SaveModelStates();
+
+    // Phase J-1 — layout-property edits (transforms, dimensions,
+    // rotation, locked, name, layoutGroup, controllerName). Each
+    // edit calls MarkLayoutModelDirty; SaveLayoutChanges() rewrites
+    // the on-disk `<model>` for every dirty entry by serializing the
+    // in-memory Model with `XmlSerializer::SerializeModel()` and
+    // replacing the matching node in xlights_rgbeffects.xml.
+    void MarkLayoutModelDirty(const std::string& modelName) {
+        if (!modelName.empty()) _dirtyLayoutModels.insert(modelName);
+    }
+    // J-6 (view object editing) — view objects live in their own
+    // XML section (`<view_objects>`); SaveLayoutChanges() walks
+    // this set separately so a dirty model + dirty object can both
+    // land in a single save.
+    void MarkLayoutViewObjectDirty(const std::string& objectName) {
+        if (!objectName.empty()) _dirtyLayoutViewObjects.insert(objectName);
+    }
+    // J-12 (view object CRUD) — structural lifecycle. Mirrors
+    // the J-7 group create/delete plumbing.
+    void MarkViewObjectCreated(const std::string& objectName) {
+        if (objectName.empty()) return;
+        _createdViewObjects.insert(objectName);
+        _deletedViewObjects.erase(objectName);
+    }
+    void MarkViewObjectDeleted(const std::string& objectName) {
+        if (objectName.empty()) return;
+        if (_createdViewObjects.erase(objectName) > 0) {
+            _dirtyLayoutViewObjects.erase(objectName);
+            _renamedViewObjects.erase(objectName);
+            return;
+        }
+        _deletedViewObjects.insert(objectName);
+        _dirtyLayoutViewObjects.erase(objectName);
+        if (auto it = _renamedViewObjects.find(objectName); it != _renamedViewObjects.end()) {
+            _deletedViewObjects.insert(it->second);
+            _deletedViewObjects.erase(objectName);
+            _renamedViewObjects.erase(it);
+        }
+    }
+    // J-17 (view object rename) — same plumbing pattern as the
+    // group rename: track new→old so the save patcher can locate
+    // the on-disk element by its original name.
+    void MarkViewObjectRenamed(const std::string& oldName, const std::string& newName) {
+        if (oldName.empty() || newName.empty() || oldName == newName) return;
+        if (_createdViewObjects.erase(oldName) > 0) {
+            _createdViewObjects.insert(newName);
+            return;
+        }
+        std::string disk = oldName;
+        if (auto it = _renamedViewObjects.find(disk); it != _renamedViewObjects.end()) {
+            disk = it->second;
+            _renamedViewObjects.erase(it);
+        }
+        if (disk == newName) {
+            _renamedViewObjects.erase(newName);
+            return;
+        }
+        _renamedViewObjects[newName] = disk;
+    }
+    // J-18 (model rename) — same pattern. Models don't have a
+    // "created in memory" path on iPad yet (Add Model goes
+    // through the regular CreateDefaultModel + immediate save),
+    // so no created-rename interaction to worry about.
+    void MarkModelRenamed(const std::string& oldName, const std::string& newName) {
+        if (oldName.empty() || newName.empty() || oldName == newName) return;
+        std::string disk = oldName;
+        if (auto it = _renamedModels.find(disk); it != _renamedModels.end()) {
+            disk = it->second;
+            _renamedModels.erase(it);
+        }
+        if (disk == newName) {
+            _renamedModels.erase(newName);
+            return;
+        }
+        _renamedModels[newName] = disk;
+    }
+    // J-7 (group CRUD) — structural group lifecycle. A newly-
+    // created group needs a fresh `<modelGroup>` element appended;
+    // a deleted group needs its element removed. Plain edits go
+    // through the normal dirty set.
+    void MarkGroupCreated(const std::string& groupName) {
+        if (groupName.empty()) return;
+        _createdGroups.insert(groupName);
+        // If the user deletes then re-creates with the same name,
+        // cancel the pending delete.
+        _deletedGroups.erase(groupName);
+    }
+    void MarkGroupDeleted(const std::string& groupName) {
+        if (groupName.empty()) return;
+        // If the group was created in-memory and never saved, the
+        // delete cancels out — nothing on disk to remove.
+        if (_createdGroups.erase(groupName) > 0) {
+            _dirtyLayoutModels.erase(groupName);
+            _renamedGroups.erase(groupName);
+            return;
+        }
+        _deletedGroups.insert(groupName);
+        _dirtyLayoutModels.erase(groupName);
+        // Collapse any pending rename onto the on-disk name so the
+        // patcher's delete pass finds the right `<modelGroup>`.
+        if (auto it = _renamedGroups.find(groupName); it != _renamedGroups.end()) {
+            _deletedGroups.insert(it->second);
+            _deletedGroups.erase(groupName);
+            _renamedGroups.erase(it);
+        }
+    }
+    // J-16 (group rename) — record a pending rename so
+    // SaveLayoutChanges can locate the on-disk `<modelGroup>` by
+    // its OLD name, then update the name attribute. Keyed by NEW
+    // name (the value already living in ModelManager). Handles
+    // rename chains by collapsing to the original on-disk name.
+    void MarkGroupRenamed(const std::string& oldName, const std::string& newName) {
+        if (oldName.empty() || newName.empty() || oldName == newName) return;
+        // If the group was created in-memory and never saved, the
+        // rename just retitles the pending creation — no on-disk
+        // node to find.
+        if (_createdGroups.erase(oldName) > 0) {
+            _createdGroups.insert(newName);
+            return;
+        }
+        // Walk back to the original on-disk name in case of
+        // rename-after-rename (A → B → C — patcher needs to find
+        // <modelGroup name="A"> not B).
+        std::string disk = oldName;
+        if (auto it = _renamedGroups.find(disk); it != _renamedGroups.end()) {
+            disk = it->second;
+            _renamedGroups.erase(it);
+        }
+        // Renaming back to the original drops the pending rename.
+        if (disk == newName) {
+            _renamedGroups.erase(newName);
+            return;
+        }
+        _renamedGroups[newName] = disk;
+    }
+    bool HasDirtyLayoutModels() const {
+        return !_dirtyLayoutModels.empty() ||
+               !_dirtyLayoutViewObjects.empty() ||
+               !_createdGroups.empty() ||
+               !_deletedGroups.empty() ||
+               !_dirtyBackgroundGroups.empty() ||
+               !_createdViewObjects.empty() ||
+               !_deletedViewObjects.empty() ||
+               !_renamedGroups.empty() ||
+               !_renamedViewObjects.empty() ||
+               !_renamedModels.empty() ||
+               !_deletedLayoutGroups.empty() ||
+               _controllersDirty;
+    }
+    // J-31 — Controllers tab edits live in xlights_networks.xml,
+    // not rgbeffects.xml. Track them with a single flag (no
+    // per-controller dirty granularity needed today —
+    // `OutputManager::Save()` rewrites the entire networks file).
+    void MarkControllersDirty() { _controllersDirty = true; }
+    bool AreControllersDirty() const { return _controllersDirty; }
+    bool SaveLayoutChanges();
+    // Layout autosave: write the pending edits to
+    // `xlights_rgbeffects.xbkp` without touching the real file or
+    // clearing the dirty sets, so unsaved layout work survives a crash
+    // or a force-quit. Desktop's equivalent is
+    // `SaveWorkingLayout()` → `SaveEffectsFile(true)`; it can rebuild
+    // the whole file from memory, whereas this patches a copy of the
+    // live file, which is why the two share only the file name.
+    // Returns false when there is nothing pending or the write fails.
+    bool AutosaveLayoutChanges();
+    // True when a `.xbkp` sits alongside the show's rgbeffects file and
+    // is newer than it — an autosave that outlived the session that
+    // wrote it. Desktop offers the same file back at load
+    // (TabSequence.cpp:204-251).
+    bool HasNewerLayoutAutosave() const;
+    // Adopt the autosave: back up the current rgbeffects file, then
+    // copy the `.xbkp` over it. Call before the show loads.
+    bool RestoreLayoutAutosave();
+    // Drop a stale/declined autosave so it stops being offered.
+    void DiscardLayoutAutosave();
+
+private:
+    // Shared body of SaveLayoutChanges / AutosaveLayoutChanges. Empty
+    // targetPath means the real rgbeffects file.
+    bool SaveLayoutChangesTo(const std::string& targetPath, bool clearDirty);
+
+public:
+    // Clear the dirty set without writing to disk — used after a
+    // Discard Changes that has rolled back every in-memory edit
+    // through the undo stack. The undo restores re-marked every
+    // model dirty; without this clear, hasUnsavedLayoutChanges()
+    // reports true and the Save button stays enabled.
+    void ClearDirtyLayoutModels() {
+        _dirtyLayoutModels.clear();
+        _dirtyLayoutViewObjects.clear();
+        _createdGroups.clear();
+        _deletedGroups.clear();
+        _dirtyBackgroundGroups.clear();
+        _createdViewObjects.clear();
+        _deletedViewObjects.clear();
+        _renamedGroups.clear();
+        _renamedViewObjects.clear();
+        _renamedModels.clear();
+        _deletedLayoutGroups.clear();
+        _controllersDirty = false;
+    }
+
+    // Phase J-2 — layout undo. Snapshot the common-properties
+    // surface (centre, dimensions, rotation, locked, layoutGroup,
+    // controllerName) of `modelName` onto an in-memory undo stack.
+    // Caller is expected to push BEFORE making the edit. UndoLast
+    // pops the most recent snapshot and reapplies its values
+    // through the regular setters, which marks the model dirty
+    // again so the change persists on next save. Each stack entry
+    // is one step (one user gesture) holding a snapshot per model it
+    // touched, so one undo reverts the whole gesture. Stack is capped
+    // at 100 steps (oldest dropped on overflow).
+    // J-17 — undo entry now discriminated. Models capture
+    // hcenter/vcenter/dcenter + width/height/depth + rotation +
+    // locked + layoutGroup + controllerName. View objects use
+    // world-pos + scale matrix instead of width/height/depth.
+    // Heightmap entries snapshot just the PointData string.
+    enum class UndoTarget : uint8_t {
+        Model,
+        // Centre only. A Model Set peer is translated by a move of
+        // another member but nothing else about it changes, so undo
+        // must not touch its size / controller / group either.
+        ModelPosition,
+        ViewObject,
+        ViewObjectHeightmap,
+    };
+    struct LayoutUndoEntry {
+        UndoTarget target = UndoTarget::Model;
+        std::string modelName;          // Model name OR VO name.
+        // Common transform fields (used by Model + VO entries).
+        float hcenter = 0, vcenter = 0, dcenter = 0;
+        float width = 0, height = 0, depth = 0;   // Model only.
+        float scaleX = 1, scaleY = 1, scaleZ = 1; // VO only.
+        float rotateX = 0, rotateY = 0, rotateZ = 0;
+        bool  locked = false;
+        std::string layoutGroup;
+        std::string controllerName;     // Model only.
+        // Heightmap snapshot — comma-delimited point data string.
+        std::string pointData;
+    };
+    using LayoutUndoStep = std::vector<LayoutUndoEntry>;
+    void PushLayoutUndoSnapshotForModel(const std::string& modelName);
+    // One undo step covering every named model. With
+    // `includeSetPeers`, the other members of each model's Model Set
+    // get a position-only entry too - pass it for the operations that
+    // translate Set peers (body drag, align, distribute).
+    void PushLayoutUndoSnapshotForModels(const std::vector<std::string>& modelNames,
+                                         bool includeSetPeers);
+    // J-17 — capture a view-object's common transform + locked
+    // state. Caller pushes BEFORE the edit.
+    void PushLayoutUndoSnapshotForViewObject(const std::string& objectName);
+    // J-17 — capture a terrain VO's heightmap data. Called once
+    // per edit-tap so undo rolls back individual brushes.
+    void PushTerrainHeightmapUndoSnapshot(const std::string& terrainName);
+    bool UndoLastLayoutChange();
+    bool CanUndoLayoutChange() const { return !_layoutUndoStack.empty(); }
+    size_t LayoutUndoDepth() const { return _layoutUndoStack.size(); }
+
+    // Model pixel data for a given frame — returns (x, y, r, g, b) tuples
+    struct PixelData {
+        float x, y;
+        uint8_t r, g, b;
+    };
+    std::vector<PixelData> GetModelPixels(const std::string& modelName, int frameMS);
+    std::vector<PixelData> GetAllModelPixels(int frameMS);
+
+    // Per-state effect bracket colours, sourced from the show folder's
+    // <colors> palette in xlights_rgbeffects.xml. Falls back to desktop
+    // defaults (xLights_color[] in ColorManager.h) when a key is absent —
+    // so a fresh show with no palette customisations gets the same look
+    // as desktop xLights, and a customised palette round-trips between
+    // the two clients.
+    enum class EffectBracketState {
+        Default = 0,
+        Selected,
+        Locked,
+        Disabled,
+    };
+    struct PaletteColor {
+        uint8_t r = 0, g = 0, b = 0;
+    };
+    PaletteColor GetEffectBracketColor(EffectBracketState state) const;
+
+private:
+    // Show state (managers, sequence, render engine, directories, seq data,
+    // modelsChangeCount) is inherited from xLightsShowContext. Only iPad-specific
+    // members live here.
+
+    // Guards the invariant that no render may START while AllModels/AllObjects
+    // are being rebuilt or merged. AbortRender only drains the jobs already in
+    // flight; a show-folder load then spends seconds in ObtainAccessToURL,
+    // OutputManager::Load and the rgbeffects parse before AllModels.clear(),
+    // and the main run loop keeps ticking throughout - the 0.5s dirty poll
+    // (SequencerViewModel.startDirtyPolling -> RenderDependentModels) lands
+    // squarely in that window and starts a fresh render whose workers then
+    // resolve names out of the ModelManager being cleared. Take it through
+    // ModelMutationScope to mutate, and via try_lock in every render kickoff.
+    std::timed_mutex _modelMutationGate;
+    // Edit renders that lost the _modelMutationGate try_lock. Dropping one lost
+    // the edit's render outright: nothing marks the element dirty on that path,
+    // so SequenceElements::modelsToRender never sees it and the 0.5s
+    // RenderDependentModels sweep has nothing to retry. Deferred here instead,
+    // merged per model, and drained by the next sweep that wins the gate.
+    std::mutex _deferredEditRenderLock;
+    struct DeferredEditRender {
+        int startMs = 0;
+        int endMs = 0;
+        bool clear = false;
+    };
+    std::map<std::string, DeferredEditRender> _deferredEditRenders;
+    void DeferEditRender(const std::string& model, int startms, int endms, bool clear);
+    // SetModelColors' body with the gate already held by the caller — lets the
+    // pixel getters take it once for the colour refresh and their own walk
+    // (std::timed_mutex is not recursive).
+    void SetModelColorsUnlocked(int frameMS);
+
+    // Read-only "From Base" preset library (the shared _effectPresetManager is
+    // in the base).
+    EffectPresetManager _basePresetManager;
+
+    // Virtual preview canvas size — desktop defaults.
+    int _previewWidth = 1280;
+    int _previewHeight = 720;
+    bool _display2DCenter0 = false;
+    bool _display2DGrid = false;
+    long _display2DGridSpacing = 100;
+    bool _display2DBoundingBox = false;
+    bool _layoutMode3D = true;
+    std::string _showGuid;
+    std::atomic<bool> _exportInProgress{false};
+
+    // Live house-preview camera snapshot (see SetHousePreviewCamera). Published
+    // by the on-screen house-preview bridge, read by the offscreen exporter.
+    PreviewCamera _hpCamera2d{false};
+    PreviewCamera _hpCamera3d{true};
+    bool _hpCameraIs3d = false;
+    int _hpCameraCanvasW = 0;
+    int _hpCameraCanvasH = 0;
+    bool _hpCamValid = false;
+
+    std::string _backgroundImage;
+    int _backgroundBrightness = 100;
+    int _backgroundAlpha = 100;
+    bool _scaleBackgroundImage = false;
+
+    std::vector<NamedLayoutGroup> _namedLayoutGroups;
+    std::string _activeLayoutGroup = "Default";
+
+    // B85 phoneme dictionary, lazy-loaded.
+    std::unique_ptr<PhonemeDictionary> _phonemeDict;
+
+
+    // Models whose in-memory <stateInfo> map has diverged from the
+    // on-disk xlights_rgbeffects.xml. SaveModelStates() reads + drains
+    // this set.
+    std::set<std::string> _dirtyStateModels;
+
+    // J-1 — models whose layout-relevant in-memory state (transforms,
+    // dimensions, rotation, locked, name, layoutGroup, controllerName)
+    // has diverged from the on-disk file. SaveLayoutChanges() reads +
+    // drains this set.
+    std::set<std::string> _dirtyLayoutModels;
+    // J-6 — view objects with pending edits in the
+    // `<view_objects>` section. SaveLayoutChanges() patches each
+    // matching `<view_object>` element in place; the on-disk form
+    // is a flat attribute list so we don't need full serialization.
+    std::set<std::string> _dirtyLayoutViewObjects;
+    // J-7 — model groups that exist in-memory but not yet on
+    // disk. SaveLayoutChanges() appends fresh `<modelGroup>`
+    // elements for these. Cleared on save.
+    std::set<std::string> _createdGroups;
+    // J-7 — model groups that should be removed from disk on
+    // next save (already gone from in-memory ModelManager).
+    std::set<std::string> _deletedGroups;
+    // J-16 — pending group renames. Key = current name in
+    // ModelManager (the NEW name); value = on-disk name (the
+    // OLD name) so the save patcher can locate the
+    // `<modelGroup>` element via the original.
+    std::map<std::string, std::string> _renamedGroups;
+    // J-17 — same plumbing for view-object renames.
+    std::map<std::string, std::string> _renamedViewObjects;
+    // J-18 — same plumbing for model renames. Tracked separately
+    // because models live in `<models>` (and the patcher needs
+    // to find by old name) while groups live in `<modelGroups>`.
+    std::map<std::string, std::string> _renamedModels;
+    // J-12 — view objects created in-memory that need full
+    // serialization on next save (append to <view_objects>).
+    std::set<std::string> _createdViewObjects;
+    // J-12 — view objects to drop from disk on next save.
+    std::set<std::string> _deletedViewObjects;
+    // J-8 (2D Background pseudo-object) — set of layout-group
+    // names whose background settings have unsaved edits.
+    // "Default" means the top-level `<settings>` element;
+    // anything else maps into `<layoutGroups>`.
+    std::set<std::string> _dirtyBackgroundGroups;
+    std::set<std::string> _deletedLayoutGroups;
+
+    // J-31 — Controllers tab edit tracking. Single coarse flag —
+    // `OutputManager::Save()` rewrites the entire networks file
+    // so per-controller granularity buys nothing.
+    bool _controllersDirty = false;
+
+    // J-2 — undo stack for layout edits. Bounded to 100 steps.
+    std::deque<LayoutUndoStep> _layoutUndoStack;
+    static constexpr size_t kLayoutUndoMaxDepth = 100;
+    bool CaptureModelUndoEntry(const std::string& modelName, LayoutUndoEntry& e) const;
+    bool ApplyLayoutUndoEntry(const LayoutUndoEntry& e);
+    void PushLayoutUndoStep(LayoutUndoStep&& step);
+
+    // Cache of the show folder's <colors> palette so per-frame bracket
+    // queries don't re-scan XML. Populated on every LoadShowFolder.
+    // Empty entries fall through to ColorManager defaults at lookup
+    // time (see GetEffectBracketColor).
+    std::map<std::string, PaletteColor> _palette;
+
+    // B43: -1 = main sequence audio, 0..N-1 = alt track index.
+    int _waveformTrackIndex = -1;
+
+    // Check-Sequence per-check disable flags + the lazily-created
+    // UICallbacks adapter that surfaces them to CustomModel / SketchEffect.
+    std::set<std::string> _disabledCheckOptions;
+    std::unique_ptr<UICallbacks> _checkUICallbacks;
+
+    // Preset model scaffolding — lazily built on first preview render.
+    Model* _presetModel = nullptr;
+    std::unique_ptr<ModelManager> _presetModelManager;
+    SequenceElements _presetSequenceElements{ this };
+    SequenceData _presetSequenceData;
+
+    // Ensures the render engine + its pool are ready before using them
+    // from a preview render path (before `RenderAll` has been called).
+    // Also re-applies the render-cache mode app preference on every call
+    // so the Folder Config picker takes effect without an app restart.
+    void EnsureRenderEngine();
+
+    // Reads the `render.cacheMode` app preference (written by the Folder
+    // Config → Rendering picker via @AppStorage) and returns one of the
+    // RenderCache::Enable values: "Disabled" | "Locked Only" | "Enabled".
+    // Defaults to "Disabled": the render cache trades memory + disk to
+    // speed re-renders, and both are scarce on iPad — desktop defaults to
+    // the milder "Locked Only", but iPad starts fully off.
+    std::string ReadRenderCacheMode() const;
+
+    // Reads the `render.cacheMaxMB` app preference (Folder Config →
+    // Rendering "Maximum Render Cache Size" picker, stored in MB; 0 =
+    // Unlimited). Absent key → 50 MB, the iPad default. Fed to
+    // RenderCache::SetMaximumSizeMB at construction + each render kickoff.
+    size_t ReadRenderCacheMaxMB() const;
+
+    // FSEQ-1 — FSEQ export format preferences, written by the Folder
+    // Config → Rendering pickers via @AppStorage. Compression returns
+    // one of "zstd" | "zlib" | "none" (default "zstd"); level is the
+    // zstd compression level 1..22 (default 2, ignored for zlib/none).
+    std::string ReadFseqCompression() const;
+    int ReadFseqCompressionLevel() const;
+
+    // Re-allocates `_sequenceData` only when the sequence's shape
+    // (numChannels / numFrames / frameTime) has actually changed.
+    // Normally a no-op — OpenSequence pre-allocates once and
+    // subsequent RenderAll passes reuse. Triggers a fresh init
+    // after duration / frame-rate / channel-count mutations.
+};

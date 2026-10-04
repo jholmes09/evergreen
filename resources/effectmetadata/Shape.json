@@ -1,0 +1,382 @@
+{
+    "effectName": "Shape",
+    "groups": [
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Shape",
+                    "properties": [
+                        "Shape_ObjectToDraw",
+                        "Shape_Font",
+                        "Shape_Char",
+                        "Shape_SkinTone",
+                        "SVG"
+                    ]
+                },
+                {
+                    "label": "Size",
+                    "properties": [
+                        "Shape_Thickness",
+                        "Shape_Count",
+                        "Shape_StartSize",
+                        "Shape_RandomInitial",
+                        "Shape_Growth",
+                        "Shape_Points",
+                        "Shape_Rotation"
+                    ]
+                },
+                {
+                    "label": "Motion",
+                    "properties": [
+                        "Shape_CentreX",
+                        "Shape_CentreY",
+                        "Shapes_Velocity",
+                        "Shapes_Direction",
+                        "Shape_Lifetime",
+                        "Shape_RandomLocation",
+                        "Shapes_RandomMovement",
+                        "Shape_FadeAway",
+                        "Shape_HoldColour"
+                    ]
+                },
+                {
+                    "label": "Triggers",
+                    "properties": [
+                        "Shape_UseMusic",
+                        "Shape_Sensitivity",
+                        "Shape_FireTiming",
+                        "Shape_FireTimingTrack",
+                        "Shape_FilterLabel",
+                        "Shape_FilterReg"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "Shape_CentreX",
+            "yProperty": "Shape_CentreY"
+        }
+    ],
+    "properties": [
+        {
+            "id": "Shape_ObjectToDraw",
+            "label": "Object to Draw",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Circle",
+                "Ellipse",
+                "Triangle",
+                "Square",
+                "Pentagon",
+                "Hexagon",
+                "Octagon",
+                "Star",
+                "Heart",
+                "Tree",
+                "Snowflake",
+                "Candy Cane",
+                "Random",
+                "Crucifix",
+                "Present",
+                "Emoji",
+                "SVG"
+            ],
+            "default": "Circle",
+            "description": "The geometric shape, holiday object, emoji, or SVG to draw. Random selects a different shape for each new instance."
+        },
+        {
+            "id": "Shape_Font",
+            "label": "Character",
+            "type": "font",
+            "controlType": "custom",
+            "default": "",
+            "description": "Font used for rendering emoji characters when Object to Draw is set to Emoji."
+        },
+        {
+            "id": "Shape_Char",
+            "label": "Character Code",
+            "type": "int",
+            "controlType": "custom",
+            "default": 127876,
+            "min": 32,
+            "max": 917631,
+            "description": "Unicode code point of the emoji or character to display when Object to Draw is set to Emoji."
+        },
+        {
+            "id": "Shape_SkinTone",
+            "label": "Skin Tone",
+            "type": "enum",
+            "controlType": "custom",
+            "options": [
+                "Default",
+                "Light",
+                "Medium Light",
+                "Medium",
+                "Medium Dark",
+                "Dark"
+            ],
+            "default": "Default",
+            "description": "Skin tone modifier applied to emoji characters that support it. Only affects emoji rendering."
+        },
+        {
+            "id": "SVG",
+            "label": "SVG File",
+            "type": "file",
+            "controlType": "custom",
+            "default": "",
+            "fileFilter": "*.svg",
+            "description": "Path to an SVG file to use as the shape when Object to Draw is set to SVG."
+        },
+        {
+            "id": "Shape_Thickness",
+            "label": "Thickness",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Line thickness used to draw the outline of each shape. Higher values produce bolder outlines."
+        },
+        {
+            "id": "Shape_Count",
+            "label": "Count",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 5,
+            "valueCurve": true,
+            "min": 1,
+            "max": 100,
+            "description": "Number of shape instances spawned simultaneously on the model."
+        },
+        {
+            "id": "Shape_StartSize",
+            "label": "Start Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Initial size of each shape when it first appears. The shape then grows or shrinks according to the Growth setting over its lifetime."
+        },
+        {
+            "id": "Shape_RandomInitial",
+            "label": "Random initial shape sizes",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, each shape starts at a random size and age rather than all beginning at the same start size, creating a more organic initial appearance."
+        },
+        {
+            "id": "Shapes_Velocity",
+            "label": "Velocity",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 20,
+            "valueCurve": true,
+            "description": "Speed at which each shape moves across the model in the specified direction. Zero keeps shapes stationary."
+        },
+        {
+            "id": "Shapes_Direction",
+            "label": "Direction",
+            "type": "int",
+            "controlType": "slider",
+            "default": 90,
+            "min": 0,
+            "max": 359,
+            "valueCurve": true,
+            "description": "Angle in degrees that shapes travel when velocity is non-zero. 0 is right, 90 is up, 180 is left, 270 is down."
+        },
+        {
+            "id": "Shape_Lifetime",
+            "label": "Lifetime",
+            "type": "int",
+            "controlType": "slider",
+            "default": 5,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "description": "How long each shape lives as a percentage of the total effect duration. After this time the shape is removed and a new one may be spawned."
+        },
+        {
+            "id": "Shape_Growth",
+            "label": "Growth",
+            "type": "int",
+            "controlType": "slider",
+            "default": 10,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Rate at which each shape changes size over its lifetime. Positive values make shapes grow larger, negative values make them shrink."
+        },
+        {
+            "id": "Shape_CentreX",
+            "label": "X Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 50,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Horizontal spawn position for shapes as a percentage of the model width, when random location is disabled."
+        },
+        {
+            "id": "Shape_CentreY",
+            "label": "Y Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 50,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Vertical spawn position for shapes as a percentage of the model height, when random location is disabled."
+        },
+        {
+            "id": "Shape_Points",
+            "label": "Points",
+            "type": "int",
+            "controlType": "slider",
+            "default": 5,
+            "min": 2,
+            "max": 9,
+            "description": "Number of points on star shapes. Only applies when the Object to Draw is set to Star."
+        },
+        {
+            "id": "Shape_Rotation",
+            "label": "Rotation",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 360,
+            "valueCurve": true,
+            "description": "Rotation angle in degrees applied to each shape. Use a value curve to animate the shapes spinning over time."
+        },
+        {
+            "id": "Shape_RandomLocation",
+            "label": "Random Location",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, each shape spawns at a random position on the model instead of at the X/Y Center position."
+        },
+        {
+            "id": "Shapes_RandomMovement",
+            "label": "Random movement",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, each shape gets a random velocity and direction instead of using the Velocity and Direction settings."
+        },
+        {
+            "id": "Shape_FadeAway",
+            "label": "Fade Away",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, shapes gradually become transparent as they age, fading out over their lifetime."
+        },
+        {
+            "id": "Shape_HoldColour",
+            "label": "Hold Color",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, each shape keeps the color it was assigned at creation. When disabled, shapes follow the current palette color as it changes."
+        },
+        {
+            "id": "Shape_UseMusic",
+            "label": "Fire with music",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, new shapes are spawned in response to audio peaks in the music rather than at regular intervals."
+        },
+        {
+            "id": "Shape_Sensitivity",
+            "label": "Trigger level",
+            "type": "int",
+            "controlType": "slider",
+            "default": 50,
+            "min": 0,
+            "max": 100,
+            "description": "Audio volume threshold for triggering new shapes when Fire with music is enabled. Lower values trigger on quieter sounds."
+        },
+        {
+            "id": "Shape_FireTiming",
+            "label": "Fire with timing track",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, new shapes are spawned at each timing mark in the selected timing track instead of at regular intervals."
+        },
+        {
+            "id": "Shape_FireTimingTrack",
+            "label": "Timing Track",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "",
+            "description": "Selects which timing track to use for triggering new shapes when Fire with timing track is enabled.",
+            "dynamicOptions": "timingTracks",
+            "expandToFill": true
+        },
+        {
+            "id": "Shape_FilterLabel",
+            "label": "Filter Label",
+            "type": "string",
+            "controlType": "text",
+            "default": "",
+            "description": "Only timing marks whose label matches this text will trigger new shapes. Leave empty to match all marks."
+        },
+        {
+            "id": "Shape_FilterReg",
+            "label": "Reg",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the Filter Label is treated as a regular expression for matching timing mark labels instead of a plain text match."
+        }
+    ],
+    "visibilityRules": [
+        {
+            "when": { "property": "Shape_ObjectToDraw", "oneOf": ["Star", "Ellipse", "Polygon"] },
+            "enable": ["Shape_Points"]
+        },
+        {
+            "when": { "property": "Shape_ObjectToDraw", "notOneOf": ["Snowflake", "Emoji"] },
+            "enable": ["Shape_Thickness"]
+        },
+        {
+            "when": { "property": "Shape_ObjectToDraw", "notOneOf": ["Emoji", "Candy Cane", "SVG", "Random", "Circle"] },
+            "enable": ["Shape_Rotation"]
+        },
+        {
+            "when": { "property": "Shape_ObjectToDraw", "notEquals": "SVG" },
+            "enable": ["Shape_HoldColour"]
+        },
+        {
+            "when": { "property": "Shapes_RandomMovement", "equals": false },
+            "enable": ["Shapes_Direction", "Shapes_Velocity"]
+        },
+        {
+            "when": { "property": "Shape_RandomLocation", "equals": false },
+            "enable": ["Shape_CentreX", "Shape_CentreY"]
+        },
+        {
+            "when": { "property": "Shape_UseMusic", "equals": true },
+            "enable": ["Shape_Sensitivity"]
+        },
+        {
+            "when": { "property": "Shape_FireTiming", "equals": true },
+            "enable": ["Shape_FireTimingTrack", "Shape_FilterLabel", "Shape_FilterReg"]
+        }
+    ]
+}

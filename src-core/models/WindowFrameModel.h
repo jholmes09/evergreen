@@ -1,0 +1,50 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "Model.h"
+
+class WindowFrameModel : public ModelWithScreenLocation<BoxedScreenLocation>
+{
+    public:
+        WindowFrameModel(const ModelManager &manager);
+        virtual ~WindowFrameModel();
+        virtual int GetNumPhysicalStrings() const override { return 1; }
+        virtual bool SupportsExportAsCustom() const override { return true; }
+        virtual bool SupportsWiringView() const override { return true; }
+        virtual int NodesPerString() const override;
+        virtual int GetNumStrings() const override { return 1; }
+
+        [[nodiscard]] int GetTopNodes() const { return _topNodes; }
+        [[nodiscard]] int GetSideNodes() const { return _sideNodes; }
+        [[nodiscard]] int GetBottomNodes() const { return _bottomNodes; }
+        void SetTopNodes(int val) { _topNodes = val; }
+        void SetSideNodes(int val) { _sideNodes = val; }
+        void SetBottomNodes(int val) { _bottomNodes = val; }
+
+        int GetRotation() const { return _rotation; }
+        void SetRotation(int rot) { _rotation = rot; }
+
+        void Accept(BaseObjectVisitor& visitor) const override { return visitor.Visit(*this); }
+
+    protected:
+        virtual void InitModel() override;
+
+        void GetCoordinates(int side, bool clockwise, bool LtoR, bool TtoB, float& x, float& y, float& screenx, float& screeny);
+
+    private:
+        void InitFrame();
+        int _topNodes = 0;
+        int _sideNodes = 0;
+        int _bottomNodes = 0;
+        int _rotation = 0;
+};
+

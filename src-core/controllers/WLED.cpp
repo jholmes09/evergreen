@@ -1,0 +1,644 @@
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "WLED.h"
+#include "../models/Model.h"
+#include "../outputs/OutputManager.h"
+#include "../outputs/Output.h"
+#include "../outputs/DDPOutput.h"
+#include "../models/ModelManager.h"
+#include "ControllerCaps.h"
+#include "../outputs/ControllerEthernet.h"
+#include "../discovery/Discovery.h"
+#include "UtilFunctions.h"
+#include "../utils/AppCallbacks.h"
+#include "../utils/string_utils.h"
+#include "../render/UICallbacks.h"
+
+#include <curl/curl.h>
+
+#include <cassert>
+
+#include <log.h>
+
+#pragma region Output Classes
+struct WLEDOutput {
+    const int output;
+    int startCount{ 0 };
+    int pixels{ 0 };
+    int colorOrder{ 0 };
+    int protocol{ 1 };
+    bool reverse{ false };
+    bool ref{ false };
+    int nullPixels{ 0 }; //skip is an int in the JSON, but a checkbox in the WebUI. WLED backend looks to support multiple nulls
+    uint8_t pin{ 255 };
+    bool upload{ false };
+
+    explicit WLEDOutput(int output_) : output(output_) { }
+    void Dump() const {
+        
+        spdlog::debug("    Output {} Start {} Pixels {} Rev {} Ref {} Nulls {} ColorOrder {} Protocol {} Pin {} Upload {}",
+            output,
+            startCount,
+            pixels,
+            toStr(reverse),
+            toStr(ref),
+            nullPixels,
+            colorOrder,
+            protocol,
+            pin,
+            toStr(upload)
+        );
+    }
+
+    nlohmann::json GetJSON() const {
+        nlohmann::json portJson;
+        portJson["len"] = pixels;
+        portJson["start"] = startCount;
+        nlohmann::json pinJson;
+        pinJson.push_back(pin);
+        portJson["pin"] = pinJson;
+        portJson["type"] = protocol;
+        portJson["order"] = colorOrder;
+        portJson["rev"] = reverse;
+        portJson["skip"] = nullPixels;
+        portJson["ref"] = ref;
+
+        return portJson;
+    }
+};
+#pragma endregion
+
+#pragma region Discovery
+static void ProcessWLEDInfo(Discovery& discovery, const std::string& ip, const std::string& json) {
+    if (json.empty()) {
+        return;
+    }
+    // Non-throwing parse: an unexpected/garbage body must not take down discovery.
+    nlohmann::json info = nlohmann::json::parse(json, nullptr, false);
+    if (info.is_discarded()) {
+        return;
+    }
+    // Safe string extraction (never throws on an unexpected JSON shape).
+    auto getStr = [&info](const char* key) -> std::string {
+        auto const it = info.find(key);
+        if (it != info.end() && it->is_string()) {
+            return it->get<std::string>();
+        }
+        return "";
+    };
+
+    // WLED's /json/info always reports brand == "WLED". Require it as a positive
+    // identifier so devices that merely answer /json/info (e.g. an FPP instance)
+    // are not misclassified as WLED.
+    const std::string brand = getStr("brand");
+    const std::string name = getStr("name");
+    const std::string arch = getStr("arch");
+    const std::string ver = getStr("ver");
+    if (Lower(brand) != "wled" || name.empty() || arch.empty() || ver.empty()) {
+        spdlog::debug("WLED discovery: ignoring {} (brand='{}' name='{}' arch='{}' ver='{}')",
+                      ip, brand, name, arch, ver);
+        return;
+    }
+    spdlog::debug("WLED discovery: identified WLED at {} (name='{}' arch='{}' ver='{}')",
+                  ip, name, arch, ver);
+
+    DiscoveredData* cd = discovery.FindByIp(ip);
+    ControllerEthernet* ce = cd ? cd->controller : nullptr;
+    if (!ce) {
+        ce = new ControllerEthernet(discovery.GetOutputManager(), false);
+        ce->SetProtocol(OUTPUT_DDP);
+        ce->SetIP(ip);
+        if (!cd) {
+            cd = discovery.AddController(ce);
+        }
+    }
+
+    cd->hostname = name;
+    cd->SetDescription(name);
+    cd->SetVendor("WLED");
+    cd->SetModel("WLED");
+    const std::string larch = Lower(arch);
+    if (larch.find("esp32") != std::string::npos) {
+        cd->SetVariant("Generic ESP32");
+    } else if (larch.find("8266") != std::string::npos) {
+        cd->SetVariant("Generic ESP8266");
+    }
+    cd->version = ver;
+    cd->platform = "WLED";
+    cd->mode = "bridge";
+
+    ce->SetProtocol(OUTPUT_DDP);
+    ce->SetAutoSize(true, nullptr);
+    ce->SetAutoLayout(true);
+    ce->SetFullxLightsControl(true);
+}
+
+void WLED::PrepareDiscovery(Discovery& discovery) {
+    discovery.AddBonjour("_wled._tcp", [&discovery](const std::string& ip) {
+        discovery.AddCurl(ip, "/json/info", [&discovery, ip](int rc, const std::string& buffer, const std::string& err) {
+            if (rc == 200) {
+                ProcessWLEDInfo(discovery, ip, buffer);
+            }
+            return true;
+        });
+    });
+}
+#pragma endregion
+
+#pragma region Constructors and Destructors
+WLED::WLED(const std::string& ip, const std::string &proxy) : BaseController(ip, proxy), _vid(0) {
+
+    std::string const json = GetURL(GetInfoURL());
+    if (!json.empty()) {
+        // A proxied request to an offline controller answers with an HTML error
+        // page, so this has to be the non-throwing parse - xLights has no handler
+        // above here and the exception reached the main loop as a crash.
+        nlohmann::json jsonVal = nlohmann::json::parse(json, nullptr, false);
+
+        if (jsonVal.is_discarded()) {
+            spdlog::error("Non-JSON response from WLED controller on {}.", _ip);
+            _connected = false;
+        } else if (jsonVal.contains("ver") && jsonVal.contains("vid") && jsonVal.contains("arch") && jsonVal.contains("name")) {
+            _version = jsonVal["ver"].get<std::string>();
+            _vid = jsonVal["vid"].get<int>();
+            _model = jsonVal["arch"].get<std::string>();
+            _connected = true;
+        } else {
+            spdlog::error("Error Determining WLED controller Type.");
+            _connected = false;
+        }
+
+        if (_connected) {
+            spdlog::debug("Connected to WLED controller model {}.", GetFullName());
+        }
+    } else {
+        _connected = false;
+        spdlog::error("Error connecting to WLED controller on {}.", _ip);
+    }
+}
+
+WLED::~WLED() {
+    _pixelOutputs.clear();
+}
+#pragma endregion
+
+#pragma region Private Functions
+
+bool WLED::ParseOutputJSON(nlohmann::json const& jsonVal, int maxPort, ControllerCaps* caps, bool fullControl) {
+
+    _pixelOutputs.clear();
+
+    for (int i = 1; i <= maxPort; i++) {
+        std::unique_ptr<WLEDOutput> output = ExtractOutputJSON(jsonVal, i, caps, fullControl);
+        output->Dump();
+        _pixelOutputs.push_back(std::move(output));
+    }
+
+    return true;
+}
+
+std::unique_ptr<WLEDOutput> WLED::ExtractOutputJSON(nlohmann::json const& jsonVal, int port, ControllerCaps* caps, bool fullControl) {
+
+    std::unique_ptr<WLEDOutput> output = std::make_unique<WLEDOutput>(port);
+
+    if (!fullControl && jsonVal.contains("hw") && jsonVal.at("hw").contains("led") &&
+        jsonVal.at("hw").at("led").contains("ins") &&
+        (int)jsonVal.at("hw").at("led").at("ins").size() > (port - 1)) {
+        auto const& json = jsonVal.at("hw").at("led").at("ins").at(port - 1);
+
+        if (!json.is_null()) {
+            if (json.contains("len") && json.at("len").is_number_integer()) {
+                output->pixels = json.at("len").get<int>();
+            }
+            if (json.contains("start") && json.at("start").is_number_integer()) {
+                output->startCount = json.at("start").get<int>();
+            }
+            if (json.contains("pin") && json.at("pin").is_array()) {
+                if (!json.at("pin").at(0).is_null()) {
+                    output->pin = json.at("pin").at(0).get<int>();
+                }
+            }
+            if (json.contains("type") && json.at("type").is_number_integer()) {
+                output->protocol = json.at("type").get<int>();
+            }
+            if (json.contains("order") && json.at("order").is_number_integer()) {
+                output->colorOrder = json.at("order").get<int>();
+            }
+            if (json.contains("rev") && json.at("rev").is_boolean()) {
+                output->reverse = json.at("rev").get<bool>();
+            }
+            // skip is an int in the JSON but checkbox in the WebUI
+            if (json.contains("skip") && json.at("skip").is_number_integer()) {
+                output->nullPixels = json.at("skip").get<int>();
+            }
+        }
+    }
+    //work around for un-setup pins
+    if (output->pin == 255) {
+        output->pin = GetOutputPin(port, caps);
+    }
+
+    return output;
+}
+
+void WLED::UpdatePortData(WLEDOutput* pd, UDControllerPort* stringData, int startNumber, bool& rgbw) const {
+
+    if (pd != nullptr) {
+        const std::string direction = stringData->GetFirstModel()->GetDirection("unknown");
+        if (direction != "unknown" && pd->reverse != EncodeDirection(direction)) {
+            pd->reverse = EncodeDirection(direction);
+        }
+
+        const std::string color = stringData->GetFirstModel()->GetColourOrder("");
+        if (!color.empty()) {
+            int newcolor = EncodeColorOrder(color);
+            if (pd->colorOrder != newcolor) {
+                pd->colorOrder = newcolor;
+            }
+        }
+
+        int const protocol = EncodeStringPortProtocol(stringData->GetFirstModel()->GetProtocol());
+        if (protocol != -1) {
+            pd->protocol = protocol;
+        }
+
+        const int nullPix = stringData->GetFirstModel()->GetStartNullPixels(-1);
+        if (nullPix != -1) {
+            pd->nullPixels = nullPix;
+        }
+
+        if (pd->startCount != startNumber) {
+            pd->startCount = startNumber;
+        }
+
+        if (pd->pixels != stringData->Pixels()) {
+            pd->pixels = stringData->Pixels();
+        }
+        if (GetChannelsPerPixel(stringData->GetProtocol()) == 4) {
+            rgbw = true;
+        }
+
+        pd->upload = true;
+    }
+}
+
+void WLED::UpdatePixelOutputs(bool& worked, int totalPixelCount, nlohmann::json& jsonVal) {    
+    spdlog::debug("Building pixel upload:");
+    //total Pixel Count
+    jsonVal["hw"]["led"]["total"] = totalPixelCount;
+
+    //Port Pixel Count
+    nlohmann::json newLEDS;
+    for (const auto& pixelPort : _pixelOutputs) {
+        if (pixelPort->upload) {
+            newLEDS.push_back(pixelPort->GetJSON());
+        }
+    }
+    jsonVal["hw"]["led"]["ins"] = newLEDS;
+}
+
+static size_t writeFunction(void* ptr, size_t size, size_t nmemb, std::string* data) {
+
+    if (data == nullptr) return 0;
+    data->append((char*)ptr, size * nmemb);
+    return size * nmemb;
+}
+
+bool WLED::PostJSON(nlohmann::json const& jsonVal) {
+    std::string str = jsonVal.dump(3, ' ', false, nlohmann::json::error_handler_t::replace);
+    const std::string url = GetCfgURL();
+
+    std::string const baseIP = _fppProxy.empty() ? _ip : _fppProxy;
+    spdlog::debug("Making request to Controller '{}'.", url);
+    spdlog::debug("    With data '{}'.", str);
+
+    CURL* hnd = curl_easy_init();
+
+    if (hnd) {
+        curl_easy_setopt(hnd, CURLOPT_CUSTOMREQUEST, "POST");
+
+        curl_easy_setopt(hnd, CURLOPT_URL, std::string("http://" + baseIP + _baseUrl + url).c_str());
+        struct curl_slist* headers = NULL;
+
+        headers = curl_slist_append(headers, "cache-control: no-cache");
+        headers = curl_slist_append(headers, "content-type: application/json");
+        curl_easy_setopt(hnd, CURLOPT_HTTPHEADER, headers);
+
+        curl_easy_setopt(hnd, CURLOPT_POSTFIELDSIZE, (long)str.size());
+        curl_easy_setopt(hnd, CURLOPT_POSTFIELDS, (const char*)str.c_str());
+
+        curl_easy_setopt(hnd, CURLOPT_WRITEFUNCTION, writeFunction);
+
+        std::string buffer = "";
+        curl_easy_setopt(hnd, CURLOPT_WRITEDATA, &buffer);
+
+        CURLcode ret = curl_easy_perform(hnd);
+        curl_easy_cleanup(hnd);
+        curl_slist_free_all(headers);
+        if (ret == CURLE_OK) {
+            if (buffer.find("error") != std::string::npos) {
+                spdlog::error("Error From WLED {}", buffer);
+                return false;
+            }
+            return true;
+        } else {
+            spdlog::error("Failure to access {}: {}.", url, curl_easy_strerror(ret));
+        }
+    }
+    return false;
+}
+
+bool WLED::SetupInput(Controller* c, nlohmann::json& jsonVal, bool rgbw) {
+    ControllerEthernet *controller = dynamic_cast<ControllerEthernet*>(c);
+    if (controller == nullptr) {
+        DisplayError(fmt::format("{} is not a WLED controller.", c->GetName()));
+        return false;
+    }
+
+    //get previous RGB Mode
+    //int rgbMode = jsonVal["if"]["live"]["dmx"]["mode"].AsInt();
+
+    if (!controller->AllSameSize()) {
+        DisplayError("Attempting to upload universes to the WLED controller that are not the same size.");
+        return false;
+    }
+
+    int port = 0;
+    auto o = controller->GetFirstOutput();
+
+    if (o->GetType() == OUTPUT_E131) {
+        port = 5568;
+    }
+    else if (o->GetType() == OUTPUT_ARTNET) {
+        port = 6454;
+    }
+    else if (o->GetType() == OUTPUT_DDP) {
+        port = 4048;
+        DDPOutput* ddp = dynamic_cast<DDPOutput*>(o);
+        if (ddp) {
+            if (ddp->IsKeepChannelNumbers()) {
+                DisplayError("The DDP 'Keep Channel Numbers' option is not support with WLED, Please Disable");
+                return false;
+            }
+
+            if (rgbw) {
+                DisplayError("Four Channel Pixles and DDP, do not work well in WLED, Please Use E131");
+                return false;
+            }
+        }
+    }
+
+    jsonVal["if"]["live"]["en"] = true;
+
+    if (_vid <= 2112080 || o->GetType() != OUTPUT_DDP) {//DDP is auto enabled after 0.13 beta 4
+
+        jsonVal["if"]["live"]["port"] = port;
+
+        if (o->GetIP() == "MULTICAST") {
+            jsonVal["if"]["live"]["mc"] = true;
+        }
+
+        if (o->GetType() == OUTPUT_E131 || o->GetType() == OUTPUT_ARTNET) {
+            jsonVal["if"]["live"]["dmx"]["uni"] = o->GetUniverse();
+            jsonVal["if"]["live"]["dmx"]["addr"] = 1;
+        } else if (o->GetType() == OUTPUT_DDP) {
+            jsonVal["if"]["live"]["dmx"]["addr"] = 1; // o->GetStartChannel();
+        }
+    }
+
+    //Turn On E131 Multiple RGB Mode "DM=4", TODO: Support RGBW mode "DM=6"
+    //if (rgbw) {
+    //    //_vid >= 2212222
+    //    rgbMode = 6;
+    //} else {
+    //    rgbMode = 4;
+    //}
+    //jsonVal["if"]["live"]["dmx"]["mode"] = rgbMode;
+    return true;
+}
+
+int WLED::EncodeStringPortProtocol(const std::string& protocol) const {
+    std::string const p = Lower(protocol);
+
+    //3-wire
+    if (p == "ws2811") return 22;
+    if (p == "tm1829") return 25;
+    if (p == "ucs8903") return 26;
+    if (p == "ucs8904") return 29;
+    if (p == "sk6812rgbw") return 30;
+    if (p == "apa109") return 30;//same
+    if (p == "tm1814") return 31;
+
+    //4-wire
+    if (p == "ws2801") return 50;
+    if (p == "apa102") return 51;
+    if (p == "lpd8806") return 52;
+    if (p == "p9813") return 53;
+    if (p == "lpd6803") return 54;
+
+    assert(false);
+    return 22;
+}
+
+int WLED::EncodeColorOrder(const std::string& colorOrder) const {
+    std::string const c = Lower(colorOrder);
+    if (c == "grb" || c == "grbw") return 0;
+    if (c == "rgb" || c == "rgbw") return 1;
+    if (c == "brg" || c == "brgw") return 2;
+    if (c == "rbg" || c == "rbgw") return 3;
+    if (c == "bgr" || c == "bgrw") return 4;
+    if (c == "gbr" || c == "gbrw") return 5;
+
+    if (c == "wrgb") return 34;//tested
+
+    if (c == "wgrb") return 36;//random guesses, WLED settings makes no sense
+    if (c == "wbrg") return 37;
+    if (c == "wrbg") return 32;
+    if (c == "wbgr") return 35;
+    if (c == "wgbr") return 33;
+
+    assert(false);
+    return 1;
+}
+
+bool WLED::EncodeDirection(const std::string& direction) const {
+
+    return Lower(direction) == "reverse";
+}
+
+WLEDOutput* WLED::FindPortData(int port) const {
+    for (const auto& sd : _pixelOutputs) {
+        if (sd->output == port) {
+            return sd.get();
+        }
+    }
+    assert(false);
+    return nullptr;
+}
+
+const uint8_t WLED::GetOutputPin(int port, ControllerCaps* caps) {
+    return (int)strtol(caps->GetCustomPropertyByPath(fmt::format("Port{}", port), "2").c_str(), nullptr, 10);
+}
+
+#pragma endregion
+
+#pragma region Getters and Setters
+bool WLED::SetOutputs(ModelManager* allmodels, OutputManager* outputManager, Controller* controller, UICallbacks* ui) {
+
+    auto progressTk = ui->BeginProgress("Uploading ...", 100);
+
+    spdlog::debug("WLED Outputs Upload: Uploading to {}", _ip);
+
+    //2105110 added json config
+    //2105200 added per string null pixel to GUI but older builds have it in the JSON
+    if (_vid < 2105110) {
+        spdlog::error("Build 2105110 or newer of WLED Is Required, '{}' is Installed .", _vid);
+        ui->ShowMessage("WLED Upload Error:\nWLED 0.13b5 or newer is required", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    if (_vid < 2203190 && _vid > 2112080) {
+        spdlog::error("WLED Build 2112080 to 2203190 are broken, '{}' is Installed .", _vid);
+        ui->ShowMessage("WLED Upload Error:\nUpload with WLED 0.13 and 0.13.1 is broken.\n(There is a bug in the WLED 0.13/0.13.1 firmware, not xLights)\nSwitch to WLED 0.13.2, WLED 0.13 beta6 or beta5 for the upload to work correctly", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    ui->UpdateProgress(progressTk, 0, "Scanning models");
+    spdlog::info("Scanning models.");
+
+    std::string check;
+    UDController cud(controller, outputManager, allmodels, false);
+
+    //first check rules
+    auto caps = ControllerCaps::GetControllerConfig(controller);
+    const bool success = cud.Check(caps, check);
+
+    spdlog::debug(check);
+
+    cud.Dump();
+
+    if (!success) {
+        ui->ShowMessage("WLED Upload Error:\n" + check, "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    bool const fullControl = caps->SupportsFullxLightsControl() && controller->IsFullxLightsControl();
+    int const defaultBrightness = controller->GetDefaultBrightnessUnderFullControl();
+
+    int const maxPort = caps->GetMaxPixelPort();
+
+    //get current config JSON
+    const std::string page = GetURL(GetCfgURL());
+
+    nlohmann::json val;
+    try 
+    {
+        val = nlohmann::json::parse(page);
+    }
+    catch (nlohmann::json::parse_error const& e)
+    {
+        spdlog::error(e.what());
+        ui->ShowMessage("WLED Upload Error:\n JSON Parse Error", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+    catch (nlohmann::json::exception& e)
+    {
+        spdlog::error(e.what());
+        ui->ShowMessage("WLED Upload Error:\n JSON Parse Error", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+    catch (std::exception& e)
+    {
+        spdlog::error(e.what());
+        ui->ShowMessage("WLED Upload Error:\n JSON Parse Error", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    bool worked = ParseOutputJSON(val, maxPort, caps, fullControl);
+    if (!worked) {
+        ui->ShowMessage("Unable to Parse JSON.", "Error");
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    spdlog::info("Figuring Out Pixel Output Information.");
+    ui->UpdateProgress(progressTk, 20, "Figuring Out Pixel Output Information.");
+
+    //loop to setup string outputs
+    int totalCount { 0 };
+    bool rgbw{ false };
+    for (int port = 1; port <= maxPort; port++) {
+        WLEDOutput* pixOut = FindPortData(port);
+        if(pixOut == nullptr) {
+            continue;
+        }
+        if (cud.HasPixelPort(port)) {
+            UDControllerPort* portData = cud.GetControllerPixelPort(port);
+            UpdatePortData(pixOut, portData, totalCount, rgbw);
+            totalCount += pixOut->pixels;
+        }
+    }
+
+    spdlog::info("Updating String Output Information.");
+    ui->UpdateProgress(progressTk, 40, "Updating String Output Information.");
+
+    UpdatePixelOutputs(worked, totalCount, val);
+
+    if (!worked) {
+        spdlog::error("Error Updating to WLED controller, JSON:{}.", page);
+    }
+
+    spdlog::info("Updating Input Information.");
+    ui->UpdateProgress(progressTk, 50, "Updating Input Information.");
+    worked = SetupInput(controller, val, rgbw);
+    if (!worked) {
+        ui->UpdateProgress(progressTk, 100, "Aborting.");
+        ui->EndProgress(progressTk);
+        return false;
+    }
+
+    if (fullControl) {
+        val["light"]["scale-bri"] = defaultBrightness;
+    }
+
+    spdlog::info("Uploading JSON to WLED.");
+    ui->UpdateProgress(progressTk, 70, "Uploading JSON to WLED.");
+
+    //reboot
+    val["rb"] = true;
+
+    bool const uploadWorked = PostJSON(val);
+
+    if (!uploadWorked) {
+        spdlog::error("Error Uploading to WLED controller, JSON:{}.", page);
+        worked = false;
+    }
+
+    spdlog::info("WLED Outputs Upload Done.");
+    ui->UpdateProgress(progressTk, 100, "Done.");
+    ui->EndProgress(progressTk);
+    return worked;
+}
+#pragma endregion

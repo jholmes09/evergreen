@@ -1,0 +1,1564 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <algorithm>
+#include <filesystem>
+#include <mutex>
+#include <vector>
+#include <spdlog/fmt/fmt.h>
+#include <list>
+
+#include "FacesEffect.h"
+#include "../utils/xlImage.h"
+#include "../models/Model.h"
+#include "../models/SubModel.h"
+#include "../models/ModelGroup.h"
+#include "../render/SequenceElements.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+#include "UtilFunctions.h"
+#include "../render/RenderContext.h"
+#include "PicturesEffect.h"
+#include "utils/ExternalHooks.h"
+
+#include "../utils/FileUtils.h"
+#include "../utils/string_utils.h"
+
+#include "../../include/corofaces.xpm"
+
+#include <log.h>
+
+// Pure memoization only (node-name lookups and pre-rendered face pictures) -
+// every entry is a deterministic function of the model/settings, never of which
+// frames rendered before.  That is what lets GetFrameParallelism() report Pure:
+// frame-parallel clones each rebuild an identical copy independently.
+class FacesRenderCache : public EffectRenderCache {
+    std::map<std::string, RenderBuffer*> _imageCache;
+
+public:
+    std::map<std::string, int> nodeNameCache;
+
+    // Rest-anchored auto-blink schedule for the current effect - a deterministic
+    // function of the effect span, the blink settings and the (static) phoneme
+    // timing track, so every frame/clone rebuilds an identical copy.
+    std::string blinkKey;
+    std::vector<std::pair<int, int>> blinkWindows;
+
+    FacesRenderCache() {
+    }
+    virtual ~FacesRenderCache() {
+        for (auto it : _imageCache) {
+            delete it.second;
+        }
+        _imageCache.clear();
+    }
+    void Clear() {
+        nodeNameCache.clear();
+        blinkKey.clear();
+        blinkWindows.clear();
+    }
+    RenderBuffer* GetImage(std::string key) {
+        if (_imageCache.find(key) != _imageCache.end()) {
+            return _imageCache[key];
+        }
+
+        return nullptr;
+    }
+    void AddImage(std::string key, RenderBuffer* crb) {
+        _imageCache[key] = crb;
+    }
+};
+
+// Fallback defaults (used until OnMetadataLoaded replaces them with Faces.json values).
+std::string FacesEffect::sFaceDefinitionDefault = "Default";
+std::string FacesEffect::sEyesDefault = "Auto";
+std::string FacesEffect::sEyeBlinkFrequencyDefault = "Normal";
+std::string FacesEffect::sEyeBlinkDurationDefault = "Normal";
+bool FacesEffect::sOutlineDefault = false;
+bool FacesEffect::sSuppressShimmerDefault = false;
+std::string FacesEffect::sUseStateDefault = "";
+bool FacesEffect::sSuppressWhenNotSingingDefault = false;
+int FacesEffect::sLeadFramesDefault = 0;
+bool FacesEffect::sFadeDefault = false;
+
+// Matrix-face picture-like controls (Faces.json)
+std::string FacesEffect::sDirectionDefault = "none";
+double FacesEffect::sSpeedDefault = 1.0;
+double FacesEffect::sFrameRateAdjDefault = 1.0;
+bool FacesEffect::sPixelOffsetsDefault = false;
+std::string FacesEffect::sScalingDefault = "Default (from face)";
+int FacesEffect::sXCDefault = 0;
+int FacesEffect::sYCDefault = 0;
+int FacesEffect::sEndXCDefault = 0;
+int FacesEffect::sEndYCDefault = 0;
+bool FacesEffect::sWrapXDefault = false;
+int FacesEffect::sStartScaleDefault = 100;
+int FacesEffect::sEndScaleDefault = 100;
+
+FacesEffect::FacesEffect(int id) :
+    RenderableEffect(id, "Faces", corofaces, corofaces, corofaces, corofaces, corofaces) {
+    //ctor
+}
+
+FacesEffect::~FacesEffect() {
+    //dtor
+}
+
+void FacesEffect::OnMetadataLoaded()
+{
+    sFaceDefinitionDefault = GetStringDefault("Faces_FaceDefinition", sFaceDefinitionDefault);
+    sEyesDefault = GetStringDefault("Faces_Eyes", sEyesDefault);
+    sEyeBlinkFrequencyDefault = GetStringDefault("Faces_EyeBlinkFrequency", sEyeBlinkFrequencyDefault);
+    sEyeBlinkDurationDefault = GetStringDefault("Faces_EyeBlinkDuration", sEyeBlinkDurationDefault);
+    sOutlineDefault = GetBoolDefault("Faces_Outline", sOutlineDefault);
+    sSuppressShimmerDefault = GetBoolDefault("Faces_SuppressShimmer", sSuppressShimmerDefault);
+    sUseStateDefault = GetStringDefault("Faces_UseState", sUseStateDefault);
+    sSuppressWhenNotSingingDefault = GetBoolDefault("Faces_SuppressWhenNotSinging", sSuppressWhenNotSingingDefault);
+    sLeadFramesDefault = GetIntDefault("Faces_LeadFrames", sLeadFramesDefault);
+    sFadeDefault = GetBoolDefault("Faces_Fade", sFadeDefault);
+    sDirectionDefault = GetStringDefault("Faces_Direction", sDirectionDefault);
+    sSpeedDefault = GetDoubleDefault("Faces_Speed", sSpeedDefault);
+    sFrameRateAdjDefault = GetDoubleDefault("Faces_FrameRateAdj", sFrameRateAdjDefault);
+    sPixelOffsetsDefault = GetBoolDefault("Faces_PixelOffsets", sPixelOffsetsDefault);
+    sScalingDefault = GetStringDefault("Faces_Scaling", sScalingDefault);
+    sXCDefault = GetIntDefault("FacesXC", sXCDefault);
+    sYCDefault = GetIntDefault("FacesYC", sYCDefault);
+    sEndXCDefault = GetIntDefault("FacesEndXC", sEndXCDefault);
+    sEndYCDefault = GetIntDefault("FacesEndYC", sEndYCDefault);
+    sWrapXDefault = GetBoolDefault("Faces_WrapX", sWrapXDefault);
+    sStartScaleDefault = GetIntDefault("Faces_StartScale", sStartScaleDefault);
+    sEndScaleDefault = GetIntDefault("Faces_EndScale", sEndScaleDefault);
+}
+
+std::list<std::string> FacesEffect::CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache) {
+    std::list<std::string> res = RenderableEffect::CheckEffectSettings(settings, media, model, eff, renderCache);
+
+    SequenceElements* se = nullptr;
+    if (eff->GetParentEffectLayer() != nullptr && eff->GetParentEffectLayer()->GetParentElement() != nullptr) {
+        se = eff->GetParentEffectLayer()->GetParentElement()->GetSequenceElements();
+    }
+
+    std::string definition = settings.Get("E_CHOICE_Faces_FaceDefinition", sFaceDefinitionDefault);
+    if (definition.empty()) {
+        definition = "Default"; // the renderer treats them identically
+    }
+    if (definition == "Default" && !model->GetFaceInfo().empty() && model->GetFaceInfo().begin()->first != "") {
+        definition = model->GetFaceInfo().begin()->first;
+    } else if (definition == "Default" && se != nullptr && !se->GetSequenceFaces().empty()) {
+        definition = se->GetSequenceFaces().GetFaces().begin()->first;
+    }
+    bool found = true;
+    auto it = model->GetFaceInfo().find(definition);
+    if (it == model->GetFaceInfo().end()) {
+        //not found
+        found = false;
+    }
+    if (!found) {
+        if ("Coro" == definition && model->GetFaceInfo().find("SingleNode") != model->GetFaceInfo().end()) {
+            definition = "SingleNode";
+            found = true;
+        } else if ("SingleNode" == definition && model->GetFaceInfo().find("Coro") != model->GetFaceInfo().end()) {
+            definition = "Coro";
+            found = true;
+        }
+    }
+    const std::map<std::string, std::string>* seqDef = (!found && se != nullptr) ? se->GetSequenceFaces().GetFace(definition) : nullptr;
+
+    // check the face exists on the model or at the sequence level
+    if (definition != "Rendered") {
+        if (model->GetFaceInfo().find(definition) == model->GetFaceInfo().end() && seqDef == nullptr) {
+            res.push_back(fmt::format("    ERR: Face effect face '{}' does not exist on model '{}'. Start {}", definition, model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        }
+    }
+
+    std::string modelType = definition;
+    if (found && model->GetFaceInfo().at(definition).contains("Type") && !model->GetFaceInfo().at(definition).at("Type").empty()) {
+        modelType = model->GetFaceInfo().at(definition).at("Type");
+    } else if (seqDef != nullptr) {
+        modelType = "Matrix";
+    }
+
+    if (modelType != "Matrix" && modelType != "Rendered") {
+        // -Buffer not rotated
+        std::string bufferTransform = settings.Get("B_CHOICE_BufferTransform", "None");
+
+        if (bufferTransform != "None") {
+            res.push_back(fmt::format("    WARN: Face effect with transformed buffer '{}' may not render correctly. Model '{}', Start {}", model->GetFullName(), bufferTransform, FORMATTIME(eff->GetStartTimeMS())));
+        }
+
+        if (settings.GetInt("B_SLIDER_Rotation", 0) != 0 ||
+            settings.GetInt("B_SLIDER_Rotations", 0) != 0 ||
+            settings.GetInt("B_SLIDER_XRotation", 0) != 0 ||
+            settings.GetInt("B_SLIDER_YRotation", 0) != 0 ||
+            settings.GetInt("B_SLIDER_Zoom", 1) != 1 ||
+            settings.Get("B_VALUECURVE_Rotation", "").find("Active=TRUE") != std::string::npos ||
+            settings.Get("B_VALUECURVE_XRotation", "").find("Active=TRUE") != std::string::npos ||
+            settings.Get("B_VALUECURVE_YRotation", "").find("Active=TRUE") != std::string::npos ||
+            settings.Get("B_VALUECURVE_Rotations", "").find("Active=TRUE") != std::string::npos ||
+            settings.Get("B_VALUECURVE_Zoom", "").find("Active=TRUE") != std::string::npos) {
+            res.push_back(fmt::format("    WARN: Face effect with rotozoom active may not render correctly. Model '{}', Start {}", model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        }
+
+        if (settings.Get("B_CUSTOM_SubBuffer", "") != "") {
+            res.push_back(fmt::format("    WARN: Face effect with subbuffer defined '{}' may not render correctly. Model '{}', Start {}", settings.Get("B_CUSTOM_SubBuffer", ""), model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        }
+    }
+
+    if (modelType == "Matrix" && (model->GetFaceInfo().contains(definition) || seqDef != nullptr)) {
+        auto images = model->GetFaceInfo().contains(definition) ? model->GetFaceInfo().at(definition) : *seqDef;
+        for (const auto& it2 : images) {
+            if (it2.first.find("Mouth") == 0) {
+                std::string picture = it2.second;
+
+                if (picture != "" && se != nullptr && se->GetSequenceMedia().GetMediaEmbedState(picture).first) {
+                    // embedded in the .xsq - nothing on disk to validate
+                    continue;
+                }
+
+                if (picture != "") {
+                    // Face image paths are stored as user-picked at config
+                    // time on desktop — often absolute. Run FixFile so a
+                    // sequence moved between machines still resolves
+                    // through the show / media folders the way the
+                    // renderer does (PicturesEffect::Render goes through
+                    // SequenceMedia which FixFile-resolves). Without this
+                    // a Face effect that renders cleanly would still
+                    // false-positive "image file not found" because the
+                    // raw stored path doesn't exist on this machine.
+                    std::string resolved = FileUtils::FixFile(std::string(), picture);
+                    if (resolved.empty() || !FileExists(resolved)) {
+                        res.push_back(fmt::format("    ERR: Face effect image file not found '{}'. Model '{}', Definition '{}', Start {}", picture, model->GetFullName(), definition, FORMATTIME(eff->GetStartTimeMS())));
+                    } else if (!FileUtils::IsFileInShowDir(std::string(), picture)) {
+                        res.push_back(fmt::format("    WARN: Faces effect image file '{}' not under show directory. Model '{}', Definition '{}', Start {}", picture, model->GetFullName(), definition, FORMATTIME(eff->GetStartTimeMS())));
+                    }
+
+                    if (!resolved.empty() && FileExists(resolved)) {
+                        xlImage i;
+                        i.LoadFromFile(resolved);
+                        if (i.IsOk()) {
+                            int ih = i.GetHeight();
+                            int iw = i.GetWidth();
+
+#define IMAGESIZETHRESHOLD 10
+                            if (ih > IMAGESIZETHRESHOLD * model->GetDefaultBufferHt() || iw > IMAGESIZETHRESHOLD * model->GetDefaultBufferWi()) {
+                                float scale = std::max((float)ih / model->GetDefaultBufferHt(), (float)iw / model->GetDefaultBufferWi());
+                                res.push_back(fmt::format("    WARN: Faces effect image file '{}' is {:.1f} times the height or width of the model ... xLights is going to need to do lots of work to resize the image. Model '{}', Definition '{}', Start {}", picture, scale, model->GetFullName(), definition, FORMATTIME(eff->GetStartTimeMS())));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::string timing = settings.Get("E_CHOICE_Faces_TimingTrack", "");
+    std::string phoneme = settings.Get("E_CHOICE_Faces_Phoneme", "");
+
+    // - Face chosen or specific phoneme
+    if (phoneme == "" && timing == "") {
+        res.push_back(fmt::format("    ERR: Face effect with no timing selected. Model '{}', Start {}", model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+    } else if (timing != "" && GetTiming(timing, eff->GetParentEffectLayer()->GetParentElement()->GetSequenceElements()) == nullptr) {
+        res.push_back(fmt::format("    ERR: Face effect with unknown timing ({}) selected. Model '{}', Start {}", timing, model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+    }
+
+    return res;
+}
+
+int FacesEffect::GetMaxEyeDelay( std::string& eyeBlinkFreqString ) const {
+    int maxEyeDelay = 5500; //Normal
+    if( eyeBlinkFreqString  == "Slowest")
+        maxEyeDelay = 9000;
+    else if( eyeBlinkFreqString  == "Slow")
+        maxEyeDelay = 7250;
+    else if( eyeBlinkFreqString  == "Fast")
+        maxEyeDelay = 3750;
+    else if( eyeBlinkFreqString  == "Fastest")
+        maxEyeDelay = 2000;
+    
+    return maxEyeDelay;
+}
+
+int FacesEffect::GetEyeBlinkDuration(std::string& eyeBlinkDurationString) const {
+    int EyeBlinkDuration = 100; // Normal
+    if (eyeBlinkDurationString == "Slower")
+        EyeBlinkDuration = 50;
+    else if (eyeBlinkDurationString == "Long")
+        EyeBlinkDuration = 200;
+    else if (eyeBlinkDurationString == "Longer")
+        EyeBlinkDuration = 400;
+
+    return EyeBlinkDuration;
+}
+
+// Auto-blink with no phoneme timing track to anchor to: blink k's start time is
+// derived from hashRandomStable(k) - stable for this (model, layer, effect) on
+// every frame - so any frame reconstructs the whole schedule in isolation and
+// frames can render in any order or concurrently.  (The old implementation
+// advanced nextBlinkTime in the render cache with randInt() draws, which made
+// frame N depend on every prior frame and forced the entire effect Stateful.)
+// Blink windows snap to the frame grid so a blink always covers at least one
+// rendered frame at any frame rate.
+bool FacesEffect::IsAutoBlinkClosed(const RenderBuffer& buffer, std::string& eyeBlinkFreq, std::string& eyeBlinkDuration) const {
+    const int maxEyeDelay = GetMaxEyeDelay(eyeBlinkFreq);
+    const int blinkDuration = GetEyeBlinkDuration(eyeBlinkDuration) + 1;
+    const int frameMs = buffer.frameTimeInMs;
+    const int64_t nowMs = (int64_t)buffer.curPeriod * frameMs;
+    const int64_t minInterval = std::max(maxEyeDelay - 1000, 1000);
+
+    int64_t blinkStart = (int64_t)buffer.curEffStartPer * frameMs + buffer.hashRandomStable(0) % (maxEyeDelay + 1);
+    int64_t blinkFrame = ((blinkStart + frameMs - 1) / frameMs) * frameMs;
+    uint32_t k = 1;
+    while (blinkFrame + blinkDuration <= nowMs) {
+        blinkStart += minInterval + buffer.hashRandomStable(k++) % 1001;
+        blinkFrame = ((blinkStart + frameMs - 1) / frameMs) * frameMs;
+    }
+    return nowMs >= blinkFrame;
+}
+
+// Auto-blink against a phoneme timing track.  The blink only ever shows while
+// the face is at rest, so the schedule has to be anchored to the rest windows
+// rather than to wall clock: on a tightly sung track the rests are a few hundred
+// ms each, and a blink placed on a free-running ~5s timer almost never lands
+// inside one (the reason auto blinks went missing after the schedule was made
+// pure).  The rest list is static, so replaying the old "wait for a rest, then
+// place the blink inside it" state machine over it is still a pure function of
+// the effect - every frame and every frame-parallel clone builds the same
+// windows - it just costs one pass over the track per effect instead of per
+// frame.  Must be called with the timing layer locked.
+bool FacesEffect::IsAutoBlinkClosedInRest(const RenderBuffer& buffer, FacesRenderCache* cache, EffectLayer* layer, std::string& eyeBlinkFreq, std::string& eyeBlinkDuration) const {
+    const int frameMs = buffer.frameTimeInMs;
+    const int effStartMs = buffer.curEffStartPer * frameMs;
+    const int effEndMs = (buffer.curEffEndPer + 1) * frameMs;
+    const int nowMs = buffer.curPeriod * frameMs;
+
+    std::string key = fmt::format("{}-{}-{}-{}-{}-{}", effStartMs, effEndMs, frameMs, layer->GetEffectCount(), eyeBlinkFreq, eyeBlinkDuration);
+    if (cache->blinkKey != key) {
+        const int maxEyeDelay = GetMaxEyeDelay(eyeBlinkFreq);
+        const int minInterval = std::max(maxEyeDelay - 1000, 1000);
+        const int blinkDuration = GetEyeBlinkDuration(eyeBlinkDuration) + 1;
+
+        // Rest windows = the parts of the effect not covered by a spoken phoneme.
+        std::vector<std::pair<int, int>> rests;
+        int cur = effStartMs;
+        for (int x = 0; x < layer->GetEffectCount(); ++x) {
+            Effect* ef = layer->GetEffect(x);
+            if (ef->GetEndTimeMS() <= effStartMs) {
+                continue;
+            }
+            if (ef->GetStartTimeMS() >= effEndMs) {
+                break;
+            }
+            std::string nm = ef->GetEffectName();
+            if (nm.empty() || nm == "rest") {
+                continue;
+            }
+            int s = std::min(ef->GetStartTimeMS(), effEndMs);
+            if (s > cur) {
+                rests.emplace_back(cur, s);
+            }
+            cur = std::max(cur, ef->GetEndTimeMS());
+        }
+        if (cur < effEndMs) {
+            rests.emplace_back(cur, effEndMs);
+        }
+
+        cache->blinkWindows.clear();
+        uint32_t k = 0;
+        int nextBlinkTime = effStartMs;
+        for (const auto& r : rests) {
+            if (r.second <= nextBlinkTime) {
+                continue;
+            }
+            int t = std::max(r.first, nextBlinkTime);
+            if (r.first + 150 >= t) {
+                // Don't blink right at the start of a rest, and not right at the
+                // end either - if the jittered time would overrun, fall back to
+                // the middle of the rest.
+                int tmp = t + 150 + (int)(buffer.hashRandomStable(k++) % 400);
+                t = (tmp + 130 > r.second) ? (r.first + r.second) / 2 : tmp;
+                t = std::max(t, nextBlinkTime);
+                nextBlinkTime = t;
+                if (t >= r.second) {
+                    // rest ends before the delayed time - carry it to the next rest
+                    continue;
+                }
+            }
+            int startFrame = ((t + frameMs - 1) / frameMs) * frameMs;
+            cache->blinkWindows.emplace_back(startFrame, std::max(t + blinkDuration, startFrame + 1));
+            nextBlinkTime = t + minInterval + (int)(buffer.hashRandomStable(k++) % 1001);
+        }
+        cache->blinkKey = key;
+    }
+
+    auto it = std::upper_bound(cache->blinkWindows.begin(), cache->blinkWindows.end(), nowMs,
+                               [](int t, const std::pair<int, int>& w) { return t < w.first; });
+    if (it == cache->blinkWindows.begin()) {
+        return false;
+    }
+    --it;
+    return nowMs < it->second;
+}
+
+RenderableEffect::FrameParallelism FacesEffect::GetFrameParallelism(const SettingsMap& settings) const {
+    // The PGO path reads a process-wide model cache flushed at curPeriod 0 -
+    // genuinely frame-order dependent, so it stays serial.  Every other mode
+    // derives frame N in isolation: auto-blink comes from the stable per-effect
+    // hash schedule (IsAutoBlinkClosed) or its rest-anchored replay over the
+    // static timing track (IsAutoBlinkClosedInRest), phoneme/alpha are per-frame timing
+    // track lookups under the track locks, and FacesRenderCache holds only
+    // deterministic memoization.
+    if (settings.Get("CHOICE_Faces_FaceDefinition", sFaceDefinitionDefault) == XLIGHTS_PGOFACES_FILE) {
+        return FrameParallelism::Stateful;
+    }
+    return FrameParallelism::Pure;
+}
+
+std::list<std::string> FacesEffect::GetFacesUsed(const SettingsMap& SettingsMap) const {
+    std::list<std::string> res;
+    auto face = SettingsMap.Get("E_CHOICE_Faces_FaceDefinition", "Default");
+    if (face != "Default" && face != "Rendered" && face != "") {
+        res.emplace_back(face);
+    }
+    return res;
+}
+
+std::list<std::string> FacesEffect::GetFileReferences(RenderContext* ctx, Model* model, const SettingsMap& settings) const {
+    std::list<std::string> res;
+
+    if (model != nullptr) {
+        std::string definition = settings.Get("E_CHOICE_Faces_FaceDefinition", "Default");
+        if (definition == "Default" && !model->GetFaceInfo().empty() && model->GetFaceInfo().begin()->first != "") {
+            definition = model->GetFaceInfo().begin()->first;
+        }
+        bool found = true;
+        auto it = model->GetFaceInfo().find(definition);
+        if (it == model->GetFaceInfo().end()) {
+            //not found
+            found = false;
+        }
+        if (!found) {
+            if ("Coro" == definition && model->GetFaceInfo().find("SingleNode") != model->GetFaceInfo().end()) {
+                definition = "SingleNode";
+                found = true;
+            } else if ("SingleNode" == definition && model->GetFaceInfo().find("Coro") != model->GetFaceInfo().end()) {
+                definition = "Coro";
+                found = true;
+            }
+        }
+
+        std::string modelType = definition;
+        if (found && model->GetFaceInfo().at(definition).contains("Type") && !model->GetFaceInfo().at(definition).at("Type").empty()) {
+            modelType = model->GetFaceInfo().at(definition).at("Type");
+        }
+
+        if (modelType == "Matrix" && model->GetFaceInfo().contains(definition)) {
+            auto images = model->GetFaceInfo().at(definition);
+            for (const auto& it2 : images) {
+                if (it2.first.find("Mouth") == 0) {
+                    if (it2.second != "" && std::find(begin(res), end(res), it2.second) == end(res)) {
+                        res.push_back(ResolveFileReference(ctx, it2.second));
+                    }
+                }
+            }
+        }
+    }
+    return res;
+}
+
+void FacesEffect::RenameTimingTrack(std::string oldname, std::string newname, Effect* effect) {
+    std::string timing = effect->GetSettings().Get("E_CHOICE_Faces_TimingTrack", "");
+
+    if (timing == oldname) {
+        effect->GetSettings()["E_CHOICE_Faces_TimingTrack"] = newname;
+    }
+}
+
+uint8_t FacesEffect::CalculateAlpha(SequenceElements* elements, int leadFrames, bool fade, const std::string& timingTrack, RenderBuffer& buffer)
+{
+    uint8_t res = 0;
+
+    Element* track = elements->GetElement(timingTrack);
+    std::recursive_timed_mutex tmpLock;
+    std::recursive_timed_mutex* lock = &tmpLock;
+    if (track != nullptr) {
+        lock = &track->GetChangeLock();
+    }
+    std::unique_lock<std::recursive_timed_mutex> locker(*lock);
+
+    if (track != nullptr && track->GetEffectLayerCount() == 3) {
+
+        EffectLayer* layer = track->GetEffectLayer(2);
+        std::unique_lock<std::recursive_mutex> locker2(layer->GetLock());
+
+        int currentTime = buffer.curPeriod * buffer.frameTimeInMs + 1;
+
+        Effect* currentEffect = layer->GetEffectByTime(currentTime);
+
+        if (currentEffect != nullptr) {
+            res = 255;
+        }
+        else {
+            if (leadFrames == 0) {
+                res = 0;
+            }
+            else {
+                int leadMS = leadFrames * buffer.frameTimeInMs;
+                Effect* afterEffect = layer->GetEffectAfterTime(currentTime);
+                uint8_t beforeAlpha = 0;
+                if (afterEffect != nullptr) {
+                    if (afterEffect->GetStartTimeMS() - currentTime < leadMS) {
+                        if (fade) {
+                            beforeAlpha = 255 - ((afterEffect->GetStartTimeMS() - currentTime) * 255) / leadMS;
+                        }
+                        else {
+                            beforeAlpha = 255;
+                        }
+                    }
+                }
+                Effect* beforeEffect = layer->GetEffectBeforeTime(currentTime);
+                uint8_t afterAlpha = 0;
+                if (beforeEffect != nullptr) {
+                    if (currentTime - beforeEffect->GetEndTimeMS() < leadMS) {
+                        if (fade) {
+                            afterAlpha = 255 - ((currentTime - beforeEffect->GetEndTimeMS()) * 255) / leadMS;
+                        }
+                        else {
+                            afterAlpha = 255;
+                        }
+                    }
+                }
+                res = std::max(beforeAlpha, afterAlpha);
+            }
+        }
+    }
+
+    return res;
+}
+
+void FacesEffect::Render(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    //
+    //wxStopWatch sw;
+    uint8_t alpha = 255;
+    if (SettingsMap.GetBool("CHECKBOX_Faces_SuppressWhenNotSinging", sSuppressWhenNotSingingDefault)) {
+        if (SettingsMap["CHOICE_Faces_TimingTrack"] != "") {
+            alpha = CalculateAlpha(effect->GetParentEffectLayer()->GetParentElement()->GetSequenceElements(), SettingsMap.GetInt("SPINCTRL_Faces_LeadFrames", sLeadFramesDefault), SettingsMap.GetBool("CHECKBOX_Faces_Fade", sFadeDefault), SettingsMap["CHOICE_Faces_TimingTrack"], buffer);
+        }
+    }
+
+    if (SettingsMap.Get("CHOICE_Faces_FaceDefinition", sFaceDefinitionDefault) == XLIGHTS_PGOFACES_FILE) {
+        RenderCoroFacesFromPGO(buffer,
+                               SettingsMap["CHOICE_Faces_Phoneme"],
+                               SettingsMap.Get("CHOICE_Faces_Eyes", sEyesDefault),
+                               SettingsMap.Get("CHOICE_Faces_EyeBlinkFrequency", sEyeBlinkFrequencyDefault),
+                               SettingsMap.Get("CHOICE_Faces_EyeBlinkDuration", sEyeBlinkDurationDefault),
+                               SettingsMap.GetBool("CHECKBOX_Faces_Outline", sOutlineDefault),
+                               alpha, SettingsMap.GetBool("CHECKBOX_Faces_SuppressShimmer", sSuppressShimmerDefault));
+    } else {
+        float oset = buffer.GetEffectTimeIntervalPosition();
+        std::string dir = SettingsMap.Get("CHOICE_Faces_Direction", sDirectionDefault);
+        float speed = SettingsMap.GetFloat("TEXTCTRL_Faces_Speed", sSpeedDefault);
+        float frameRateAdj = SettingsMap.GetFloat("TEXTCTRL_Faces_FrameRateAdj", sFrameRateAdjDefault);
+        bool pixelOffsets = SettingsMap.GetBool("CHECKBOX_Faces_PixelOffsets", sPixelOffsetsDefault);
+        std::string scaling = SettingsMap.Get("CHOICE_Faces_Scaling", sScalingDefault);
+        int xc = dir != "vector"
+            ? GetValueCurveInt("FacesXC", sXCDefault, SettingsMap, oset, -100, 100, buffer.GetStartTimeMS(), buffer.GetEndTimeMS())
+            : SettingsMap.GetInt("SLIDER_FacesXC", sXCDefault);
+        int yc = dir != "vector"
+            ? GetValueCurveInt("FacesYC", sYCDefault, SettingsMap, oset, -100, 100, buffer.GetStartTimeMS(), buffer.GetEndTimeMS())
+            : SettingsMap.GetInt("SLIDER_FacesYC", sYCDefault);
+        int endXc = SettingsMap.GetInt("SLIDER_FacesEndXC", sEndXCDefault);
+        int endYc = SettingsMap.GetInt("SLIDER_FacesEndYC", sEndYCDefault);
+        bool wrapX = SettingsMap.GetBool("CHECKBOX_Faces_WrapX", sWrapXDefault);
+        int startScale = SettingsMap.GetInt("SLIDER_Faces_StartScale", sStartScaleDefault);
+        int endScale = SettingsMap.GetInt("SLIDER_Faces_EndScale", sEndScaleDefault);
+        RenderFaces(buffer,
+                    effect->GetParentEffectLayer()->GetParentElement()->GetSequenceElements(),
+                    SettingsMap.Get("CHOICE_Faces_FaceDefinition", sFaceDefinitionDefault),
+                    SettingsMap["CHOICE_Faces_Phoneme"],
+                    SettingsMap["CHOICE_Faces_TimingTrack"],
+                    SettingsMap.Get("CHOICE_Faces_Eyes", sEyesDefault),
+                    SettingsMap.Get("CHOICE_Faces_EyeBlinkFrequency", sEyeBlinkFrequencyDefault),
+                    SettingsMap.Get("CHOICE_Faces_EyeBlinkDuration", sEyeBlinkDurationDefault),
+                    SettingsMap.GetBool("CHECKBOX_Faces_Outline", sOutlineDefault),
+                    SettingsMap.GetBool("CHECKBOX_Faces_TransparentBlack", false),
+                    SettingsMap.GetInt("TEXTCTRL_Faces_TransparentBlack", 0),
+                    alpha,
+                    SettingsMap.Get("CHOICE_Faces_UseState", sUseStateDefault),
+                    SettingsMap.GetBool("CHECKBOX_Faces_SuppressShimmer", sSuppressShimmerDefault),
+                    dir, speed, frameRateAdj, pixelOffsets, scaling, xc, yc, endXc, endYc, wrapX, startScale, endScale);
+    }
+
+    //if (sw.TimeInMicro() > 2000) {
+    //    spdlog::debug("Face effect frame render time: {}us {}", sw.TimeInMicro(), (const char*)buffer.GetModel()->GetFullName().c_str());
+    //}
+}
+
+void FacesEffect::RenderFaces(RenderBuffer& buffer, const std::string& Phoneme, const std::string& eyes, const std::string& eyeBlinkFreq, const std::string& eyeBlinkDuration, bool outline, uint8_t alpha, bool suppressShimmer) {
+    if (alpha == 0)
+        return; // 0 alpha means there is nothing to do
+
+    static const std::map<std::string, int> phonemeMap = {
+        { "AI", 0 },
+        { "E", 1 },
+        { "FV", 2 },
+        { "L", 3 },
+        { "MBP", 4 },
+        { "O", 5 },
+        { "U", 6 },
+        { "WQ", 7 },
+        { "etc", 8 },
+        { "rest", 9 },
+        { "(off)", 10 }
+    };
+
+    std::string pp = Phoneme;
+    std::string p = BeforeFirst(pp, '-');
+    bool shimmer = !suppressShimmer && EndsWith(Lower(pp), "-shimmer");
+
+    std::map<std::string, int>::const_iterator it = phonemeMap.find(p);
+    int PhonemeInt = 0;
+    if (it != phonemeMap.end()) {
+        PhonemeInt = it->second;
+    }
+
+    int Ht = buffer.BufferHt;
+    int Wt = buffer.BufferWi;
+
+    // this draws eyes as well
+    drawoutline(buffer, PhonemeInt, outline, eyes, eyeBlinkFreq, eyeBlinkDuration, buffer.BufferHt, buffer.BufferWi);
+    mouth(buffer, PhonemeInt, Ht, Wt, shimmer); // draw a mouth syllable
+}
+
+bool FacesEffect::ShimmerState(RenderBuffer& buffer) const
+{
+    //return !((buffer.curPeriod - buffer.curEffStartPer) % 3 == 0);
+    // This is frame rate independent
+    return !((buffer.curPeriod - buffer.curEffStartPer) * buffer.frameTimeInMs % 200 >= 150);
+}
+
+//TODO: add params for eyes, outline
+void FacesEffect::mouth(RenderBuffer& buffer, int Phoneme, int BufferHt, int BufferWi, bool shimmer) {
+    if (shimmer) {
+        // dont draw every third frame
+        if (!ShimmerState(buffer))
+            return;
+    }
+
+    /*
+     FacesPhoneme.Add("AI");     0
+     FacesPhoneme.Add("E");      1
+     FacesPhoneme.Add("FV");     2
+     FacesPhoneme.Add("L");      3
+     FacesPhoneme.Add("MBP");    4
+     FacesPhoneme.Add("O");      5
+     FacesPhoneme.Add("U");      6
+     FacesPhoneme.Add("WQ");     7
+     FacesPhoneme.Add("etc");    8
+     FacesPhoneme.Add("rest");   9
+
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     ...............|...............
+     -1-------------+-------------1-         5% and 95% in x, 52% in y
+     .1.............|.............1.         55% in y
+     .11111111111111111111111111111.         58% in y
+     .2..........55.|.55..........2.
+     .2........55...|...55........2.
+     .2......55.....|.....55......2.
+     .2....55.......|.......55....2.
+     .2..55.........|.........55..2.
+     .255...........|...........552.
+     .2.............|.............2.      y 81%
+     .2.............|.............2.
+     .255...........|...........552.
+     .2..55.........|.........55..2.
+     .2....55.......|.......55....2.
+     .2......55.....|.....55......2.
+     .2........55...|...55........2.
+     ............55.|.55............
+     */
+
+    double offset = 0.0;
+    int Ht = BufferHt - 1;
+    int Wt = BufferWi - 1;
+    int x1 = (int)(offset + Wt * 0.25);
+    int x2 = (int)(offset + Wt * 0.75);
+    int x3 = (int)(offset + Wt * 0.30);
+    int x4 = (int)(offset + Wt * 0.70);
+
+    int y1 = (int)(offset + Ht * 0.48);
+    int y2 = (int)(offset + Ht * 0.40);
+    int y3 = (int)(offset + Ht * 0.25);
+    int y4 = (int)(offset + Ht * 0.20);
+    int y5 = (int)(offset + Ht * 0.30);
+
+    // eyes
+    switch (Phoneme) {
+    case 0: // AI
+        drawline1(buffer, Phoneme, x1, x2, y1, y2, 0);
+        drawline1(buffer, Phoneme, x1, x2, y1, y4, 0);
+        break;
+    case 3:
+    case 1: // E, L
+        drawline1(buffer, Phoneme, x1, x2, y1, y2, 0);
+        drawline1(buffer, Phoneme, x1, x2, y1, y3, 0);
+        break;
+    case 2: // FV
+        drawline1(buffer, Phoneme, x1, x2, y1, y2, 0);
+        drawline1(buffer, Phoneme, x1, x2, y1, y2 - 1, 0);
+        break;
+    case 4:
+    case 9: //  MBP,rest
+
+        drawline1(buffer, Phoneme, x1, x2, y1, y2, 0);
+        break;
+    case 5:
+    case 6: // O,U,WQ
+    case 7: {
+        int xc = (int)(0.5 + Wt * 0.50);
+        int yc = (int)(y2 - y5) / 2 + y5;
+        double radius = (std::min(Wt, Ht)) * 0.15; // O
+        if (Phoneme == 6)
+            radius = (std::min(Wt, Ht)) * 0.10; // U
+        if (Phoneme == 7)
+            radius = (std::min(Wt, Ht)) * 0.05; // WQ
+        facesCircle(buffer, Phoneme, xc, yc, radius, 0, 360, 0);
+    } break;
+    case 8: // WQ, etc
+        drawline3(buffer, Phoneme, x3, x4, y5, y2, 0);
+        break;
+    default:
+        break;
+    }
+}
+
+void FacesEffect::drawline1(RenderBuffer& buffer, int Phoneme, int x1, int x2, int y1, int y2, int ColorIdx) {
+    HSVValue hsv;
+
+    buffer.palette.GetHSV(ColorIdx, hsv); // Now go and get the hsv value for this ColorIdx
+
+    for (int x = x1 + 1; x < x2; x++) {
+        buffer.SetPixel(x, y2, hsv); // Turn pixel on
+    }
+
+    for (int y = y2 + 1; y <= y1; y++) {
+        buffer.SetPixel(x1, y, hsv); // Left side of mouyh
+        buffer.SetPixel(x2, y, hsv); // rightside
+    }
+}
+
+void FacesEffect::drawline3(RenderBuffer& buffer, int Phoneme, int x1, int x2, int y6, int y7, int ColorIdx) {
+    HSVValue hsv;
+    buffer.palette.GetHSV(ColorIdx, hsv);
+
+    for (int y = y6 + 1; y < y7; y++) {
+        buffer.SetPixel(x1, y, hsv); // Left side of mouyh
+        buffer.SetPixel(x2, y, hsv); // rightside
+    }
+
+    for (int x = x1 + 1; x < x2; x++) {
+        buffer.SetPixel(x, y6, hsv); // Bottom
+        buffer.SetPixel(x, y7, hsv); // Bottom
+    }
+}
+
+/*
+ faces draw circle
+ */
+void FacesEffect::facesCircle(RenderBuffer& buffer, int Phoneme, int xc, int yc, double radius, int start_degrees, int end_degrees, int colorIdx) {
+    HSVValue hsv;
+    buffer.palette.GetHSV(colorIdx, hsv);
+
+    for (int degrees = start_degrees; degrees < end_degrees; degrees++) {
+        double t = ((double)degrees * PI) / 180.0;
+        int x = (int)((double)xc + radius * cos(t));
+        int y = (int)((double)yc + radius * sin(t));
+        buffer.SetPixel(x, y, hsv); // Bottom
+    }
+}
+
+void FacesEffect::drawoutline(RenderBuffer& buffer, int Phoneme, bool outline, const std::string& eyes, const std::string& eyeBlinkFreqIn, const std::string& eyeBlinkDurationIn, int BufferHt, int BufferWi) {
+    std::string eye = eyes;
+    std::string eyeBlinkFreq = eyeBlinkFreqIn;
+    std::string eyeBlinkDuration = eyeBlinkDurationIn;
+
+    int Ht = BufferHt - 1;
+    int Wt = BufferWi - 1;
+
+    size_t colorcnt = buffer.GetColorCount();
+
+    HSVValue hsvOutline;
+    buffer.palette.GetHSV(1 % colorcnt, hsvOutline);
+
+    //  DRAW EYES
+    int start_degrees = 0;
+    int end_degrees = 360;
+    if (eye == "Auto") {
+        if (Phoneme == 9 || Phoneme == 10) {
+            eye = IsAutoBlinkClosed(buffer, eyeBlinkFreq, eyeBlinkDuration) ? "Closed" : "Open";
+        } else {
+            eye = "Open";
+        }
+    }
+
+    if (eye == "Closed") {
+        start_degrees = 180;
+        end_degrees = 360;
+    }
+
+    if (eye != "(off)") {
+        int xc = (int)(0.5 + Wt * 0.33); // left eye
+        int yc = (int)(0.5 + Ht * 0.75);
+        double radius = Wt * 0.08;
+        facesCircle(buffer, Phoneme, xc, yc, radius, start_degrees, end_degrees, 2 % colorcnt);
+        xc = (int)(0.5 + Wt * 0.66); // right eye
+        facesCircle(buffer, Phoneme, xc, yc, radius, start_degrees, end_degrees, 2 % colorcnt);
+    }
+
+    /*
+     ...********...
+     ..*
+     .*
+     *
+     *
+     *
+     */
+    if (outline) {
+        for (int y = 3; y < BufferHt - 3; y++) {
+            buffer.SetPixel(0, y, hsvOutline);            // Left side of mouyh
+            buffer.SetPixel(BufferWi - 1, y, hsvOutline); // rightside
+        }
+        for (int x = 3; x < BufferWi - 3; x++) {
+            buffer.SetPixel(x, 0, hsvOutline);            // Bottom
+            buffer.SetPixel(x, BufferHt - 1, hsvOutline); // Bottom
+        }
+        buffer.SetPixel(2, 1, hsvOutline); // Bottom left
+        buffer.SetPixel(1, 2, hsvOutline); //
+
+        buffer.SetPixel(BufferWi - 3, 1, hsvOutline); // Bottom Right
+        buffer.SetPixel(BufferWi - 2, 2, hsvOutline); //
+
+        buffer.SetPixel(BufferWi - 3, BufferHt - 2, hsvOutline); // Bottom Right
+        buffer.SetPixel(BufferWi - 2, BufferHt - 3, hsvOutline); //
+
+        buffer.SetPixel(2, BufferHt - 2, hsvOutline); // Bottom Right
+        buffer.SetPixel(1, BufferHt - 3, hsvOutline); //
+    }
+}
+
+/*----------------------CoroFaces--------------------------*/
+//TODO: move this to a shared location:
+static std::string NoInactive(std::string name)
+{
+    const std::string InactiveIndicator = "?";
+    return name.starts_with(InactiveIndicator) ? name.substr(InactiveIndicator.size()) : name;
+}
+
+//cached model info; guarded by model_xy_mutex (effects render in parallel on multiple threads)
+static std::unordered_map<std::string, std::unordered_map<std::string, /*wxPoint*/ std::string> > model_xy;
+static std::mutex model_xy_mutex;
+
+// caller must hold model_xy_mutex
+static bool parse_model(const std::string& want_model, const std::string& showDir)
+{
+    if (model_xy.find(want_model) != model_xy.end()) return true; //already have info
+
+    pugi::xml_document pgoXml;
+    std::filesystem::path pgoFile = std::filesystem::path(showDir) / XLIGHTS_PGOFACES_FILE;
+    std::string pgoFileStr = pgoFile.string();
+    if (!FileExists(pgoFileStr)) return false;
+    if (!pgoXml.load_file(pgoFileStr.c_str())) return false;
+    pugi::xml_node root = pgoXml.document_element();
+    if (!root || (std::string_view(root.name()) != "papagayo")) return false;
+    for (int compat = 0; compat < 2; ++compat)
+    {
+        pugi::xml_node Presets = FindXmlNode(pgoXml.document_element(), compat? "corofaces": "presets", "Name", "", false); //kludge: backwards compatible with current settings
+        if (!Presets) continue; //should be there if seq was generated in this folder
+        //group name is not available, so use first occurrence of model in *any* group:
+        //NOTE: assumes phoneme/face mapping is consistent for any given model across groups, which should be the case since the lights don't move
+        for (pugi::xml_node group = Presets.first_child(); group; group = group.next_sibling())
+        {
+            for (pugi::xml_node voice = group.first_child(); voice; voice = voice.next_sibling())
+            {
+                std::string voice_name = NoInactive(voice.attribute("name").as_string());
+                if (voice_name != want_model) continue;
+                //XmlNode getting trashed later, so save it here
+                std::unordered_map<std::string, std::string>& map = model_xy[want_model];
+                map.clear();
+                for (pugi::xml_attribute attrp = voice.first_attribute(); attrp; attrp = attrp.next_attribute())
+                {
+                    std::string value = attrp.as_string();
+                    if (!value.empty()) map[attrp.name()] = value;
+                }
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+//NOTE: params are re-purposed as follows for Coro face mode:
+// x_y = list of active elements for this frame
+// Outline_x_y = list of persistent/sticky elements (stays on after frame ends)
+// Eyes_x_y = list of random elements (intended for eye blinks, etc)
+
+void FacesEffect::RenderCoroFacesFromPGO(RenderBuffer& buffer, const std::string& Phoneme, const std::string& eyes, const std::string& eyeBlinkFreq, const std::string& eyeBlinkDuration, bool face_outline, uint8_t alpha, bool suppressShimmer)
+{
+    if (alpha == 0) return;
+
+    //NOTE:
+    //PixelBufferClass contains 2 RgbEffects members, which this method is a member of
+    //xLightsFrame contains a PixelBufferClass member named buffer, which is derived from Model and gives the name of the model currently being used
+    //therefore we can access the model info by going to parent object's buffer member
+
+    static std::unordered_map<std::string, std::string> auto_phonemes {{"a-AI", "AI"}, {"a-E", "E"}, {"a-FV", "FV"}, {"a-L", "L"},
+        {"a-MBP", "MBP"}, {"a-O", "O"}, {"a-U", "U"}, {"a-WQ", "WQ"}, {"a-etc", "etc"}, {"a-rest", "rest"}};
+
+    if (auto_phonemes.find((const char*)Phoneme.c_str()) != auto_phonemes.end())
+    {
+        RenderFaces(buffer, auto_phonemes[(const char*)Phoneme.c_str()], eyes, eyeBlinkFreq, eyeBlinkDuration, face_outline, alpha, suppressShimmer);
+        return;
+    }
+
+    xlColor color;
+    buffer.palette.GetColor(0, color); //use first color; user must make sure it matches model node type
+    color = xlWHITE; //kludge: must use WHITE to get single-color nodes to show correctly
+    HSVValue hsv;
+    buffer.Color2HSV(color, hsv);
+
+    std::vector<xlPoint> first_xy;
+    const Model* model_info = buffer.GetModel();
+
+    // Take a local copy of the model's PGO map under lock so we can use it without
+    // holding the lock through ParseFaceElement / SetPixel (effects render in parallel).
+    std::unordered_map<std::string, std::string> map;
+    {
+        std::lock_guard<std::mutex> lk(model_xy_mutex);
+        if (!buffer.curPeriod) model_xy.clear(); //flush cache once at start of each effect
+        if (!model_info || !parse_model(buffer.cur_model, buffer.renderContext->GetShowDirectory())) {
+            return;
+        }
+        map = model_xy[(const char*)buffer.cur_model.c_str()];
+    }
+    if (Phoneme == "(test)")
+    {
+        std::string info = eyes;
+        Model::ParseFaceElement(info, first_xy);
+    }
+    if (!Phoneme.empty())
+    {
+        std::string info = map[(const char*)Phoneme.c_str()];
+        Model::ParseFaceElement(info, first_xy);
+    }
+
+    if (!eyes.empty())
+    {
+        std::string eyesLower(eyes);
+        std::transform(eyesLower.begin(), eyesLower.end(), eyesLower.begin(), ::tolower);
+
+        std::string info = map[fmt::format("Eyes_{}", eyesLower)];
+        Model::ParseFaceElement(info, first_xy);
+
+        info = map[fmt::format("Eyes2_{}", eyesLower)];
+        Model::ParseFaceElement(info, first_xy);
+
+        info = map[fmt::format("Eyes3_{}", eyesLower)];
+        Model::ParseFaceElement(info, first_xy);
+    }
+    if (face_outline)
+    {
+        std::string info = map["Outline"];
+        Model::ParseFaceElement(info, first_xy);
+    }
+    for (auto it = first_xy.begin(); it != first_xy.end(); ++it)
+    {
+        --(*it).x; // "A" = 1 = first col
+        buffer.SetPixel((*it).x, buffer.BufferHt - (*it).y, hsv); //only need to turn on first pixel for each face part
+    }
+}
+
+std::string FacesEffect::MakeKey(int bufferWi, int bufferHt, std::string dirstr, std::string picture, std::string stf)
+{
+    return fmt::format("{}|{}|{}|{}|{}", bufferWi, bufferHt, dirstr, picture, stf);
+}
+
+
+
+static const std::string &findKey(const std::map<std::string, std::string> &m, const std::string &k, const std::string &dv = xlEMPTY_STRING) {
+    const auto &v = m.find(k);
+    if (v == m.end()) {
+        return dv;
+    }
+    return v->second;
+}
+
+
+void FacesEffect::RenderFaces(RenderBuffer& buffer,
+                              SequenceElements* elements, const std::string& faceDef,
+                              const std::string& Phoneme, const std::string& trackName,
+                              const std::string& eyesIn, const std::string& eyeBlinkFreqIn, const std::string& eyeBlinkDurationIn,
+                              bool face_outline, bool transparentBlack, int transparentBlackLevel, uint8_t alpha, const std::string& outlineState, bool suppressShimmer,
+                              const std::string& direction, float speed, float frameRateAdj, bool pixelOffsets, const std::string& scaling, int xc, int yc, int endXc, int endYc, bool wrapX, int startScale, int endScale) {
+    if (alpha == 0)
+        return; // if alpha is zero dont bother.
+
+    std::string eyes = eyesIn;
+    std::string eyeBlinkFreq = eyeBlinkFreqIn;
+    std::string eyeBlinkDuration = eyeBlinkDurationIn;
+
+    FacesRenderCache* cache = (FacesRenderCache*)buffer.infoCache[id];
+    if (cache == nullptr) {
+        cache = new FacesRenderCache();
+        buffer.infoCache[id] = cache;
+    }
+
+    if (buffer.needToInit) {
+        buffer.needToInit = false;
+        elements->AddRenderDependency(trackName, buffer.cur_model);
+        cache->Clear();
+    }
+
+    if (buffer.cur_model == "") {
+        return;
+    }
+    const Model* model_info = buffer.GetModel();
+    if (model_info == nullptr) {
+        return;
+    }
+
+    bool group = false;
+    const SubModel* subModel = nullptr;
+    // if this is a submodel find the parent so we can find the face definition there
+    if (model_info->GetDisplayAs() == DisplayAsType::SubModel) {
+        subModel = dynamic_cast<const SubModel*>(model_info);
+        if (subModel == nullptr) return;
+        model_info = subModel->GetParent();
+        if (model_info == nullptr) return;
+    } else if (model_info->GetDisplayAs() == DisplayAsType::ModelGroup) {
+        auto* modelGroup = dynamic_cast<const ModelGroup*>(model_info);
+        if (modelGroup == nullptr) return;
+        model_info = modelGroup->GetFirstModel();
+        group = true;
+        if (model_info == nullptr) {
+            return;
+        }
+    }
+    auto toLocalNode = [&](int parentIdx) -> int {
+        if (subModel == nullptr) return parentIdx;
+        const auto& nim = subModel->GetNodeIndexMap();
+        auto mapped = nim.find(parentIdx);
+        return (mapped != nim.end()) ? mapped->second : -1;
+    };
+
+    std::string definition = faceDef;
+    if ((definition == "Default" || definition == "") && !model_info->GetFaceInfo().empty() && model_info->GetFaceInfo().begin()->first != "") {
+        definition = model_info->GetFaceInfo().begin()->first;
+    }
+
+    bool found = true;
+    auto it = model_info->GetFaceInfo().find(definition);
+    if (it == model_info->GetFaceInfo().end()) {
+        //not found
+        found = false;
+    }
+    // sequence-level (matrix) face definitions are the fallback when the
+    // model doesn't define the face itself - model definitions always win
+    const std::map<std::string, std::string>* seqFaceDef = nullptr;
+    if (!found && elements != nullptr) {
+        if ((definition == "Default" || definition == "") && !elements->GetSequenceFaces().empty()) {
+            definition = elements->GetSequenceFaces().GetFaces().begin()->first;
+        }
+        seqFaceDef = elements->GetSequenceFaces().GetFace(definition);
+    }
+    if (!found && seqFaceDef == nullptr) {
+        if ("Coro" == definition && model_info->GetFaceInfo().find("SingleNode") != model_info->GetFaceInfo().end()) {
+            definition = "SingleNode";
+            found = true;
+        } else if ("SingleNode" == definition && model_info->GetFaceInfo().find("Coro") != model_info->GetFaceInfo().end()) {
+            definition = "Coro";
+            found = true;
+        } else if (definition != "Default" && definition != "Rendered" && definition != "" && definition != "Matrix") {
+            std::string firstFace = "";
+            for (const auto& it2 : model_info->GetFaceInfo()) {
+                if (it2.first != "") {
+                    firstFace = it2.first;
+                    break;
+                }
+            }
+            if (firstFace != "") {
+                definition = firstFace;
+                found = true;
+            }
+        }
+    }
+
+    std::map<std::string, std::string> emptyMap;
+    const std::map<std::string, std::string>& faceInfoDef = found ? model_info->GetFaceInfo().find(definition)->second : (seqFaceDef != nullptr ? *seqFaceDef : emptyMap);
+    std::string modelType = (found || seqFaceDef != nullptr) ? findKey(faceInfoDef, "Type") : definition;
+    if (modelType == "") {
+        modelType = definition;
+    }
+
+    int type = 3;
+
+    if ("Coro" == modelType || "SingleNode" == modelType) {
+        type = 0;
+    } else if ("NodeRange" == modelType) {
+        type = 1;
+    } else if ("Rendered" == definition || "Default" == definition || "" == definition) {
+        type = 2;
+    }
+
+    // Only the Coro/SingleNode path looks names up, and building this costs two
+    // map inserts per node - on a large matrix that dwarfs the whole effect, and
+    // it is rebuilt for every frame-parallel clone buffer.
+    if (type == 0 && cache->nodeNameCache.empty()) {
+        for (size_t x = 0; x < model_info->GetNodeCount(); x++) {
+            std::string nn = model_info->GetNodeName(x, false);
+            std::string defNN = "Node " + std::to_string(x + 1);
+            if (!nn.empty()) {
+                cache->nodeNameCache[nn] = x;
+            }
+            if (nn != defNN) {
+                cache->nodeNameCache[defNN] = x;
+            }
+        }
+    }
+
+    if (buffer.curEffStartPer == buffer.curPeriod) {
+        if (modelType != "Matrix" && modelType != "Rendered" && modelType != "Default") {
+            if (buffer.isTransformed) {
+                
+                spdlog::warn("Faces effect starting at {}ms until {}ms on model {} has a transformed buffer. This may not work as expected.", buffer.curEffStartPer * buffer.frameTimeInMs, buffer.curEffEndPer * buffer.frameTimeInMs, (const char*)buffer.cur_model.c_str());
+            }
+        }
+    }
+
+    if (group && type != 3) {//only picture type on a group make sense
+        return;
+    }
+
+    std::string phoneme = Phoneme;
+
+    if (phoneme == "") {
+        Element* track = elements->GetElement(trackName);
+        // GET Phoneme from timing track
+        if (track == nullptr || track->GetEffectLayerCount() < 3) {
+            phoneme = "rest";
+            if ("Auto" == eyes) {
+                eyes = IsAutoBlinkClosed(buffer, eyeBlinkFreq, eyeBlinkDuration) ? "Closed" : "Open";
+            }
+        } else {
+            // Limit the lock for only as long as we access the timing track - this minimises contention ... especially when using faces effect on groups
+            std::recursive_timed_mutex* lock = &track->GetChangeLock();
+            std::unique_lock<std::recursive_timed_mutex> locker(*lock);
+
+            EffectLayer* layer = track->GetEffectLayer(2);
+            if (layer == nullptr) {
+                phoneme = "rest";
+                eyes = "Open";
+            } else {
+                std::unique_lock<std::recursive_mutex> locker2(layer->GetLock());
+                int time = buffer.curPeriod * buffer.frameTimeInMs + 1;
+                Effect* ef = layer->GetEffectByTime(time);
+                if (ef == nullptr) {
+                    phoneme = "rest";
+                } else {
+                    phoneme = ef->GetEffectName();
+                    if (phoneme == "") {
+                        phoneme = "rest";
+                    }
+                }
+                if ("Auto" == eyes && phoneme == "rest" && type != 2) {
+                    eyes = IsAutoBlinkClosedInRest(buffer, cache, layer, eyeBlinkFreq, eyeBlinkDuration) ? "Closed" : "Open";
+                }
+            }
+        }
+    } else if (phoneme == "rest" || phoneme == "(off)") {
+            if ("Auto" == eyes) {
+                eyes = IsAutoBlinkClosed(buffer, eyeBlinkFreq, eyeBlinkDuration) ? "Closed" : "Open";
+            }
+    }
+
+    int colorOffset = 0;
+    xlColor color;
+    buffer.palette.GetColor(0, color); //use first color for mouth; user must make sure it matches model node type
+
+    bool customColor = findKey(faceInfoDef, "CustomColors") == "1";
+
+    std::string pp = phoneme;
+    std::string p = BeforeFirst(pp, '-');
+    bool shimmer = !suppressShimmer && EndsWith(Lower(pp), "-shimmer");
+
+    std::vector<std::string> todo;
+    std::vector<xlColor> colors;
+    if (p != "(off)") {
+        todo.push_back("Mouth-" + p);
+        todo.push_back("Mouth-" + p + "2");
+        colorOffset = 1;
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Mouth-" + p + "-Color");
+            std::string cname2 = findKey(faceInfoDef, "Mouth-" + p + "2-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+            if (cname2 == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname2));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+    }
+    if ((int)buffer.palette.Size() > colorOffset) {
+        buffer.palette.GetColor(colorOffset, color); //use second color for eyes; user must make sure it matches model node type
+    }
+    if (eyes == "Open" || eyes == "Auto") {
+        todo.push_back("Eyes-Open");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Open-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+
+        todo.push_back("Eyes-Open2");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Open2-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            if ((int)buffer.palette.Size() > colorOffset + 3) {
+                buffer.palette.GetColor(colorOffset + 3, color); //use fifth colour
+            }
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+
+        todo.push_back("Eyes-Open3");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Open3-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            if ((int)buffer.palette.Size() > colorOffset + 4) {
+                buffer.palette.GetColor(colorOffset + 4, color); //use sixth colour
+            }
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+    } else if (eyes == "Closed") {
+        todo.push_back("Eyes-Closed");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Closed-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+
+        todo.push_back("Eyes-Closed2");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Closed2-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            if ((int)buffer.palette.Size() > colorOffset + 3) {
+                buffer.palette.GetColor(colorOffset + 3, color); //use fifth colour
+            }
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+
+        todo.push_back("Eyes-Closed3");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "Eyes-Closed3-Color");
+            if (cname == "") {
+                colors.push_back(xlWHITE);
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            } else {
+                colors.push_back(xlColor(cname));
+                colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+            }
+        } else {
+            if ((int)buffer.palette.Size() > colorOffset + 4) {
+                buffer.palette.GetColor(colorOffset + 4, color); //use sixth colour
+            }
+            colors.push_back(color);
+            colors.back().alpha = ((int)alpha * colors.back().alpha) / 255;
+        }
+    } else if (eyes == "(off)") {
+        //no eyes
+    }
+    if ((int)buffer.palette.Size() > (1 + colorOffset)) {
+        buffer.palette.GetColor((1 + colorOffset), color); //use third color for outline; user must make sure it matches model node type
+    }
+    if (face_outline) {
+        if ((int)buffer.palette.Size() > (2 + colorOffset)) {
+            buffer.palette.GetColor((2 + colorOffset), color); //use forth color for outline 2; user must make sure it matches model node type
+        }
+
+        // FaceOutline2 is inserted first, then FaceOutline is inserted before it, so FaceOutline2 renders
+        // after FaceOutline and wins on any nodes shared between the two groups.
+        todo.insert(todo.begin(), "FaceOutline2");
+        if (customColor) {
+            std::string const cname = findKey(faceInfoDef, "FaceOutline2-Color");
+            if (cname == "") {
+                colors.insert(colors.begin(), xlWHITE);
+                colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+            } else {
+                colors.insert(colors.begin(), xlColor(cname));
+                colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+            }
+        } else {
+            colors.insert(colors.begin(), color);
+            colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+        }
+
+        if ((int)buffer.palette.Size() > (1 + colorOffset)) {
+            buffer.palette.GetColor((1 + colorOffset), color); //use third color for outline; user must make sure it matches model node type
+        }
+
+        todo.insert(todo.begin(), "FaceOutline");
+        if (customColor) {
+            std::string cname = findKey(faceInfoDef, "FaceOutline-Color");
+            if (cname == "") {
+                colors.insert(colors.begin(), xlWHITE);
+                colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+            } else {
+                colors.insert(colors.begin(), xlColor(cname));
+                colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+            }
+        } else {
+            colors.insert(colors.begin(), color);
+            colors.front().alpha = ((int)alpha * colors.front().alpha) / 255;
+        }
+    }
+
+    if (type == 2) {
+        RenderFaces(buffer, phoneme, eyes, eyeBlinkFreq, eyeBlinkDuration, face_outline, alpha, suppressShimmer);
+        return;
+    }
+    if (type == 3) {
+        // picture
+        std::string e = eyes;
+        if (eyes == "Auto") {
+            e = "Open";
+        }
+        if (eyes == "(off)") {
+            e = "Closed";
+        }
+        std::string key = "Mouth-" + p + "-Eyes";
+        std::string picture = "";
+        if (faceInfoDef.find(key + e) != faceInfoDef.end()) {
+            picture = findKey(faceInfoDef, key + e);
+            if (shimmer) {
+                if (!ShimmerState(buffer)) {
+                    picture = findKey(faceInfoDef, "Mouth-rest-Eyes" + e);
+                }
+            }
+        }
+        if (picture == "" && e == "Closed") {
+            if (faceInfoDef.find(key + "Open") != faceInfoDef.end()) {
+                picture = findKey(faceInfoDef, key + "Open");
+                if (shimmer) {
+                    if (!ShimmerState(buffer)) {
+                        picture = findKey(faceInfoDef, "Mouth-rest-EyesOpen");
+                    }
+                }
+            }
+        }
+        std::string dirstr = direction;
+        std::string stf = scaling;
+        if (stf == "Default (from face)") {
+            stf = "Scale To Fit";
+            if (findKey(faceInfoDef, "ImagePlacement") == "Centered") {
+                stf = "No Scaling";
+            } else if (findKey(faceInfoDef, "ImagePlacement") == "Scale Keep Aspect Ratio" ||
+                       findKey(faceInfoDef, "ImagePlacement") == "Scale Keep Aspect Ratio Crop") {
+                stf = findKey(faceInfoDef, "ImagePlacement");
+            }
+        }
+        // Cache the pre-rendered image only when no per-frame variation is needed.
+        // Movement, dynamic offsets, and animated scaling change the output every
+        // frame — skip the cache in those cases and hand PicturesEffect all the
+        // parameters so it renders fresh.
+        bool useCache = (dirstr == "none" && xc == 0 && yc == 0 && startScale == 100 && endScale == 100);
+        RenderBuffer* crb = nullptr;
+        if (useCache) {
+            crb = cache->GetImage(MakeKey(buffer.BufferWi, buffer.BufferHt, dirstr, picture, stf));
+        }
+        if (crb == nullptr) {
+            crb = new RenderBuffer(buffer);
+            PicturesEffect::Render(*crb, dirstr, picture, speed, frameRateAdj,
+                                   xc, yc, endXc, endYc,
+                                   startScale, endScale, stf,
+                                   pixelOffsets, wrapX, false, true, false, false, 0);
+            if (useCache) {
+                cache->AddImage(MakeKey(buffer.BufferWi, buffer.BufferHt, dirstr, picture, stf), crb);
+            } else {
+                // Not cached — copy pixels now, then delete the temp buffer.
+                for (int y = 0; y < buffer.BufferHt; y++) {
+                    for (int x = 0; x < buffer.BufferWi; x++) {
+                        if (transparentBlack) {
+                            auto c = crb->GetPixel(x, y);
+                            int level = c.Red() + c.Green() + c.Blue();
+                            if (level > transparentBlackLevel) {
+                                c.alpha = ((int)alpha * c.alpha) / 255;
+                                buffer.SetPixel(x, y, c);
+                            }
+                        } else {
+                            auto c = crb->GetPixel(x, y);
+                            c.alpha = ((int)alpha * c.alpha) / 255;
+                            buffer.SetPixel(x, y, c);
+                        }
+                    }
+                }
+                delete crb;
+                crb = nullptr;
+            }
+        }
+        if (crb != nullptr) {
+            for (int y = 0; y < buffer.BufferHt; y++) {
+                for (int x = 0; x < buffer.BufferWi; x++) {
+                    if (transparentBlack) {
+                        auto c = crb->GetPixel(x, y);
+                        int level = c.Red() + c.Green() + c.Blue();
+                        if (level > transparentBlackLevel) {
+                            c.alpha = ((int)alpha * c.alpha) / 255;
+                            buffer.SetPixel(x, y, c);
+                        }
+                    } else {
+                        auto c = crb->GetPixel(x, y);
+                        c.alpha = ((int)alpha * c.alpha) / 255;
+                        buffer.SetPixel(x, y, c);
+                    }
+                }
+            }
+        }
+    }
+
+    for (size_t t = 0; t < todo.size(); t++) {
+        if (shimmer && StartsWith(todo[t], "Mouth-")) {
+            if (!ShimmerState(buffer))
+                continue;
+        }
+        if (type == 1) {
+            const auto& nodeInfo = model_info->GetFaceInfoNodes().find(definition);
+            if (nodeInfo != model_info->GetFaceInfoNodes().end() && nodeInfo->second.find(todo[t]) != nodeInfo->second.end()) {
+                for (const auto it : nodeInfo->second.find(todo[t])->second) {
+                    int localIdx = toLocalNode(it);
+                    if (localIdx >= 0) buffer.SetNodePixel(localIdx, colors[t], true);
+                }
+            }
+        } else {
+            std::string channels = findKey(faceInfoDef, todo[t]);
+            for (const auto& valstr : Split(channels, ',')) {
+                if (type == 0) {
+                    auto it2 = cache->nodeNameCache.find(valstr);
+                    if (it2 != cache->nodeNameCache.end()) {
+                        int localIdx = toLocalNode(it2->second);
+                        if (localIdx >= 0) buffer.SetNodePixel(localIdx, colors[t], true);
+                    }
+                }
+            }
+        }
+
+        // Applied right after FaceOutline2 paints (the last of the two outline groups, always
+        // at index 1 when face_outline is set) so the state's colors win over both outlines on
+        // shared nodes, but still get painted over by Mouth/Eyes further down in todo.
+        if (todo[t] == "FaceOutline2" && !outlineState.empty()) {
+            if (model_info->GetStateInfo().find(outlineState) != model_info->GetStateInfo().end()) {
+                const auto& sts = model_info->GetStateInfo().find(outlineState)->second;
+                if (findKey(sts, "CustomColors") == "1") {
+                    if (findKey(sts, "Type") == "NodeRange") {
+                        const auto& stateNodes = model_info->GetStateInfoNodes();
+                        const auto outerIt = stateNodes.find(outlineState);
+                        for (size_t i = 1; i <= 200; i++) {
+                            const std::string k = fmt::format("s{:03d}", (int)i);
+                            auto r = findKey(sts, k);
+                            auto c = findKey(sts, fmt::format("s{:03d}-Color", (int)i));
+                            if (r != "") {
+                                xlColor colour = xlColor(c);
+                                if (c.empty()) {
+                                    colour = xlWHITE;
+                                }
+                                colour.alpha = ((int)alpha * colour.alpha) / 255;
+                                if (outerIt != stateNodes.end()) {
+                                    const auto innerIt = outerIt->second.find(k);
+                                    if (innerIt != outerIt->second.end()) {
+                                        for (const auto it : innerIt->second) {
+                                            int localIdx = toLocalNode(it);
+                                            if (localIdx >= 0) buffer.SetNodePixel(localIdx, colour, true);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

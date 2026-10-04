@@ -1,0 +1,897 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <string>
+#include <map>
+#include <vector>
+#include <list>
+#include <tuple>
+
+class BaseSerializingVisitor;
+
+#include "ControllerConnection.h"
+#include "ModelScreenLocation.h"
+#include "BoxedScreenLocation.h"
+#include "TwoPointScreenLocation.h"
+#include "ThreePointScreenLocation.h"
+#include "PolyPointScreenLocation.h"
+#include "PWMOutput.h"
+
+#include "Color.h"
+#include "BaseObject.h"
+#include "UtilFunctions.h"
+
+#include "../utils/xlPoint.h"
+#include "handles/Handles.h"
+#include "handles/DragSession.h"
+#include <memory>
+
+
+class DimmingCurve;
+#include <pugixml.hpp>
+class IModelPreview;
+class ModelScreenLocation;
+class ModelManager;
+class SubModel;
+class OutputManager;
+class ControllerCaps;
+class NodeBaseClass;
+class xlGraphicsProgram;
+class xlVertexIndexedColorAccumulator;
+class xlVertexColorAccumulator;
+class xlVertexAccumulator;
+class xlGraphicsContext;
+typedef std::unique_ptr<NodeBaseClass> NodeBaseClassPtr;
+
+//convert to Structs someday
+using FaceStateData = std::map<std::string, std::map<std::string, std::string>>;
+using FaceStateNodes = std::map<std::string, std::map<std::string, std::list<int>>>;
+
+#define NO_CONTROLLER "No Controller"
+#define USE_START_CHANNEL "Use Start Channel"
+
+enum {
+    //GRIDCHANGE_REFRESH_DISPLAY = 0x0001,
+    //GRIDCHANGE_MARK_DIRTY = 0x0002,
+    //GRIDCHANGE_REBUILD_PROP_GRID = 0x0004,
+    //GRIDCHANGE_REBUILD_MODEL_LIST = 0x0008,
+    //GRIDCHANGE_UPDATE_ALL_MODEL_LISTS = 0x0010,
+    GRIDCHANGE_SUPPRESS_HOLDSIZE = 0x00020,
+
+    //GRIDCHANGE_MARK_DIRTY_AND_REFRESH = 0x0003
+};
+
+class Model : public BaseObject
+{
+    friend class ModelManager;
+    friend class SubModel;
+
+public:
+
+    enum class PIXEL_STYLE {
+        PIXEL_STYLE_SQUARE,
+        PIXEL_STYLE_SMOOTH,
+        PIXEL_STYLE_SOLID_CIRCLE,
+        PIXEL_STYLE_BLENDED_CIRCLE
+    };
+
+    static std::vector<std::string> CONTROLLER_COLORORDER;
+
+    Model(const ModelManager& manager);
+    virtual ~Model();
+    static std::vector<std::string> GetLayoutGroups(const ModelManager& mm);
+    // allowAt: submodel/face/state names may contain '@' since, unlike a top-level
+    // model name, they are never parsed as an "@ModelName:1" start-channel reference.
+    static std::string SafeModelName(const std::string& name, bool allowAt = false)
+    {
+        std::string n = Trim(name);
+        for (char c : {',', '~', '!', ';', '<', '>', '"', '\'', '&', ':', '|', '/', '\\', '\t', '\r', '\n'}) {
+            std::erase(n, c);
+        }
+        if (!allowAt) {
+            std::erase(n, '@');
+        }
+        // Other characters I could remove
+        // $%^*()?|][{}`.
+        return n;
+    }
+
+    virtual std::string GetFullName() const { return name; }
+    void Rename(std::string const& newName);
+    virtual int GetNumStrings() const { return 1; }
+    PIXEL_STYLE GetPixelStyle() const { return _pixelStyle; }
+    void SetPixelStyle(PIXEL_STYLE style);
+    static std::string GetPixelStyleDescription(PIXEL_STYLE pixelStyle);
+    virtual int GetNumPhysicalStrings() const;
+    ControllerCaps* GetControllerCaps() const;
+    Controller* GetController() const;
+    static std::string DetermineClass(const std::string& displayAs, bool isSingingFace, bool isSpiralTree, bool isSticks, const std::string& dropPattern);
+
+    std::string GetModelStartChannel() const { return ModelStartChannel; }
+    const std::string GetStartSide() const { return _startSide; }
+    const std::string GetDirection() const { return _dir; }
+    // parm1/2/3 removed - use model-specific named accessors instead
+    int GetTransparency() const { return transparency; }
+    int GetBlackTransparency() const { return blackTransparency; }
+    std::string GetDescription() const { return description; }
+    void SetDescription(std::string const& desc) { description = desc; }
+    const std::string GetNodeNames() const { return _nodeNamesString; }
+    const std::string GetStrandNames() const { return _strandNamesString; }
+    void SetNodeNames(std::string const& nodes);
+    void SetStrandNames(std::string const& strands);
+    void SetCustomColor(std::string const& color) { customColor = color; }
+    [[nodiscard]] xlColor GetCustomColor() const { return customColor; }
+    
+    void SetDirection( const std::string dir ) { _dir = dir; }
+    void SetStartSide( const std::string start_side ) { _startSide = start_side; }
+
+    virtual bool SupportsChangingStringCount() const { return false; };
+    virtual bool ChangeStringCount(long count,  std::string& message) { return false; };
+
+    std::string description;
+    int _controller = 0; // this is used to pass the selected controller name between property create and property change only
+
+    int GetPixelSize() const { return pixelSize; }
+    void SetPixelSize(int size);
+    void SetTransparency(int t);
+    void SetBlackTransparency(int t);
+    
+    // Getter methods for export functionality
+    [[nodiscard]] const std::string &GetPixelCount() const { return _pixelCount; }
+    [[nodiscard]] const std::string &GetPixelType() const { return _pixelType; }
+    [[nodiscard]] const std::string &GetPixelSpacing() const { return _pixelSpacing; }
+    
+    void SetPixelCount(const std::string &pc) { _pixelCount = pc; }
+    void SetPixelType(const std::string &pt) { _pixelType = pt; }
+    void SetPixelSpacing(const std::string &ps) { _pixelSpacing = ps; }
+
+    std::string ExportSuperStringColors() const;
+    void ApplyDimensions(const std::string& units, float width, float height, float depth);
+    std::string GetRulerDim() const;
+
+    virtual bool AllNodesAllocated() const { return true; }
+    static void WriteFaceInfo(pugi::xml_node fiNode, const FaceStateData& faceInfo);
+    std::string SerialiseFace() const;
+    std::string SerialiseState() const;
+    void AddModelGroups(pugi::xml_node n, const std::string& name, bool& merge, bool& ask);
+    void ImportExtraModels(pugi::xml_node n, ModelManager& modelManager, const std::string& layoutGroup);
+
+    void UpdateFaceInfoNodes();
+    void UpdateStateInfoNodes();
+
+    // Pure computation of node ranges from state info; exposed so UI code can
+    // resolve the overlay from in-flight (not-yet-saved) state edits.
+    [[nodiscard]] static FaceStateNodes ComputeStateInfoNodes(FaceStateData const& stateInfo);
+
+     static void WriteStateInfo(pugi::xml_node fiNode, const FaceStateData& stateInfo, bool customColours = false);
+
+    [[nodiscard]] virtual FaceStateData const& GetFaceInfo() const { return faceInfo; };
+    [[nodiscard]] virtual FaceStateNodes const& GetFaceInfoNodes() const { return faceInfoNodes; };
+    [[nodiscard]] virtual FaceStateData const& GetStateInfo() const { return stateInfo; };
+    [[nodiscard]] virtual FaceStateNodes const& GetStateInfoNodes() const { return stateInfoNodes; };
+
+    virtual void SetFaceInfo(FaceStateData const& info) { faceInfo = info; UpdateFaceInfoNodes(); };
+    virtual void SetFaceInfoNodes(FaceStateNodes const& nodes) { faceInfoNodes = nodes; };
+    virtual void SetStateInfo(FaceStateData const& info) { stateInfo = info; UpdateStateInfoNodes(); };
+    virtual void SetStateInfoNodes(FaceStateNodes const& nodes) { stateInfoNodes = nodes; };
+
+    // Add face with data structure-based method
+    inline void AddFace(const std::map<std::string, std::string>& attributes) {
+        // Extract the face name from attributes
+        auto nameIt = attributes.find("Name");
+        if (nameIt == attributes.end()) {
+            return; // Invalid face data, must have a name
+        }
+        
+        std::string faceName = nameIt->second;
+        
+        // Create a new face entry in faceInfo
+        faceInfo[faceName] = attributes;
+        
+        // Update face info nodes
+        UpdateFaceInfoNodes();
+    }
+    
+    // Add state with data structure-based method
+    inline void AddState(const std::map<std::string, std::string>& attributes) {
+        // Extract the state name from attributes
+        auto nameIt = attributes.find("Name");
+        if (nameIt == attributes.end()) {
+            return; // Invalid state data, must have a name
+        }
+        
+        std::string stateName = nameIt->second;
+        
+        // Create a new state entry in stateInfo
+        stateInfo[stateName] = attributes;
+        
+        // Update state info nodes
+        UpdateStateInfoNodes();
+    }
+    
+    void AddSubmodel(SubModel* sm);
+    [[nodiscard]] Model* CreateDefaultModelFromSavedModelNode(Model* model, pugi::xml_node node, ModelManager& modelManager, bool& cancelled) const;
+
+    [[nodiscard]] std::string SerialiseSubmodel() const;
+    [[nodiscard]] virtual std::string CreateBufferAsSubmodel() const;
+    bool importAliases = false;
+    bool skipImportAliases = false;
+
+    [[nodiscard]] std::map<std::string, std::map<std::string, std::string>> GetDimmingInfo() const;
+    void SetDimmingInfo(const std::map<std::string, std::map<std::string, std::string>>& info);
+    DimmingCurve *GetDimmingCurve() const { return modelDimmingCurve; }
+    [[nodiscard]] virtual std::list<std::string> CheckModelSettings() override;
+    [[nodiscard]] virtual const std::vector<std::string>& GetBufferStyles() const {
+        return DEFAULT_BUFFER_STYLES;
+    };
+    virtual const std::string AdjustBufferStyle(const std::string &style) const;
+    virtual void GetBufferSize(const std::string& type, const std::string& camera, const std::string& transform, int& BufferWi, int& BufferHi, int stagger) const;
+    virtual void InitRenderBufferNodes(const std::string& type, const std::string& camera, const std::string& transform,
+        std::vector<NodeBaseClassPtr>& Nodes, int& BufferWi, int& BufferHi, int stagger, bool deep = false) const;
+    [[nodiscard]] const ModelManager& GetModelManager() const {
+        return modelManager;
+    }
+    // GetXlightsModel moved to LayoutPanel.cpp (UI-layer only)
+    bool FourChannelNodes() const;
+    bool FiveChannelNodes() const;
+    std::list<std::string> GetShadowedBy() const;
+
+    void SetStartChannel(std::string const& startChannel);
+    void ReloadModel() override
+    {
+        GetModelScreenLocation().Reload();
+        Setup();
+    }
+
+    static const std::vector<std::string> DEFAULT_BUFFER_STYLES;
+
+    int GetDefaultBufferWi() const { return BufferWi; }
+    int GetDefaultBufferHt() const { return BufferHt; }
+    virtual bool IsDMXModel() const { return false; }
+
+    void GetSerialProtocolSpeeds(const std::string& protocol, std::vector<std::string>& cp, int& idx) const;
+    void GetControllerProtocols(std::vector<std::string>& cp, int& idx);
+    virtual std::string GetDimension() const override;
+    virtual bool IsNodeFirst(int n) const
+    {
+        return n == 0;
+    }
+    virtual const ModelScreenLocation& GetModelScreenLocation() const = 0;
+    virtual ModelScreenLocation& GetModelScreenLocation() = 0;
+
+    [[nodiscard]] bool HasIndividualStartChannels() const { return _hasIndivChans; }
+    void SetHasIndividualStartChannels(bool indiv) { _hasIndivChans = indiv; }
+    [[nodiscard]] std::string GetIndividualStartChannel(size_t s) const;
+    void SetIndivStartChannelCount(int count) { _indivStartChannels.resize(count); }
+    void SetIndividualStartChannel(int index, const std::string& channel) { _indivStartChannels[index] = channel; }
+    void SetIndivStartNodesCount(int count) { _indivStartNodes.resize(count); }
+    std::vector<int> GetNodeSizes() const { return _indivStartNodes;}
+    void SetNodeSize(int idx, int val) { _indivStartNodes[idx] = val; }
+
+    [[nodiscard]] bool HasIndivStartNodes() const { return _hasIndivNodes; }
+    void SetHasIndivStartNodes(bool indiv) { _hasIndivNodes = indiv; }
+    [[nodiscard]] int GetIndivStartNode(size_t s) const { return _indivStartNodes[s]; }
+    [[nodiscard]] int GetIndivStartNodesCount() const { return _indivStartNodes.size(); }
+    void AddIndivStartNode(int node) { _indivStartNodes.push_back(node); }
+    void SetIndivStartNode(int index, int node) { _indivStartNodes[index] = node; }
+    virtual const std::string StartNodeAttrName(int idx) const { return ""; }
+
+    bool IsNodeInBufferRange(size_t nodeNum, int x1, int y1, int x2, int y2);
+
+    static void ApplyTransparency(xlColor& color, int transparency, int blackTransparency);
+    
+    
+    virtual bool SupportsModelScreenLocation() const { return true; }
+
+    std::string ComputeStringStartChannel(int x);
+    int ComputeStringStartNode(int x) const;
+
+protected:
+    void ApplyTransform(const std::string& transform,
+        std::vector<NodeBaseClassPtr>& Nodes,
+        int& bufferWi, int& bufferHi, int startNode = 0) const;
+    void AdjustForTransform(const std::string& transform,
+        int& bufferWi, int& bufferHi) const;
+    void DumpBuffer(std::vector<NodeBaseClassPtr>& newNodes, int bufferWi, int bufferHi) const;
+
+    // size of the default buffer
+    int BufferHt = 0;
+    int BufferWi = 0;
+    int BufferDp = 0;
+    std::vector<NodeBaseClassPtr> Nodes;
+    const ModelManager& modelManager;
+
+    int FindNodeAtXY(int bufx, int bufy);
+    virtual void InitModel() {}
+    virtual int CalcChannelsPerString();
+    virtual void SetStringStartChannels(int NumberOfStrings, int StartChannel, int ChannelsPerString);
+    void RecalcStartChannels();
+
+    void SetBufferSize(int NewHt, int NewWi);
+    void SetNodeCount(size_t NumStrings, size_t NodesPerString, const std::string& rgbOrder);
+    void CopyBufCoord2ScreenCoord();
+
+    bool FindCustomModelScale(int scale) const;
+
+    void ImportSuperStringColours(pugi::xml_node root);
+
+    void SetLineCoord();
+    std::string GetNextName();
+
+    PIXEL_STYLE _pixelStyle = PIXEL_STYLE::PIXEL_STYLE_SMOOTH;
+    int pixelSize = 2;
+    int transparency = 0;
+    int blackTransparency = 0;
+    xlColor _modelTagColour = xlBLACK;
+    bool _modelTagColourValid = false;
+    std::string _modelTagColourString = xlEMPTY_STRING;
+    uint8_t _lowDefFactor = 100;
+    std::string _startSide = "B";
+    std::string _dir = "L";
+    std::string _controllerName = "";
+
+    int StrobeRate = 0; // 0 = no strobing
+
+    std::vector<std::string> strandNames;
+    std::vector<std::string> nodeNames;
+    std::string _nodeNamesString;
+    std::string _strandNamesString;
+    // parm1/2/3 removed - each model subclass now has its own named member variables
+    bool IsLtoR = true;     // true = left to right, false = right to left
+    std::vector<int32_t> stringStartChan;
+    bool isBotToTop = true;
+    std::string StringType = "RGB Nodes"; // RGB Nodes, 3 Channel RGB, Single Color Red, Single Color Green, Single Color Blue, Single Color White
+    int rgbwHandlingType = 0;
+    std::vector<xlColor> superStringColours;
+    xlColor customColor;
+
+    bool _hasIndivChans = false;
+    bool _hasIndivNodes = false;
+    std::vector<std::string> _indivStartChannels;
+    std::vector<int> _indivStartNodes;
+
+    mutable std::list<std::string> aliases;
+
+    std::map<std::string, std::map<std::string, std::string>> dimmingInfo;
+    DimmingCurve* modelDimmingCurve = nullptr;
+    
+    std::vector<Model*> subModels;
+    std::map<std::string, Model*> sortedSubModels;
+    std::string _modelChain = "";
+    [[nodiscard]] uint32_t ApplyLowDefinition(uint32_t val) const;
+
+    FaceStateData faceInfo;
+    FaceStateNodes faceInfoNodes;
+    FaceStateData stateInfo;
+    FaceStateNodes stateInfoNodes;
+
+public:
+    [[nodiscard]] std::string GetControllerConnectionString() const;
+    [[nodiscard]] std::string GetControllerConnectionRangeString() const;
+    [[nodiscard]] std::string GetControllerConnectionPortRangeString() const;
+    [[nodiscard]] std::string GetControllerConnectionAttributeString() const;
+    void ReplaceIPInStartChannels(const std::string& oldIP, const std::string& newIP);
+    std::string DecodeSmartRemote(int sr) const;
+
+    void SetTagColour(const xlColor& colour);
+    void SetTagColourAsString(std::string const& colour);
+    [[nodiscard]] xlColor GetTagColour();
+    [[nodiscard]] std::string GetTagColourAsString() const; // used by XmlSerializer
+    [[nodiscard]] int32_t GetStringStartChan(int x) const;
+
+    [[nodiscard]] int GetNumSuperStringColours() const { return superStringColours.size(); }
+    [[nodiscard]] std::string GetSuperStringColour(int index) const { return superStringColours[index]; }
+    void SetSuperStringColours(int count);
+    void SetSuperStringColour(int index, xlColor c);
+    void AddSuperStringColour(xlColor c);
+    void Reinitialize() { InitModel(); }
+    void SetShadowModelFor(const std::string& shadowFor, bool applyLink = true);
+    [[nodiscard]] bool IsShadowModel() const;
+    [[nodiscard]] std::string GetShadowModelFor() const;
+    [[nodiscard]] std::string GetRGBWHandling() const;
+    void SetRGBWHandling(std::string const& handling);
+    void SetLowDefFactor(int factor) { _lowDefFactor = factor; }
+    [[nodiscard]] int GetLowDefFactor() const { return _lowDefFactor; }
+    [[nodiscard]] int GetRGBWHandlingType() const { return rgbwHandlingType; }
+    [[nodiscard]] const std::vector<xlColor>& GetSuperStringColours() const { return superStringColours; }
+    void InitSuperStringColours() { if (superStringColours.empty()) superStringColours.push_back(xlRED); }
+    [[nodiscard]] size_t IndivStartChannelCount() const { return _indivStartChannels.size(); }
+    void AddIndivStartChannel(const std::string& ch) { _indivStartChannels.push_back(ch); }
+    void PopIndivStartChannel() { _indivStartChannels.pop_back(); }
+    void ClearIndivStartChannels() { _indivStartChannels.clear(); }
+    void ResizeIndivStartChannels(int count) { _indivStartChannels.resize(count); }
+    void SetModelTagColour(const xlColor& c) { _modelTagColour = c; _modelTagColourValid = true; _modelTagColourString = std::string(c); }
+
+    bool IsAlias(const std::string& alias, bool oldnameOnly = false) const;
+    bool AddAlias(const std::string& alias);
+    void DeleteAlias(const std::string& alias);
+    bool DeleteAllAliases();
+    const std::list<std::string> &GetAliases() const;
+    void SetAliases(const std::list<std::string>& aliases);
+
+    void SetModelChain(const std::string& modelChain);
+    [[nodiscard]] std::string GetModelChain() const;
+    [[nodiscard]] const std::vector<Model*>& GetSubModels() const {
+        return subModels;
+    }
+    [[nodiscard]] Model* GetSubModel(const std::string& name) const;
+    [[nodiscard]] std::string GenerateUniqueSubmodelName(const std::string suggested) const;
+    [[nodiscard]] int GetNumSubModels() const {
+        return subModels.size();
+    }
+    [[nodiscard]] Model* GetSubModel(int i) const {
+        return i < (int)subModels.size() ? subModels[i] : nullptr;
+    }
+    void RemoveSubModel(const std::string& name);
+    void RemoveAllSubModels();
+    void DeleteAllSubModels();
+    void ClearRenderCaches();
+    [[nodiscard]] std::list<int> ParseFaceNodes(std::string channels);
+
+    virtual std::vector<PWMOutput> GetPWMOutputs() const;
+
+    std::vector<std::string> GetSmartRemoteValues(int smartRemoteCount) const;
+
+    [[nodiscard]] unsigned long GetChangeCount() const {
+        return changeCount;
+    }
+
+    std::string rgbOrder;
+    bool SingleNode = false;     // true for dumb strings and single channel strings
+    bool SingleChannel = false;  // true for traditional single-color strings
+
+    std::string ModelStartChannel{ "" };
+    bool CouldComputeStartChannel = false;
+    bool Overlapping = false;
+    bool NotOnController = false;
+    // Set while a model is picked up in the controller visualiser, so the layout
+    // preview can show which prop the tile refers to.
+    bool HighlightedInVisualiser = false;
+    std::string _pixelCount{ "" };
+    std::string _pixelType{ "" };
+    std::string _pixelSpacing{ "" };
+    std::string _shadowModelFor{ "" };
+
+    void UpdateChannels();
+    void Setup() override;
+    // Take on another model's size, position and rotation. Used when a
+    // replacement model has to keep the geometry of the model it replaces.
+    // Callers still own Setup() / IncrementChangeCount().
+    void CopyGeometryFrom(const Model& other);
+    virtual bool ModelRenamed(const std::string& oldName, const std::string& newName);
+    [[nodiscard]] uint32_t GetNodeCount() const;
+    [[nodiscard]] NodeBaseClass* GetNode(uint32_t node) const;
+    [[nodiscard]] uint32_t GetChanCount() const;
+    [[nodiscard]] uint32_t GetActChanCount() const;
+    [[nodiscard]] int GetChanCountPerNode() const;
+    [[nodiscard]] uint32_t GetCoordCount(size_t nodenum) const;
+    [[nodiscard]] int GetNodeStringNumber(size_t nodenum) const;
+    [[nodiscard]] virtual int GetNodePhysicalStringIndex(size_t nodenum) const { return GetNodeStringNumber(nodenum); }
+    void SetPosition(double posx, double posy);
+    [[nodiscard]] std::string GetChannelInStartChannelFormat(OutputManager* outputManager, uint32_t channel);
+    [[nodiscard]] std::string GetLastChannelInStartChannelFormat(OutputManager* outputManager);
+    [[nodiscard]] std::string GetFirstChannelInStartChannelFormat(OutputManager* outputManager);
+    [[nodiscard]] std::string GetStartChannelInDisplayFormat(OutputManager* outputManager);
+    [[nodiscard]] bool IsValidStartChannelString() const;
+    virtual uint32_t GetFirstChannel() const;
+    virtual uint32_t GetLastChannel() const;
+    uint32_t GetNumChannels() const;
+    uint32_t GetNodeNumber(size_t nodenum) const;
+    uint32_t GetNodeNumber(int bufY, int bufX) const;
+    int GetNumberFromChannelString(const std::string& sc) const;
+    int GetNumberFromChannelString(const std::string& sc, bool& valid, std::string& dependsonmodel) const;
+
+    virtual void DisplayModelOnWindow(IModelPreview* preview, xlGraphicsContext *ctx,
+                                      xlGraphicsProgram *solidProgram, xlGraphicsProgram *transparentProgram, bool is_3d = false,
+                                      const xlColor* color = nullptr, bool allowSelected = false, bool wiring = false,
+                                      bool highlightFirst = false, int highlightpixel = 0,
+                                      float *boundingBox = nullptr);
+    virtual void DisplayEffectOnWindow(IModelPreview* preview, double pointSize);
+
+
+
+    virtual int NodeRenderOrder() { return 0; }
+    virtual bool UsesBufCoordsForModelPreview() const { return false; }
+    float GetPreviewDimScale(IModelPreview* preview, int& w, int& h);
+    void GetScreenLocation(float& sx, float& sy, const NodeBaseClass::CoordStruct& it2, int w, int h, float scale);
+    bool GetScreenLocations(IModelPreview* preview, std::map<int, std::pair<float, float>>& coords);
+    std::string GetNodeNear(IModelPreview* preview, xlPoint pt, bool flip);
+    std::vector<int> GetNodesInBoundingBox(IModelPreview* preview, xlPoint start, xlPoint end);
+    std::vector<int> GetNodesNearPath(IModelPreview* preview, const std::vector<xlPoint>& path);
+    bool IsMultiCoordsPerNode() const;
+
+    virtual bool CleanupFileLocations(RenderContext* ctx) override;
+    void AddASAPWork(uint32_t work, const std::string& from) override;
+    std::list<std::string> GetFaceFiles(const std::list<std::string>& facesUsed, bool all = false, bool includeFaceName = false) const;
+
+    std::optional<handles::Id> GetSelectedHandleId();
+    int GetNumHandles();
+    int GetSelectedSegment();
+    bool SupportsCurves();
+    bool HasCurve(int segment);
+    void SetCurve(int segment, bool create);
+    void AddHandle(IModelPreview* preview, int mouseX, int mouseY);
+    virtual void InsertHandle(int after_handle, float zoom, int scale);
+    virtual void DeleteHandle(int handle);
+
+    bool HasState(std::string const& state) const;
+
+    bool HitTest(IModelPreview* preview, glm::vec3& ray_origin, glm::vec3& ray_direction);
+    const std::string& GetStringType() const { return StringType; }
+    void SetStringType(std::string const& st) { StringType = st; }
+
+    virtual int NodesPerString() const;
+    virtual int NodesPerString(int string) const;
+    virtual int MapPhysicalStringToLogicalString(int string) const;
+    virtual int GetLightsPerNode() const { return 1; }
+    virtual int GetStrandsPerString() const { return 1; }
+    CursorType InitializeLocation(int& handle, int x, int y, IModelPreview* preview);
+
+    int32_t NodeStartChannel(size_t nodenum) const;
+    int32_t NodeEndChannel(size_t nodenum) const;
+    const std::string& NodeType(size_t nodenum) const;
+    virtual int MapToNodeIndex(int strand, int node) const;
+
+    void GetNodeChannelValues(size_t nodenum, unsigned char* buf);
+    void SetNodeChannelValues(size_t nodenum, const unsigned char* buf);
+    xlColor GetNodeColor(size_t nodenum) const;
+    virtual const xlColor &GetNodeMaskColor(size_t nodenum) const;
+    void SetNodeColor(size_t nodenum, const xlColor& c);
+    char GetChannelColorLetter(uint8_t chidx);
+    std::string GetRGBOrder() const { return rgbOrder; }
+    static char EncodeColour(const xlColor& c);
+    char GetAbsoluteChannelColorLetter(int32_t absoluteChannel); // absolute channel may or may not be in this model ... in which case a ' ' is returned
+    std::string GetControllerPortSortString() const;
+
+    virtual std::string ChannelLayoutHtml(OutputManager* outputManager, bool darkMode = false);
+    virtual void ExportAsCustomXModel(BaseSerializingVisitor& visitor) const;
+    virtual std::string GetStartLocation() const;
+    bool IsCustom();
+    virtual bool SupportsExportAsCustom() const = 0;
+    virtual bool SupportsExportAsCustom3D() const
+    {
+        return false;
+    }
+    virtual void ExportAsCustomXModel3D(BaseSerializingVisitor& visitor) const
+    {}
+    virtual bool SupportsWiringView() const = 0;
+    virtual bool SupportsSwapStartEnd() const { return false; }
+    virtual void SwapStartEnd() {}
+    size_t GetChannelCoords(std::vector<std::string>& choices);
+    static bool ParseFaceElement(const std::string& str, std::vector<xlPoint>& first_xy);
+    static bool ParseStateElement(const std::string& str, std::vector<xlPoint>& first_xy);
+    virtual bool SupportsLowDefinitionRender() const
+    {
+        return false;
+    }
+    std::string GetNodeXY(const std::string& nodenumstr);
+    std::string GetNodeXY(int nodeinx);
+
+    void GetNodeCoords(int nodeidx, std::vector<xlPoint>& pts);
+    void GetNode3DScreenCoords(int nodeidx, std::vector<std::tuple<float, float, float>>& pts);
+
+    bool GetIsLtoR() const { return IsLtoR; }
+    bool GetIsBtoT() const { return isBotToTop; }
+    void SetIsBtoT(bool val) { isBotToTop = val; }
+    void SetIsLtoR(bool val) { IsLtoR = val; }
+    bool IsSingleNode() const { return SingleNode; }
+    virtual int GetStrandLength(int strand) const;
+
+    float _savedWidth{ 0.0F };
+    float _savedHeight{ 0.0F };
+    float _savedDepth{ 0.0F };
+    void SaveDisplayDimensions();
+    void RestoreDisplayDimensions();
+
+    void ClearIndividualStartChannels();
+
+    void GetMinScreenXY(float& minx, float& miny) const;
+    virtual int GetNumStrands() const {
+            return 1;
+    }
+    std::string GetStrandName(size_t x, bool def = false) const
+    {
+        if (x < strandNames.size()) {
+            return strandNames[x];
+        }
+        if (def) {
+            return std::string("Strand ") + std::to_string(x + 1);
+        }
+        return "";
+    }
+
+    virtual int GetMappedStrand(int strand) const
+    {
+        return strand;
+    }
+
+    virtual std::string GetNodeName(size_t x, bool def = false) const
+    {
+        if (x < nodeNames.size()) {
+            return nodeNames[x];
+        }
+        if (def) {
+            return std::string("Node ") + std::to_string(x + 1);
+        }
+        return "";
+    }
+
+    static std::string StartChanAttrName(int idx)
+    {
+        return std::string("String") + std::to_string(idx + 1); // a space between "String" and "%i" breaks the start channels listed in Indiv Start Chans
+    }
+
+    // returns true for models that only have 1 string (e.g., WindowFrame, Cube)
+    static bool HasOneString(const DisplayAsType DispAs)
+    {
+        return (DispAs == DisplayAsType::WindowFrame || DispAs == DisplayAsType::Cube);
+    }
+    // true for dumb strings and traditional strings
+    bool HasSingleNode(const std::string& StrType) const
+    {
+        if (StrType == "Node Single Color") return false;
+        if (StrType == "Superstring") return true;
+        static std::string Nodes(" Nodes");
+        if (Nodes.size() > StrType.size()) return false;
+        return StrType.find(Nodes) == std::string::npos;
+    }
+    // true for traditional strings
+    /*static */bool HasSingleChannel(const std::string& StrType) const
+    {
+        return GetNodeChannelCount(StrType) == 1 && StrType != "Node Single Color";
+    }
+    /*static */size_t GetNodeChannelCount(const std::string& nodeType) const;
+
+    // Methods to support layer sizes
+    int layerSizeMenu{ -1 }; // when a layer size is right clicked on this holds the layer that was clicked on
+    virtual bool ModelSupportsLayerSizes() const { return false; }
+    std::vector<int> GetLayerSizes() const { return layerSizes; }
+    void SetLayerSizeCount(int count)
+    {
+        size_t oldCount = layerSizes.size();
+        layerSizes.resize(count);
+        // If it has grown initialise everything to 1
+        for (size_t i = oldCount; i < layerSizes.size(); i++) {
+            layerSizes[i] = 1;
+        }
+    }
+    size_t GetLayerSizesTotalNodes() const
+    {
+        size_t count = 0;
+        for (const auto it : layerSizes) {
+            count += it;
+        }
+        return count;
+    }
+    void DeleteLayerSize(size_t layer)
+    {
+        if (GetLayerSizeCount() <= layer) return;
+        auto layers = layerSizes;
+        layerSizes.resize(0);
+        for (size_t i = 0; i < layer; i++) {
+            layerSizes.push_back(layers[i]);
+        }
+        for (size_t i = layer + 1; i < layers.size(); i++) {
+            layerSizes.push_back(layers[i]);
+        }
+    }
+    void InsertLayerSizeBefore(size_t layer)
+    {
+        auto layers = layerSizes;
+        layerSizes.resize(0);
+        for (size_t i = 0; i < layer; i++) {
+            layerSizes.push_back(layers[i]);
+        }
+        layerSizes.push_back(1);
+        for (size_t i = layer; i < layers.size(); i++) {
+            layerSizes.push_back(layers[i]);
+        }
+    }
+    size_t GetLayerSizeCount() const { return layerSizes.size(); }
+    void SetLayerSize(size_t layer, int size)
+    {
+        if (GetLayerSizeCount() > layer && size != 0) {
+            layerSizes[layer] = size;
+        }
+    }
+    int GetLayerSize(size_t layer) const
+    {
+        if (GetLayerSizeCount() > layer) {
+            return layerSizes[layer];
+        }
+        return 0;
+    }
+    std::string SerialiseLayerSizes() const
+    {
+        std::string res;
+        for (const auto it : layerSizes) {
+            if (res != "") res += ",";
+            res += std::to_string(it);
+        }
+        return res;
+    }
+    bool ContainsChannel(uint32_t startChannel, uint32_t endChannel) const;
+    bool ContainsChannel(int strand, uint32_t startChannel, uint32_t endChannel) const;
+    bool ContainsChannel(const std::string& submodelName, uint32_t startChannel, uint32_t endChannel) const;
+
+    virtual void OnLayerSizesChange(bool countChanged) {}
+    static const long ID_LAYERSIZE_DELETE;
+    static const long ID_LAYERSIZE_INSERT;
+
+    // reverse is used for conversion scenarios where the old format was reversed
+    void DeserializeLayerSizes(std::string const& ls, bool reverse)
+    {
+        layerSizes.resize(0);
+        auto lss = Split(ls, ',');
+        if (reverse) {
+            for (auto it = lss.rbegin(); it != lss.rend(); ++it) {
+                int l = (int)std::strtol(it->c_str(), nullptr, 10);
+                if (l > 0) layerSizes.push_back(l);
+            }
+        }
+        else {
+            for (const auto& it : lss) {
+                int l = (int)std::strtol(it.c_str(), nullptr, 10);
+                if (l > 0) layerSizes.push_back(l);
+            }
+        }
+    }
+
+    uint32_t GetChannelForNode(int strandIndex, int node) const;
+    
+    [[nodiscard]] std::string GetAttributesAsJSON() const;
+
+    // Controller Connection Functions
+    friend class ControllerConnection;
+
+    void SetControllerProperty(enum ControllerConnection::CTRL_PROPS prop) { _controllerConnection.SetProperty(prop); }
+    void ClearControllerProperty(enum ControllerConnection::CTRL_PROPS prop) { _controllerConnection.ClearProperty(prop); }
+    void UpdateControllerProperty(enum ControllerConnection::CTRL_PROPS prop, bool value) { _controllerConnection.UpdateProperty(prop, value); }
+    bool IsCtrlPropertySet(enum ControllerConnection::CTRL_PROPS prop) { return _controllerConnection.IsPropertySet(prop); }
+
+    void SetControllerName(const std::string& controllerName, bool skip_work = false);
+    void SetControllerProtocol(const std::string& protocol) { _controllerConnection.SetProtocol(protocol); }
+    void SetControllerSerialProtocolSpeed(int speed) { _controllerConnection.SetSerialProtocolSpeed(speed); }
+    void SetControllerPort(int port) { _controllerConnection.SetCtrlPort(port); }
+
+    void SetControllerStartNulls(int nulls) { _controllerConnection.SetStartNulls(nulls); }
+    void SetControllerEndNulls(int nulls) { _controllerConnection.SetEndNulls(nulls); }
+    void SetControllerBrightness(int brightness)  { _controllerConnection.SetBrightness(brightness); }
+    void SetControllerColorOrder(std::string const& color) { _controllerConnection.SetColorOrder(color); }
+    void SetControllerGroupCount(int grouping) { _controllerConnection.SetGroupCount(grouping); }
+    void SetControllerGamma(float gamma) { _controllerConnection.SetGamma(gamma); }
+    void SetControllerReverse(int reverse) { _controllerConnection.SetReverse(reverse); }
+    void SetControllerZigZag(int zigzag)  { _controllerConnection.SetZigZag(zigzag); }
+    [[nodiscard]] bool RenameController(const std::string& oldName, const std::string& newName);
+    [[nodiscard]] bool DeleteController(const std::string& name);
+
+    [[nodiscard]] std::string GetControllerName() const { return _controllerName; }
+    [[nodiscard]] std::string GetControllerProtocol() const { return _controllerConnection.GetProtocol(); }
+    [[nodiscard]] int GetControllerProtocolSpeed() const { return _controllerConnection.GetProtocolSpeed(); }
+    [[nodiscard]] int GetControllerPort(int string = 1) const { return _controllerConnection.GetCtrlPort(string); }
+    [[nodiscard]] int GetControllerStartNulls() const { return _controllerConnection.GetStartNulls(); }
+    [[nodiscard]] int GetControllerEndNulls() const { return _controllerConnection.GetEndNulls(); }
+    [[nodiscard]] int GetControllerBrightness() const { return _controllerConnection.GetBrightness(); }
+    [[nodiscard]] std::string GetControllerColorOrder() const { return _controllerConnection.GetColorOrder(); }
+    [[nodiscard]] int GetControllerGroupCount() const { return _controllerConnection.GetGroupCount(); }
+    [[nodiscard]] float GetControllerGamma() const { return _controllerConnection.GetGamma(); }
+    [[nodiscard]] int GetControllerReverse() const { return _controllerConnection.GetReverse(); }
+    [[nodiscard]] int GetControllerZigZag() const { return _controllerConnection.GetZigZag(); }
+
+    [[nodiscard]] int GetControllerDMXChannel() const { return _controllerConnection.GetDMXChannel(); }
+    [[nodiscard]] bool IsControllerConnectionValid() const { return _controllerConnection.IsValid(); }
+    [[nodiscard]] bool IsPixelProtocol() const { return _controllerConnection.IsPixelProtocol(); }
+    [[nodiscard]] bool IsSerialProtocol() const { return _controllerConnection.IsSerialProtocol(); }
+    [[nodiscard]] bool IsMatrixProtocol() const { return _controllerConnection.IsMatrixProtocol(); }
+    [[nodiscard]] bool IsLEDPanelMatrixProtocol() const { return _controllerConnection.IsLEDPanelMatrixProtocol(); }
+    [[nodiscard]] bool IsVirtualMatrixProtocol() const { return _controllerConnection.IsVirtualMatrixProtocol(); }
+    [[nodiscard]] bool IsPWMProtocol() const { return _controllerConnection.IsPWMProtocol(); }
+
+    // Smart Remote Functions
+    void GetPortSR(int string, int& outport, int& outsr) const { return _controllerConnection.GetPortSR(string, outport, outsr); }
+    [[nodiscard]] char GetSmartRemoteLetter() const { return _controllerConnection.GetSmartRemoteLetter(); }
+    [[nodiscard]] char GetSmartRemoteLetterForString(int string = 1) const { return _controllerConnection.GetSmartRemoteLetterForString(string); }
+    [[nodiscard]] int GetSortableSmartRemote() const { return _controllerConnection.GetSortableSmartRemote(); }
+    [[nodiscard]] int GetSmartTs() const { return _controllerConnection.GetSmartTs(); }
+    [[nodiscard]] int GetSmartRemoteForString(int string = 1) const { return _controllerConnection.GetSmartRemoteForString(string); }
+    void SetSmartRemote(int sr) { return _controllerConnection.SetSmartRemote(sr); }
+    void SetSmartRemoteTs(int ts ) { _controllerConnection.SetSmartRemoteTs(ts); }
+    void SetSRCascadeOnPort(bool cascade) { return _controllerConnection.SetSRCascadeOnPort(cascade); }
+    void SetSRMaxCascade(int max) { return _controllerConnection.SetSRMaxCascade(max); }
+    void SetSmartRemoteType(const std::string& type) { return _controllerConnection.SetSmartRemoteType(type); }
+    void SetControllerDMXChannel(int ch) { return _controllerConnection.SetDMXChannel(ch); }
+    [[nodiscard]] int GetSmartRemote() const { return _controllerConnection.GetSmartRemote(); }
+    [[nodiscard]] bool GetSRCascadeOnPort() const { return _controllerConnection.GetSRCascadeOnPort(); }
+    [[nodiscard]] int GetSRMaxCascade() const { return _controllerConnection.GetSRMaxCascade(); }
+    [[nodiscard]] std::vector<std::string> GetSmartRemoteTypes() const { return _controllerConnection.GetSmartRemoteTypes(); }
+    [[nodiscard]] std::string GetSmartRemoteType() const { return _controllerConnection.GetSmartRemoteType(); }
+    [[nodiscard]] int GetSmartRemoteTypeIndex(const std::string& srType) const { return _controllerConnection.GetSmartRemoteTypeIndex(srType); }
+    [[nodiscard]] std::string GetSmartRemoteTypeName(int idx) const { return _controllerConnection.GetSmartRemoteTypeName(idx); }
+    [[nodiscard]] int GetSmartRemoteCount() const { return _controllerConnection.GetSmartRemoteCount(); }
+
+    ControllerConnection& GetCtrlConn() { return _controllerConnection; }
+    const ControllerConnection& GetConstCtrlConn() const { return _controllerConnection; }
+private:
+    ControllerConnection _controllerConnection;
+
+protected:
+    std::vector<int> layerSizes; // inside to outside
+    unsigned int maxVertexCount = 0;
+
+    class PreviewGraphicsCacheInfo {
+    public:
+        PreviewGraphicsCacheInfo() {
+        }
+        virtual ~PreviewGraphicsCacheInfo();
+        xlGraphicsProgram *program = nullptr;
+        xlVertexIndexedColorAccumulator *vica = nullptr;
+        xlVertexColorAccumulator *vca = nullptr;
+        xlVertexAccumulator *va = nullptr;
+
+        int width = 0;
+        int height = 0;
+        int renderWi = 0;
+        int renderHi = 0;
+        int modelChangeCount = 0;
+        bool isTransparent = false;
+        float boundingBox[6] = { 0 };
+        float backingScaleFactor = 1.0f;
+        // Local-space sort axis (unnormalized 3rd row of ViewMatrix*ModelMatrix)
+        // used when building the 3D depth-sorted node order. An all-zero vector
+        // means this cache was not built with depth sorting.
+        glm::vec3 viewSortAxis{ 0.0f, 0.0f, 0.0f };
+    };
+    std::map<std::string, PreviewGraphicsCacheInfo*> uiCaches;
+    virtual void deleteUIObjects();
+
+};
+
+// Inline implementation of MapPhysicalStringToLogicalString
+// This is required because users dont need to have their start nodes for each string in ascending
+// order ... this helps us name the strings correctly
+inline int Model::MapPhysicalStringToLogicalString(int string) const
+{
+    int numStrings = GetNumStrings();
+    if (numStrings == 1)
+        return string;
+
+    // FIXME
+    // This is not very efficient ... n^2 algorithm ... but given most people will have a small
+    // number of strings and it is super simple and only used on controller upload i am hoping
+    // to get away with it
+
+    std::vector<int> stringOrder;
+    for (int curr = 0; curr < numStrings; curr++) {
+        int count = 0;
+        for (int s = 0; s < numStrings; s++) {
+            if (stringStartChan[s] < stringStartChan[curr] && s != curr) {
+                count++;
+            }
+        }
+        stringOrder.push_back(count);
+    }
+    return stringOrder[string];
+}
+
+template <class ScreenLocation>
+class ModelWithScreenLocation : public Model {
+public:
+    virtual const ModelScreenLocation &GetModelScreenLocation() const override { return screenLocation; }
+    virtual ModelScreenLocation &GetModelScreenLocation() override { return screenLocation; }
+    virtual const ModelScreenLocation &GetBaseObjectScreenLocation() const override { return screenLocation; }
+    virtual ModelScreenLocation &GetBaseObjectScreenLocation() override { return screenLocation; }
+
+protected:
+    ModelWithScreenLocation(const ModelManager &manager) : Model(manager) {}
+    virtual ~ModelWithScreenLocation() {}
+    ScreenLocation screenLocation;
+};
