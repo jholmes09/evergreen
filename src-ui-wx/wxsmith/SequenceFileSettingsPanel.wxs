@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<wxsmith>
+	<object class="wxPanel" name="SequenceFileSettingsPanel">
+		<id_arg>0</id_arg>
+		<object class="wxGridBagSizer" variable="GridBagSizer1" member="no">
+			<object class="sizeritem">
+				<object class="wxCheckBox" name="ID_CHECKBOX1" variable="RenderOnSaveCheckBox" member="yes">
+					<label>Render on Save</label>
+					<handler function="OnRenderOnSaveCheckBoxClick" entry="EVT_CHECKBOX" />
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>0</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxCheckBox" name="ID_CHECKBOX3" variable="CheckBox_LowDefinitionRender" member="yes">
+					<label>Low Definition Render</label>
+					<handler function="OnCheckBox_LowDefinitionRenderClick" entry="EVT_CHECKBOX" />
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>1</row>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxCheckBox" name="ID_CHECKBOX2" variable="FSEQSaveCheckBox" member="yes">
+					<label>Save FSEQ File On Save</label>
+					<handler function="OnFSEQSaveCheckBoxClick" entry="EVT_CHECKBOX" />
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>9</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticText" name="ID_STATICTEXT1" variable="StaticText4" member="yes">
+					<label>Default Model Blending for New Sequences</label>
+				</object>
+				<col>0</col>
+				<row>2</row>
+				<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxChoice" name="ID_CHOICE4" variable="ModelBlendDefaultChoice" member="yes">
+					<content>
+						<item>Enabled</item>
+						<item>Disabled</item>
+					</content>
+					<selection>0</selection>
+					<handler function="OnModelBlendDefaultChoiceSelect" entry="EVT_CHOICE" />
+				</object>
+				<col>1</col>
+				<row>2</row>
+				<flag>wxALL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticText" name="wxID_ANY" variable="StaticText1" member="no">
+					<label>Render Cache</label>
+				</object>
+				<col>0</col>
+				<row>4</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxChoice" name="ID_CHOICE1" variable="RenderCacheChoice" member="yes">
+					<content>
+						<item>Enabled</item>
+						<item>Locked Effects Only</item>
+						<item>Disabled</item>
+					</content>
+					<selection>1</selection>
+					<handler function="OnRenderCacheChoiceSelect" entry="EVT_CHOICE" />
+				</object>
+				<col>1</col>
+				<row>4</row>
+				<flag>wxALL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticText" name="wxID_ANY" variable="StaticText2" member="no">
+					<label>Auto Save Interval</label>
+				</object>
+				<col>0</col>
+				<row>6</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxChoice" name="ID_CHOICE2" variable="AutoSaveIntervalChoice" member="yes">
+					<content>
+						<item>Disabled</item>
+						<item>3 Minutes</item>
+						<item>5 Minutes</item>
+						<item>10 Minutes</item>
+						<item>15 Minutes</item>
+						<item>30 Minutes</item>
+					</content>
+					<selection>2</selection>
+					<tooltip>A backup file (.bkp) will be created of the current open sequence at this interval. No render created.</tooltip>
+					<handler function="OnAutoSaveIntervalChoiceSelect" entry="EVT_CHOICE" />
+				</object>
+				<col>1</col>
+				<row>6</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticText" name="wxID_ANY" variable="StaticText3" member="no">
+					<label>FSEQ Version</label>
+				</object>
+				<col>0</col>
+				<row>8</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxChoice" name="ID_CHOICE3" variable="FSEQVersionChoice" member="yes">
+					<content>
+						<item>V1</item>
+						<item>V2 ZSTD</item>
+						<item>V2 Uncompressed</item>
+						<item>V2 ZLIB</item>
+						<item>V2 ZSTD/sparse (Default)</item>
+					</content>
+					<selection>4</selection>
+					<handler function="OnFSEQVersionChoiceSelect" entry="EVT_CHOICE" />
+				</object>
+				<col>1</col>
+				<row>8</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticBoxSizer" variable="StaticBoxSizer3" member="no">
+					<label>Render Cache Directory</label>
+					<object class="sizeritem">
+						<object class="wxFlexGridSizer" variable="FlexGridSizer3" member="no">
+							<cols>2</cols>
+							<growablecols>1</growablecols>
+							<object class="sizeritem">
+								<object class="wxCheckBox" name="ID_CHECKBOX6" variable="CheckBox_RenderCache" member="yes">
+									<label>Use Show Folder</label>
+									<handler function="OnCheckBox_RenderCacheClick" entry="EVT_CHECKBOX" />
+								</object>
+								<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+								<border>5</border>
+								<option>1</option>
+							</object>
+							<object class="sizeritem">
+								<object class="wxDirPickerCtrl" name="ID_DIRPICKERCTRL3" variable="DirPickerCtrl_RenderCache" member="yes">
+									<message></message>
+									<size>400,-1</size>
+									<handler function="OnDirPickerCtrl_RenderCacheDirChanged" entry="EVT_DIRPICKER_CHANGED" />
+								</object>
+								<flag>wxALL|wxEXPAND</flag>
+								<border>5</border>
+								<option>1</option>
+							</object>
+							<object class="sizeritem">
+								<object class="wxStaticText" name="ID_STATICTEXT3" variable="StaticText6" member="yes">
+									<label>Maximum Render Cache Size:</label>
+								</object>
+								<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+								<border>5</border>
+								<option>1</option>
+							</object>
+							<object class="sizeritem">
+								<object class="wxChoice" name="ID_CHOICE5" variable="Choice_MaximumRenderCache" member="yes">
+									<content>
+										<item>Unlimited</item>
+										<item>100 MB</item>
+										<item>200 MB</item>
+										<item>500 MB</item>
+										<item>1 GB</item>
+										<item>3 GB</item>
+										<item>5 GB</item>
+										<item>10 GB</item>
+										<item>20 GB</item>
+										<item>50 GB</item>
+										<item>100 GB</item>
+										<item>200 GB</item>
+									</content>
+									<selection>0</selection>
+									<handler function="OnChoice_MaximumRenderCacheSelect" entry="EVT_CHOICE" />
+								</object>
+								<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+								<border>5</border>
+								<option>1</option>
+							</object>
+						</object>
+						<flag>wxALL|wxEXPAND</flag>
+						<border>5</border>
+						<option>1</option>
+					</object>
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>5</row>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticBoxSizer" variable="StaticBoxSizer2" member="no">
+					<label>FSEQ Directory</label>
+					<object class="sizeritem">
+						<object class="wxCheckBox" name="ID_CHECKBOX5" variable="CheckBox_FSEQ" member="yes">
+							<label>Use Show Folder</label>
+							<handler function="OnCheckBox_FSEQClick" entry="EVT_CHECKBOX" />
+						</object>
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+						<option>1</option>
+					</object>
+					<object class="sizeritem">
+						<object class="wxDirPickerCtrl" name="ID_DIRPICKERCTRL2" variable="DirPickerCtrl_FSEQ" member="yes">
+							<message></message>
+							<size>400,-1</size>
+							<handler function="OnDirPickerCtrl_FSEQDirChanged" entry="EVT_DIRPICKER_CHANGED" />
+						</object>
+						<flag>wxALL|wxEXPAND</flag>
+						<border>5</border>
+						<option>1</option>
+					</object>
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>10</row>
+				<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticBoxSizer" variable="StaticBoxSizer1" member="no">
+					<label>Media/Resource Directories</label>
+					<object class="sizeritem">
+						<object class="wxFlexGridSizer" variable="FlexGridSizer1" member="no">
+							<cols>2</cols>
+							<growablecols>0</growablecols>
+							<object class="sizeritem">
+								<object class="wxListBox" name="ID_LISTBOX_MEDIA" variable="MediaDirectoryList" member="yes">
+									<default>-1</default>
+									<minsize>-1,50d</minsize>
+									<handler function="OnMediaDirectoryListSelect" entry="EVT_LISTBOX" />
+								</object>
+								<flag>wxALL|wxEXPAND</flag>
+								<option>1</option>
+							</object>
+							<object class="sizeritem">
+								<object class="wxFlexGridSizer" variable="FlexGridSizer2" member="no">
+									<cols>1</cols>
+									<object class="sizeritem">
+										<object class="wxButton" name="ID_BUTTON_ADDMEDIA" variable="AddMediaButton" member="yes">
+											<label>Add</label>
+											<handler function="OnAddMediaButtonClick" entry="EVT_BUTTON" />
+										</object>
+										<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+										<border>5</border>
+										<option>1</option>
+									</object>
+									<object class="sizeritem">
+										<object class="wxButton" name="ID_BUTTON_REMOVE_MEDIA" variable="RemoveMediaButton" member="yes">
+											<label>Remove</label>
+											<handler function="OnRemoveMediaButtonClick" entry="EVT_BUTTON" />
+										</object>
+										<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+										<border>5</border>
+										<option>1</option>
+									</object>
+								</object>
+								<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+								<border>5</border>
+								<option>1</option>
+							</object>
+						</object>
+						<flag>wxALL|wxEXPAND</flag>
+						<option>1</option>
+					</object>
+				</object>
+				<colspan>2</colspan>
+				<col>0</col>
+				<row>7</row>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>2</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxStaticText" name="ID_STATICTEXT2" variable="StaticText5" member="yes">
+					<label>Default View for New Sequences</label>
+					<tooltip>This option is used to select which models will populate the master view when a new sequence is created.</tooltip>
+				</object>
+				<col>0</col>
+				<row>3</row>
+				<flag>wxALL|wxALIGN_LEFT|wxALIGN_CENTER_VERTICAL</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxChoice" name="ID_CHOICE_VIEW_DEFAULT" variable="ViewDefaultChoice" member="yes">
+					<tooltip>This option is used to select which models will populate the master view when a new sequence is created.</tooltip>
+					<minsize>200,-1</minsize>
+					<handler function="OnViewDefaultChoiceSelect" entry="EVT_CHOICE" />
+				</object>
+				<col>1</col>
+				<row>3</row>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+		</object>
+	</object>
+</wxsmith>

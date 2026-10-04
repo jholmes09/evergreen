@@ -1,0 +1,1118 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <stdio.h>
+#include <sstream>
+#include <iomanip>
+
+#include <wx/settings.h>
+#include <wx/wx.h>
+#include <wx/msgdlg.h>
+#include <wx/filename.h>
+#include <wx/dir.h>
+#include <wx/wfstream.h>
+
+#include "utils/xlImage.h"
+#include "models/ModelManager.h"
+#include "import_export/ConvertDialog.h"
+#include "import_export/FileConverter.h"
+#include "UtilFunctions.h"
+#include "shared/utils/wxUtilities.h"
+#include "utils/ExternalHooks.h"
+#include "models/ModelGroup.h"
+#include "models/MatrixModel.h"
+#include "render/SequenceElements.h"
+#include "outputs/OutputManager.h"
+#include "render/EffectLayer.h"
+#include "xLightsMain.h"
+#include "render/FSEQFile.h"
+#include "sequencer/CopyFormat1.h"
+#include "media/VideoWriter.h"
+#include "render/ModelVideoExporter.h"
+#include "render/ModelGifExporter.h"
+
+#include <wx/progdlg.h>
+
+#include <atomic>
+#include <thread>
+
+#include <log.h>
+
+void xLightsFrame::ConversionError(const wxString& msg)
+{
+    DisplayError(msg.ToStdString());
+}
+
+void xLightsFrame::SetStatusText(const wxString& msg, int filename)
+{
+    if (_renderMode || _checkSequenceMode) {
+        printf("%s\n", (const char*)msg.c_str());
+    } else {
+        if (filename) {
+            FileNameText->SetLabel(msg);
+            FileNameText->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_BTNTEXT));
+        } else {
+            StatusText->SetLabel(msg);
+            StatusText->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_BTNTEXT));
+        }
+        StatusText->Refresh(); // Draw now so even when we are in CPU bound loops status updates
+    }
+}
+
+void xLightsFrame::SetStatusTextColor(const wxString& msg, const wxColor& color)
+{
+    if (_renderMode || _checkSequenceMode) {
+        printf("%s\n", (const char*)msg.c_str());
+    } else {
+        StatusText->SetLabel(msg);
+        StatusText->SetForegroundColour(color);
+    }
+}
+
+void xLightsFrame::ConversionInit()
+{
+    long TotChannels=_outputManager.GetTotalChannels();
+    mediaFilename.clear();
+    ChannelColors.clear();
+    ChannelNames.clear();
+    for (long x = 0; x < TotChannels; x++) {
+        ChannelColors.push_back(0);
+        ChannelNames.push_back("");
+    }
+    _seqData.init(0, 0, 50);
+}
+
+void xLightsFrame::SetMediaFilename(const wxString& filename)
+{
+    
+    spdlog::debug("Setting media file to: {}.", filename.ToStdString());
+
+    mediaFilename = filename;
+    if (mediaFilename.size() == 0) {
+        mMediaLengthMS = 0;
+        return;
+    }
+
+    wxPathFormat PathFmt = Contains(mediaFilename, "\\") ? wxPATH_DOS : wxPATH_NATIVE;
+    wxFileName fn1(mediaFilename, PathFmt);
+    if (!FileExists(fn1)) {
+        wxFileName fn2(CurrentDir, fn1.GetFullName());
+        mediaFilename = fn2.GetFullPath();
+    }
+}
+
+void xLightsFrame::ClearLastPeriod()
+{
+    int LastPer = _seqData.NumFrames() - 1;
+    for (size_t ch = 0; ch < _seqData.NumChannels(); ch++) {
+        _seqData[LastPer][ch] = 0;
+    }
+}
+
+#define string_format wxString::Format
+
+void xLightsFrame::WriteVirFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame, SeqDataType* dataBuf)
+{
+    wxFile f;
+    if (!f.Create(filename, true)) {
+        ConversionError(wxString("Unable to create file: ") + filename);
+        return;
+    }
+
+    for (int ch = 0; ch < numChans; ch++) {
+        SetStatusText(wxString("Status: ") + string_format(" Channel %ld ", ch));
+
+        wxString buff = "";
+        for (unsigned int p = startFrame; p < endFrame; p++) {
+            buff += string_format("%d ", (*dataBuf)[p][ch]);
+        }
+        buff += string_format("\n");
+        f.Write(buff);
+    }
+    f.Close();
+}
+
+void xLightsFrame::WriteLSPFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame, SeqDataType* dataBuf, int cpn)
+{
+    /*  MrChristnas2000 (from DLA forum) investigated the lsp xml file for LSP 2.8
+
+    Here are some of his notes
+
+    eff="1" -- effect is Ramp Up
+    eff="2" -- effect is Ramp Down
+    eff="3" -- effect is ON
+    eff="4" -- effect is OFF
+    eff="5" -- effect is Twinkle
+    eff="6" -- effect is Shimmer
+    eff="7" -- effect is NO Change
+
+    One second is = 88200
+    Note pos="2000" is the TimeInterval timing mark point.
+
+    First observation
+    Each track always ends with the line
+    <TimeInterval eff="7" dat="" gui="" in="1" out="1" pos="100000000" sin="-1" att="0" />
+    It is the only line with the value of att="0"
+
+
+    Second pattern created is a 5 second with 1 ch Red, 1 ch Blue, 1 ch Green and last Ch OFF
+    Group Name = Test Patterns
+    Effect Name = Ch1R.Ch2B.Ch3G.Ch4Off
+
+    Next observation is that the two entries are the color of the RGB effect
+    bst="-16711936" ben="-16711936" have to do with the color in and the color out.
+
+    Effect Name = Ch1RB.Ch2BG.Ch3GW.Ch4Off
+
+    Red to Blue
+    bst="-65536" ben="-16776961"
+    Blue to Green
+    bst="-16776961" ben="-16711936"
+    Green to White
+    bst="-16711936" ben="-1"
+
+    Off
+    bst="-1" ben="-1"
+
+    Next obversation
+    is that the first and last line in every track has the value
+    att="0"
+    As well as any line that has a effect value
+
+    Next obversation
+    Lines with continuation of an effect has the value
+    eff="7" dat="" gui="" in="1" out="1" pos="2000" sin="-1" att="2"
+    The only changing value is the time position 'pos'
+
+    Effect Name = Ch1Ronoff.Ch2Bonoff.Ch3Gonoff.Ch4Off
+
+    Another observation is when an ON effect is added/changed that the line contains the following full data block
+    dat="&lt;?xml version=&quot;1.0&quot;
+    encoding=&quot;utf-16&quot;?&gt;&#xD;&#xA;&lt;ec&gt;&#xD;&#xA;
+    &lt;in&gt;100&lt;/in&gt;&#xD;&#xA;
+    &lt;out&gt;100&lt;/out&gt;&#xD;&#xA;&lt;/ec&gt;"
+    gui="{DA98BD5D-9C00-40fe-A11C-AD3242573443}"
+    This does not seem change from pattern to pattern save.
+    I also removed it from a saved pattern and it didn't seem to make any difference with or without it.
+
+    Another observation is that an OFF line is always:
+    <TimeInterval eff="4" dat="" gui="{09A9DFBE-9833-413c-95FA-4FFDFEBF896F}" in="1" out="1" pos="4410" sin="-1" att="0" bst="-1" ben="-1" />
+    The only changing value is the time position 'pos'
+
+    Effect Name = Ch1RrDn.Ch2BRu.Ch3GRd.Ch4Shmr
+
+    Effect Name = Ch1RrDn.Ch2BRu.Ch3GRd.Ch4Twnkl
+
+
+    Last obversation is that only when a change in effect type is a value in the gui="" inserted
+
+
+    Reference info.
+    Mili Sec	Tim Mk Val
+    1	4410
+    2	8820
+    3	13230
+    4	17640
+    5	22050
+    6	26460
+    7	30870
+    8	35280
+    9	39690
+    10	44100
+    11	48510
+    12	52920
+    13	57330
+    14	61740
+    15	66150
+    16	70560
+    17	74970
+    18	79380
+    19	83790
+    20	88200
+
+
+    This table seems to hold from save to save of effects.
+    Effect 2 gui value
+    49E1F143-321A-4f5b-9F39-32984FF12410
+    Effect 1 gui value
+    1B0F1B59-7161-4782-B068-98E021A6E048
+    Effect 3 gui value
+    DA98BD5D-9C00-40fe-A11C-AD3242573443
+    Effect 4 gui value
+    09A9DFBE-9833-413c-95FA-4FFDFEBF896F
+
+
+    for (ch=0; ch+2 < numChans; ch+=3 ) // since we want to combine 3 channels into one 24 bit rgb value, we jump by 3
+    {
+    >SetStatusText(wxString("Status: " )+string_format(" Channel %ld ",ch));
+
+    buff="";
+
+    for (p=0; p < numPeriods; p++, seqidx++)
+    {
+    rgb = ((*dataBuf)[(ch*numPeriods)+p]& 0xff) << 16 |
+    ((*dataBuf)[((ch+1)*numPeriods)+p]& 0xff) << 8 |
+    ((*dataBuf)[((ch+2)*numPeriods)+p]& 0xff); // we want a 24bit value for HLS
+
+    */
+
+    int channels_exported = 0;
+    unsigned long rgb;
+    wxFile f;
+    if (!f.Create(filename, true)) {
+        ConversionError(wxString("Unable to create file: ") + filename);
+        return;
+    }
+
+    f.Write("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+
+    f.Write("<ArrayOfPattern xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\">\n");
+    f.Write("\t<Pattern>\n");
+    f.Write("\t<GroupName>Nutcracker</GroupName>\n");
+
+    wxString m_Path, m_Name, m_Ext;
+    wxFileName::SplitPath(filename, &m_Path, &m_Name, &m_Ext);
+
+    f.Write("\t<Name>" + m_Name + "</Name>\n");
+    f.Write("\t<Image>\n");
+    f.Write("\t\t<Width>999</Width>\n");
+    f.Write("\t\t<Height>200</Height>\n");
+    f.Write("\t\t<BMPBytes>/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAUAFADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDvrm5nFxcgTyACQ4+c+tMN1cb3/fy9P75ptz/x83X/AF0P86Yfvv8A7te6kv6+RS2X9dyeK5n81f38n3f75q3HcTean76T7w/iNZ8X+tX/AHauRf61P94V4mZaVFbt/mephEvYS+f5GuZZMn943T1oEsmR+8bp60w9T9KB1H0rxbs+Uu+T5GfJcTea/wC+k+8f4jVSW5n81v38n3f75qeX/Wv/ALxqnL/rW/3a9rLdajv2/wAj6vFpewj8vyHi6uN6fv5en980+2uZzcWwM8hBkGfnPrVcffT/AHafbf8AHza/9dB/OvbaX9fM8t7P+uxsTaVA00zF5Pmck8j1+lM/smDcx3y8j1H+FFFeJ7Wp/M/vLS0/rzFGlQKciSXIXHUf4U9dOjBUiWXI+n+FFFZybnrLUuM5R0T0JPs7f8/Ev5L/AIUfZ2/5+JfyX/Ciio9nDsjD2cOXZEbadGSxMsuT9P8ACmHSoGOTJLkrjqP8KKKuDcNY6G8pylo3oJ/ZMG5Tvl4HqP8ACnw6VAs0LB5PlcEcj1+lFFae2qfzP7yGtP68j//Z</BMPBytes>\n");
+
+    f.Write("\t</Image>\n");
+    f.Write("\t<Tracks>\n");
+
+    int old_bst = 999;                                     // pick a value to guarantee we will use a eff=3 line on the next pass
+    for (int ch = 0; ch + (cpn - 1) < numChans; ch += cpn) // since we want to combine 3 channels into one 24 bit rgb value, we jump by 3
+    {
+        old_bst = 999; // pick a value to guarantee we will use a eff=3 line on the next pass
+
+        if (ch % 9 == 0) {
+            SetStatusText(wxString("Status: ") + string_format(" Channel %ld. ", ch));
+        }
+        f.Write("\t<Track>\n");
+        f.Write("\t\t<TrackGuid>60cc0c76-f458-4e67-abb4-5d56a9c1d97c</TrackGuid>\n");
+        f.Write("\t\t<IsHidden>false</IsHidden>\n");
+        f.Write("\t\t<IsPrimaryTrack>false</IsPrimaryTrack>\n");
+        f.Write("\t\t<TrackColorName>Gainsboro</TrackColorName>\n");
+        f.Write("\t\t<TrackColorARGB>-2302756</TrackColorARGB>\n");
+        f.Write("\t\t<TrackID>0</TrackID>\n");
+        f.Write("\t\t<TrackType>0</TrackType>\n");
+        //    f.Write("\t\t<WiiMapping inv=\"0\" ibn=\"\" inbn=\"\" ani=\"0\" ain=\"\" hty=\"-1\" fed=\"0"\ wind=\"-1\" wibt=\"0\" cint=\"False\" ceff=\"False\" hefsd=\"True\" lef=\"3\" lefl=\"1\" intb=\"0\" efd=\"0\" />\n");
+        f.Write("\t\t<Name />\n");
+
+        /*
+        <Intervals>
+        <TimeInterval eff="1" dat="" gui="{1B0F1B59-7161-4782-B068-98E021A6E048}" a="128" b="128" in="1" out="100" pos="88200" sin="-1" att="0"/>
+        <TimeInterval eff="2" dat="" gui="{49E1F143-321A-4f5b-9F39-32984FF12410}" a="128" b="128" in="100" out="1" pos="176400" sin="-1" att="0"/>
+        <TimeInterval eff="7" dat="" gui="{49E1F143-321A-4f5b-9F39-32984FF12410}" a="128" b="128" pos="264600" sin="-1" att="0"/>
+        <TimeInterval eff="4" dat="" gui="" a="128" b="128" in="1" out="1" pos="352800" sin="-1" att="0"/>
+        <TimeInterval eff="4" dat="" gui="" a="128" b="128" in="1" out="1" pos="441000" sin="-1" att="0"/>
+        </Intervals>
+        */
+        wxString xmlString = string_format("&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-16&quot;?&gt;&#xD;&#xA;&lt;ec&gt;&#xD;&#xA;  &lt;in&gt;100&lt;/in&gt;&#xD;&#xA;  &lt;out&gt;100&lt;/out&gt;&#xD;&#xA;&lt;/ec&gt;");
+        xmlString = string_format("");
+
+        wxString guiString = string_format("{DA98BD5D-9C00-40fe-A11C-AD3242573443}");
+        f.Write("\t\t<Intervals>\n");
+        //  for (p=0,csec=0; p < numPeriods; p++, csec+=interval, seqidx++)
+
+        channels_exported += cpn;
+
+        for (unsigned int p = startFrame; p < endFrame; p++) {
+            float seconds = ((p - startFrame) * dataBuf->FrameTime()) / 1000.0;
+            //  SetStatusText(wxString("Status: " )+string_format(" Channel %4d. %4d out of %4d ",ch,p,numPeriods));
+            int pos = seconds * 88200;
+            //   SetStatusText(wxString("Status: " )+string_format(" Channel %ld. p=%ld (%ld). Sizeof %ld . seqid %ld",ch,p,numPeriods,sizeof(dataBuf),seqidx));
+
+            /*
+            byte = (*dataBuf)[seqidx];
+            r_idx = g_idx= b_idx = (ch*numPeriods)+p;
+            // if(ch < numChans-1)
+            {
+            g_idx=(ch+1)*numPeriods+p;
+            }
+            //  if(ch < numChans-2)
+            {
+            b_idx=(ch+2)*numPeriods+p;
+            }
+            rgb = ((*dataBuf)[r_idx]& 0xff) << 16 | ((*dataBuf)[g_idx]& 0xff) << 8 | ((*dataBuf)[b_idx]& 0xff); // we want a 24bit value for HLS
+            */
+            if (cpn == 1) // cpn (Channels per Node. if non rgb, we only use one byte
+                rgb = ((*dataBuf)[p][ch] & 0xff) << 16;
+            else
+                rgb = ((*dataBuf)[p][ch] & 0xff) << 16 |
+                      ((*dataBuf)[p][ch + 1] & 0xff) << 8 |
+                      ((*dataBuf)[p][ch + 2] & 0xff); // we want a 24bit value for HLS
+
+            //  if(rgb>0 or rgb<0)
+            {
+                int bst = rgb;
+                int ben = rgb;
+                // 4410 = 1/20th of a second. 88200/20
+                if (rgb == 0) {
+                    if (cpn == 1)
+                        f.Write(string_format("\t\t\t<TimeInterval eff=\"4\" dat=\"\" gui=\"\"  in=\"100\" out=\"100\" pos=\"%d\" sin=\"-1\" att=\"0\"/>\n", pos));
+                    else
+                        f.Write(string_format("\t\t\t<TimeInterval eff=\"4\" dat=\"\" gui=\"\"  in=\"100\" out=\"100\" pos=\"%d\" sin=\"-1\" att=\"0\"  bst=\"-1\" ben=\"-1\"/>\n", pos));
+
+                } else if (bst == old_bst) {
+                    f.Write(string_format("\t\t\t<TimeInterval eff=\"7\" dat=\"\" gui=\"\"  in=\"100\" out=\"100\" pos=\"%d\" sin=\"-1\" att=\"2\"  />\n", pos));
+                } else {
+                    if (cpn == 1)
+                        f.Write(string_format("\t\t\t<TimeInterval eff=\"3\" dat=\"%s\" gui=\"%s\"  in=\"100\" out=\"100\" pos=\"%d\" sin=\"-1\" att=\"0\" />\n", xmlString, guiString, pos));
+                    else
+                        f.Write(string_format("\t\t\t<TimeInterval eff=\"3\" dat=\"%s\" gui=\"%s\"  in=\"100\" out=\"100\" pos=\"%d\" sin=\"-1\" att=\"0\" bst=\"%ld\" ben=\"%ld\" />\n", xmlString, guiString, pos, bst, ben));
+                }
+                old_bst = bst;
+            }
+            //  old_bst=999;   // pick a value to guarantee we will use a eff=3 line on the next pass
+        }
+        //  f.Write(string_format("\t\t\t<TimeInterval eff=\"4\" dat=\"\" gui=\"\" a=\"128\" b=\"128\" in=\"1\" out=\"1\" pos=\"100000000\" sin=\"-1\" att=\"1\"/>\n"));
+        f.Write("\t\t</Intervals>\n");
+        f.Write("\t\t</Track>\n");
+    }
+    f.Write("\t\t</Tracks>\n");
+    f.Write("\t</Pattern>\n");
+    f.Write("</ArrayOfPattern>\n");
+    f.Close();
+    SetStatusText(wxString("Status: Export Complete. ") + string_format(" Channels exported=%4d ", channels_exported));
+}
+
+void xLightsFrame::WriteHLSFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame, SeqDataType* dataBuf)
+{
+    int seqidx = 0;
+
+    wxFile f;
+    if (!f.Create(filename, true)) {
+        ConversionError(wxString("Unable to create file: ") + filename);
+        return;
+    }
+
+    for (int ch = 0; ch + 2 < numChans; ch += 3) // since we want to combine 3 channels into one 24 bit rgb value, we jump by 3
+    {
+        SetStatusText(wxString("Status: ") + string_format(" Channel %ld ", ch));
+
+        wxString buff = "";
+
+        for (unsigned int p = startFrame; p < endFrame; p++, seqidx++) {
+            unsigned long rgb = ((*dataBuf)[p][ch] & 0xff) << 16 |
+                                ((*dataBuf)[p][ch + 1] & 0xff) << 8 |
+                                ((*dataBuf)[p][ch + 2] & 0xff); // we want a 24bit value for HLS
+            if (p < endFrame - 1) {
+                buff += string_format("%d ", rgb);
+            } else {
+                buff += string_format("%d", rgb);
+            }
+        }
+        buff += string_format("\n");
+        f.Write(buff);
+    }
+
+    f.Close();
+}
+
+void xLightsFrame::WriteLcbFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame, SeqDataType* dataBuf, int ver, int cpn)
+{
+    int interval = _seqData.FrameTime() / 10; // in centiseconds
+    if ((unsigned int)(interval * 10) != _seqData.FrameTime()) {
+        DisplayError("Cannot export to LOR unless the sequence timing is evenly divisible by 10ms");
+        return;
+    }
+
+    wxFile f;
+    if (!f.Create(filename, true)) {
+        ConversionError(wxString("Unable to create file: ") + filename);
+        return;
+    }
+
+    wxString m_Path, m_Name, m_Ext;
+    wxFileName::SplitPath(filename, &m_Path, &m_Name, &m_Ext);
+    //  printf("'%s' is split as '%s', '%s', '%s'\n", m_FileName, m_Path,
+    //  m_Name, m_Ext);
+
+    f.Write("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+    f.Write(string_format("<channelsClipboard version=\"%d\" name=\"%s\">\n", ver, (const char*)m_Name.c_str()));
+
+    if (ver == 1) {
+        // old version only supports single channels
+        cpn = 1;
+    }
+
+    //  <channels>
+    //  <channel>
+    //  <effect type="intensity" startCentisecond="0" endCentisecond="10" intensity="83" />
+    int maxCell = 0;
+    f.Write("  <cellDemarcations>\n");
+    int csec = 0;
+    if (ver == 1) {
+        for (unsigned int p = startFrame, csec = 0; p < endFrame; p++, csec += interval) {
+            f.Write(string_format("    <cellDemarcation centisecond=\"%d\" />\n", csec));
+            maxCell = csec * 10;
+        }
+    } else {
+        f.Write("    <cellDemarcation centisecond=\"0\"/>\n");
+        csec = (endFrame - startFrame) * interval;
+        maxCell = csec * 10;
+        f.Write(string_format("    <cellDemarcation centisecond=\"%d\" />\n", csec));
+    }
+    f.Write("  </cellDemarcations>\n");
+    //
+    // LOR is BGR with high bits=0
+    // Vix is RGB with high bits=1
+    f.Write("  <channels>\n");
+    for (int ch = 0; ch < numChans; ch += cpn) {
+        SetStatusText(wxString("Status: ") + string_format(" Channel %d ", ch));
+
+        f.Write("    <channel>\n");
+        xlColorVector colors;
+        colors.resize(endFrame - startFrame);
+        for (unsigned int p = startFrame; p < endFrame; p++) {
+            if (cpn == 1) {
+                colors[p].Set((*dataBuf)[p][ch], (*dataBuf)[p][ch], (*dataBuf)[p][ch]);
+            } else {
+                colors[p].Set((*dataBuf)[p][ch], (*dataBuf)[p][ch + 1], (*dataBuf)[p][ch + 2]);
+            }
+        }
+        EffectLayer layer(nullptr);
+        DoConvertDataRowToEffects(&layer, colors, dataBuf->FrameTime(), false);
+
+        int lastEndTime = 0;
+        for (int eidx = 0; eidx < layer.GetEffectCount(); eidx++) {
+            Effect* eff = layer.GetEffect(eidx);
+            if (eff->GetStartTimeMS() != lastEndTime) {
+                // off from last effect to start of this effect
+                if (ver == 1) {
+                    f.Write(string_format("      <effect startCentisecond=\"%d\" endCentisecond=\"%d\" intensity=\"%d\" type=\"intensity\" />\n",
+                                          lastEndTime / 10, eff->GetStartTimeMS() / 10, 0));
+                } else {
+                    f.Write(string_format("      <effect startCentisecond=\"%d\" endCentisecond=\"%d\" intensity=\"%d\" />\n",
+                                          lastEndTime / 10, eff->GetStartTimeMS() / 10, 0));
+                }
+            }
+
+            f.Write(string_format("      <effect startCentisecond=\"%d\" endCentisecond=\"%d\"",
+                                  eff->GetStartTimeMS() / 10, eff->GetEndTimeMS() / 10));
+            if (eff->GetEffectName() == "On") {
+                int starti = eff->GetSettings().GetInt("E_TEXTCTRL_Eff_On_Start", 100);
+                int endi = eff->GetSettings().GetInt("E_TEXTCTRL_Eff_On_End", 100);
+                xlColor c = eff->GetPalette()[0];
+
+                if (cpn == 3) {
+                    std::stringstream stream;
+                    stream << " startColor=\"FF"
+                           << std::setfill('0') << std::setw(6)
+                           << std::hex << std::uppercase << c.GetRGB(false)
+                           << "\" endColor=\"FF"
+                           << std::setfill('0') << std::setw(6)
+                           << std::hex << std::uppercase << c.GetRGB(false)
+                           << "\"";
+                    f.Write(stream.str());
+                } else {
+                    starti *= c.red;
+                    starti /= 255;
+                    endi *= c.red;
+                    endi /= 255;
+                }
+                if (starti == endi) {
+                    f.Write(string_format(" intensity=\"%d\"", starti));
+                } else {
+                    f.Write(string_format(" startIntensity=\"%d\" endIntensity=\"%d\"", starti, endi));
+                }
+            } else if (eff->GetEffectName() == "Color Wash") {
+                xlColor c1 = eff->GetPalette()[0];
+                xlColor c2 = eff->GetPalette()[1];
+                if (cpn == 1) {
+                    int starti = c1.asHSV().value * 100.0;
+                    int endi = c1.asHSV().value * 100.0;
+                    f.Write(string_format(" startIntensity=\"%d\" endIntensity=\"%d\"", starti, endi));
+                } else {
+                    std::stringstream stream;
+                    stream << " startColor=\"FF"
+                           << std::setfill('0') << std::setw(6)
+                           << std::hex << std::uppercase << c1.GetRGB(false)
+                           << "\" endColor=\"FF"
+                           << std::setfill('0') << std::setw(6)
+                           << std::hex << std::uppercase << c2.GetRGB(false)
+                           << "\" intensity=\"100\"";
+                    f.Write(stream.str());
+                }
+            }
+            if (ver == 1) {
+                f.Write(" type=\"intensity\" />\n");
+            } else {
+                f.Write(" type=\"INTENSITY\" />\n");
+            }
+            lastEndTime = eff->GetEndTimeMS();
+        }
+
+        if (lastEndTime < maxCell) {
+            f.Write(string_format("      <effect startCentisecond=\"%d\" endCentisecond=\"%d\" intensity=\"0\"",
+                                  lastEndTime / 10, maxCell / 10));
+            if (ver == 1) {
+                f.Write(" type=\"intensity\"");
+            }
+            if (ver == 2) {
+                f.Write(" type=\"INTENSITY\"");
+            }
+            f.Write(" />\n");
+        }
+        f.Write("    </channel>\n");
+    }
+    f.Write("  </channels>\n");
+    f.Write("</channelsClipboard>\n");
+    f.Close();
+}
+
+/*
+base64.cpp and base64.h
+
+Copyright (C) 2004-2008 Rene Nyffenegger
+
+This source code is provided 'as-is', without any express or implied
+warranty. In no event will the author be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this source code must not be misrepresented; you must not
+claim that you wrote the original source code. If you use this source code
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original source code.
+
+3. This notice may not be removed or altered from any source distribution.
+
+Rene Nyffenegger rene.nyffenegger@adp-gmbh.ch
+
+*/
+
+#define ESEQ_HEADER_LENGTH 20
+
+void xLightsFrame::WriteFalconPiModelFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame,
+                                          SeqDataType* dataBuf, int startAddr, int modelSize,
+                                          bool v2)
+{
+    
+    if (v2) {
+        V2FSEQFile* file = (V2FSEQFile*)FSEQFile::createFSEQFile(filename, 2);
+        file->setNumFrames(endFrame - startFrame);
+        file->setStepTime(dataBuf->FrameTime());
+        file->setChannelCount(startAddr + modelSize);
+
+        // add a sparse range so the header is correct,
+        file->m_sparseRanges.push_back(std::pair<uint32_t, uint32_t>(startAddr - 1, modelSize));
+        file->writeHeader();
+        // now reset the sparse range to channel 0 since we don't have all the data in the dataBuf
+        file->m_sparseRanges[0] = std::pair<uint32_t, uint32_t>(0, modelSize);
+        for (unsigned int x = startFrame; x < endFrame; x++) {
+            file->addFrame(x - startFrame, &(*dataBuf)[x][0]);
+        }
+        file->finalize();
+        delete file;
+    } else {
+        static const int V1ESEQ_STEP_TIME = 50; // 50ms step time
+        if (dataBuf->FrameTime() != V1ESEQ_STEP_TIME) {
+            DisplayError("Cannot export to ESEQ unless the sequence timing is 50ms, Use newer Compressed Format instead");
+            return;
+        }
+        wxUint32 stepSize = roundTo4(numChans);
+        wxFile f;
+        spdlog::debug("Creating file {}. Channels: {} Frames {}, Start Channel {}, Model Size {}.",
+                          (const char*)filename.c_str(),
+                          numChans, endFrame - startFrame, startAddr, modelSize);
+
+        if (!f.Create(filename, true)) {
+            ConversionError(wxString("Unable to create file: ") + filename);
+            spdlog::error("Unable to create file {}.", (const char*)filename.c_str());
+            return;
+        }
+
+        wxUint8 buf[ESEQ_HEADER_LENGTH] = { 0 };
+
+        // Header Information
+        // Format Identifier
+        buf[0] = 'E';
+        buf[1] = 'S';
+        buf[2] = 'E';
+        buf[3] = 'Q';
+        // Data offset
+        buf[4] = (wxUint8)1; // Hard coded to export a single model for now
+        buf[5] = 0;          // Pad byte
+        buf[6] = 0;          // Pad byte
+        buf[7] = 0;          // Pad byte
+                    //  Step Size
+        buf[8] = (wxUint8)(stepSize & 0xFF);
+        buf[9] = (wxUint8)((stepSize >> 8) & 0xFF);
+        buf[10] = (wxUint8)((stepSize >> 16) & 0xFF);
+        buf[11] = (wxUint8)((stepSize >> 24) & 0xFF);
+        // Model Start address
+        buf[12] = (wxUint8)(startAddr & 0xFF);
+        buf[13] = (wxUint8)((startAddr >> 8) & 0xFF);
+        buf[14] = (wxUint8)((startAddr >> 16) & 0xFF);
+        buf[15] = (wxUint8)((startAddr >> 24) & 0xFF);
+        // Model Size
+        buf[16] = (wxUint8)(modelSize & 0xFF);
+        buf[17] = (wxUint8)((modelSize >> 8) & 0xFF);
+        buf[18] = (wxUint8)((modelSize >> 16) & 0xFF);
+        buf[19] = (wxUint8)((modelSize >> 24) & 0xFF);
+        f.Write(buf, ESEQ_HEADER_LENGTH);
+
+        size_t size = dataBuf->NumFrames();
+        size *= stepSize;
+
+        f.Write(&(*dataBuf)[0][0], size);
+
+        f.Close();
+    }
+}
+
+std::vector<std::shared_ptr<xlImage>> xLightsFrame::RenderEffectToFrames(
+    Model* matrixModel, SequenceData& seqData, SequenceElements& seqElements,
+    size_t numFrames, int frameTimeMs)
+{
+    std::vector<std::shared_ptr<xlImage>> result;
+
+    if (numFrames == 0) return result;
+
+    int width, height;
+    matrixModel->GetBufferSize("Default", "2D", "None", width, height, 0);
+    if (width <= 0 || height <= 0) return result;
+
+    size_t channels = width * height * 3;
+    seqData.init(channels, numFrames, frameTimeMs, true);
+
+    //Need to make sure all the ASAP work is done first or it
+    //may abort the render
+    DoASAPWork();
+
+    // Use the callback to wait only for this render, not all of renderProgressInfo
+    // (which may contain an unrelated main-sequence render that won't finish here).
+    std::atomic<bool> renderComplete{false};
+    _renderEngine->Render(seqElements, seqData, { matrixModel }, { matrixModel },
+           0, numFrames - 1, nullptr, true, [&renderComplete](bool) { renderComplete = true; });
+
+    while (!renderComplete) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifdef _WIN32
+        wxSafeYield(nullptr, true);
+#endif
+        UpdateRenderStatus();
+    }
+
+    for (size_t i = 0; i < numFrames; i++) {
+        auto img = std::make_shared<xlImage>(width, height);
+        ModelVideoExporter::FillXlImage(*img, matrixModel, (uint8_t*)&seqData[i][0], 1, true);
+        result.push_back(img);
+    }
+
+    return result;
+}
+
+
+void xLightsFrame::WriteVideoModelFile(const wxString& filenames, long numChans, unsigned int startFrame, unsigned int endFrame,
+                                       SeqDataType* dataBuf, int startAddr, int modelSize, Model* model, bool compressed, bool highQuality, bool forceProRes,
+                                       int exportWidth, int exportHeight)
+{
+    // The encode itself is wx-free core (src-core/render/ModelVideoExporter).
+    // Run it on a worker thread and drive a wxProgressDialog on the main thread
+    // so the UI stays responsive and cancelable — mirroring the house-preview
+    // export's VideoExporter progress flow. Keeping the encode off the main
+    // thread also avoids the priority inversion AVAssetWriter's blocking finish
+    // would otherwise cause.
+    const std::string fn = filenames.ToStdString();
+    std::atomic<int> pct{ 0 };
+    std::atomic<bool> cancel{ false };
+    std::atomic<bool> done{ false };
+
+    std::thread worker([&]() {
+        ModelVideoExporter::WriteModelVideo(fn, dataBuf, startFrame, endFrame, model, startAddr,
+                                            compressed, highQuality, forceProRes,
+                                            exportWidth, exportHeight,
+                                            [&pct](int p) { pct.store(p); },
+                                            [&cancel]() { return cancel.load(); });
+        done.store(true);
+    });
+
+    {
+        wxProgressDialog dlg(_("Export Model Video"), _("Exporting model video..."), 100, this,
+                             wxPD_APP_MODAL | wxPD_AUTO_HIDE | wxPD_CAN_ABORT);
+        while (!done.load()) {
+            if (!dlg.Update(pct.load())) {
+                cancel.store(true);
+            }
+            wxMilliSleep(20);
+        }
+    }
+    worker.join();
+}
+
+std::string xLightsFrame::GetPresetIconFilename(const std::string& preset) const
+{
+    return GetPresetIconFilename(preset, showDirectory);
+}
+
+std::string xLightsFrame::GetPresetIconFilename(const std::string& preset, const std::string& dir) const
+{
+    wxString filename = preset + ".gif";
+    filename.Replace("/", "_");
+    return (wxString(dir) + GetPathSeparator() + "presets" + GetPathSeparator() + filename).ToStdString();
+}
+
+void xLightsFrame::CreatePresetIcons()
+{
+    auto presets = GetPresets();
+
+    for (const auto& it : presets) {
+        auto filename = GetPresetIconFilename(it);
+        if (!FileExists(filename)) {
+            WriteGIFForPreset(it);
+        }
+    }
+}
+
+#define PRESET_ICON_SIZE 64
+
+void xLightsFrame::EnsurePresetModel()
+{
+    if (_presetModel != nullptr) return;
+
+    _presetModelManager = new ModelManager(nullptr, this);
+    auto* matrixModel = new MatrixModel(*_presetModelManager);
+    _presetModel = matrixModel;
+
+    matrixModel->SetStringType("RGB Nodes");
+    matrixModel->SetPixelStyle(Model::PIXEL_STYLE::PIXEL_STYLE_SMOOTH);
+    matrixModel->SetPixelSize(2);
+    matrixModel->SetTransparency(0);
+    matrixModel->SetNumMatrixStrings(PRESET_ICON_SIZE * GetDPIScaleFactor());
+    matrixModel->SetNodesPerString(PRESET_ICON_SIZE * GetDPIScaleFactor());
+    matrixModel->SetStrandsPerString(1);
+    matrixModel->SetVertical(false);
+    matrixModel->SetDirection("L");
+    matrixModel->SetStartSide("T");
+
+    auto& screenLoc = matrixModel->GetModelScreenLocation();
+    screenLoc.SetWorldPosition(glm::vec3(0.0f, 0.0f, 0.0f));
+    auto& boxedLoc = dynamic_cast<BoxedScreenLocation&>(screenLoc);
+    boxedLoc.SetScale(1.0f, 1.0f);
+    boxedLoc.SetScaleZ(1.0f);
+    screenLoc.SetRotation(glm::vec3(0.0f, 0.0f, 0.0f));
+
+    matrixModel->SetLayoutGroup("Unassigned", true);
+    matrixModel->SetName(PRESET_MODEL_NAME);
+    matrixModel->SetStartChannel("1");
+    matrixModel->Setup();
+    _presetSequenceElements.AddElement(_presetModel->GetName(), "Model", true, false, false, false, false);
+}
+
+void xLightsFrame::LoadPresetEffects(const CopyFormat1& pd)
+{
+    Element* elem = _presetSequenceElements.GetElement(_presetModel->GetName());
+    wxASSERT(elem != nullptr);
+
+    for (const auto& it : elem->GetEffectLayers()) {
+        it->DeleteAllEffects();
+    }
+
+    // Normalize negative row values to prevent infinite loops
+    int startRow = 0;
+    for (const auto& it : pd.Effects()) {
+        if (it->Row() < startRow) {
+            startRow = it->Row();
+        }
+    }
+
+    for (const auto& it : pd.Effects()) {
+        int row = it->Row() - startRow;
+        while (row >= (int)elem->GetEffectLayerCount()) {
+            elem->AddEffectLayer();
+        }
+        EffectLayer* el = elem->GetEffectLayer(row);
+        el->AddEffect(0, it->EffectName(), it->Settings(), it->Palette(),
+                      it->StartTime() - pd.StartTime(), it->EndTime() - pd.StartTime(),
+                      false, false, true);
+    }
+}
+
+void xLightsFrame::WriteGIFForPreset(const std::string& preset)
+{
+    WriteGIFForPreset(preset, _effectPresetManager, showDirectory);
+}
+
+void xLightsFrame::WriteGIFForPreset(const std::string& preset, EffectPresetManager& manager, const std::string& presetDir)
+{
+    spdlog::debug("Writing preset GIF for {}.", (const char*)preset.c_str());
+
+    wxMkDir(wxString(presetDir) + "/presets", wxS_DIR_DEFAULT);
+
+    auto filename = GetPresetIconFilename(preset, presetDir);
+
+    EffectPreset* presetObj = manager.FindPresetByPath(preset, '/');
+
+    if (presetObj != nullptr) {
+        wxString cp = presetObj->GetSettings();
+
+        CopyFormat1 pd(cp);
+        if (pd.IsOk()) {
+            size_t frames = pd.Frames(50);
+            if (frames == 0)
+                frames = 1;
+
+            const size_t MAX_PRESET_FRAMES = 250;
+            size_t gifFrames = std::min(frames, MAX_PRESET_FRAMES);
+            if (frames > MAX_PRESET_FRAMES) {
+                spdlog::warn("Preset {} has {} frames, GIF will be limited to {}.", preset, frames, MAX_PRESET_FRAMES);
+            }
+
+            EnsurePresetModel();
+            LoadPresetEffects(pd);
+
+            size_t channels = _presetModel->GetNumChannels();
+            // Only render if the preset contains effects
+            if (pd.Effects().size() > 0) {
+                _presetSequenceData.init(channels, frames, 50, true);
+
+                AbortRender();
+                //Need to make sure all the ASAP work is done first or it
+                //may abort the render
+                DoASAPWork();
+                _presetRendering = true;
+                _renderEngine->Render(_presetSequenceElements, _presetSequenceData,
+                       { _presetModel }, { _presetModel },
+                       0, frames - 1, nullptr, true, [](bool) {});
+                while (!_renderEngine->IsRenderDone()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifdef _WIN32
+                    wxSafeYield(nullptr, true);
+#endif
+                    UpdateRenderStatus();
+                }
+                _presetRendering = false;
+                WriteGIFModelFile(filename, channels, 0, gifFrames, &_presetSequenceData, 1, 0, _presetModel, 50);
+            }                
+        }
+    }
+}
+
+void xLightsFrame::WriteGIFModelFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame,
+                                     SeqDataType* dataBuf, int startAddr, int modelSize, Model* model, unsigned int frameTime) const
+{
+    // The actual encoding lives in the wx-free core (ModelGifExporter) so the
+    // iPad app shares it; it reuses ModelVideoExporter's frame builder and the
+    // vendored gif-h encoder instead of wxQuantize + wxGIFHandler.
+    ModelGifExporter::WriteModelGif(filename.ToStdString(), dataBuf, startFrame, endFrame, model, startAddr, frameTime);
+}
+
+void xLightsFrame::WriteMinleonNECModelFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame,
+                                            SeqDataType* dataBuf, int startAddr, int modelSize, Model* model)
+{
+    // this writes out at the sequence frame rate ... this may be a problem as samples I have seen seem to use 30fps
+
+    
+    spdlog::debug("Writing model Minleon Network Effects Controller File.");
+
+    wxLogNull logNo; // suppress popups from png images. See http://trac.wxwidgets.org/ticket/15331
+
+    int width;
+    int height;
+    model->GetBufferSize("Default", "2D", "None", width, height, 0);
+
+    wxFile f;
+    if (!f.Create(filename, true)) {
+        ConversionError(wxString("Unable to create file: ") + filename);
+        return;
+    }
+
+    spdlog::debug("   Model dimensions {}x{} => {} channels {} frames {}.", width, height, (long)width * (long)height * 3, numChans, endFrame - startFrame);
+
+    unsigned char header[512];
+    memset(header, 0x00, sizeof(header));
+
+    header[0] = 0xCC;
+    header[1] = 0x33;
+    header[5] = 0x01;
+    header[8] = 0x9C;
+    header[9] = 0x40;
+    header[11] = 0x03;
+    auto framems = _seqData.FrameTime();
+    if (framems == 0x21) // 30 fps
+    {
+        header[16] = 0x55;      // I dont know what this value represents but it seems to be present in the samples I have seen
+    } else if (framems == 0x19) // 40 fps
+    {
+        header[16] = 0xA4; // I dont know what this value represents but it seems to be present in the samples I have seen
+    } else {
+        // leave it as zero ... particularly for 20fps
+    }
+    header[17] = framems & 0xFF;
+    header[19] = framems & 0xFF; // some times this value is one less than the one above but i dont know why
+    header[20] = (numChans & 0xFF00) >> 8;
+    header[21] = (numChans & 0x00FF);
+    header[22] = 0x0A;
+    header[25] = 0x64;
+    header[26] = 0xFF;
+
+    f.Write(header, sizeof(header));
+
+    // every sample i have seen has one extra zero frame at the front ... so adding it
+    wxByte zero = 0x00;
+    for (int i = 0; i < numChans; i++) {
+        f.Write(&zero, sizeof(zero));
+    }
+
+    for (unsigned int i = startFrame; i < endFrame; ++i) {
+        f.Write(&(*dataBuf)[i][0], numChans);
+    }
+    f.Close();
+
+    spdlog::debug("Model Minleon Network Effects Controller file written successfully.");
+}
+
+void xLightsFrame::ReadFalconFile(const wxString& FileName, ConvertDialog* convertdlg)
+{
+    ConvertParameters read_params(FileName,                               // input filename
+                                  _seqData,                               // sequence data object
+                                  &_outputManager,                        // global network info
+                                  ConvertParameters::READ_MODE_LOAD_MAIN, // file read mode
+                                  this,                                   // xLights main frame
+                                  convertdlg,
+                                  nullptr,
+                                  &mediaFilename); // media filename
+
+    FileConverter::ReadFalconFile(read_params);
+}
+
+wxString FromAscii(const char* val)
+{
+    return wxString::FromAscii(val);
+}
+
+void xLightsFrame::ReadXlightsFile(const wxString& FileName, wxString* mediaFilename)
+{
+    wxFile f;
+    char hdr[512] = { 0 }, filetype[10] = { 0 };
+    int fileversion, numch, numper;
+
+    ConversionInit();
+    if (!f.Open(FileName.c_str())) {
+        PlayerError(wxString("Unable to load sequence:\n") + FileName);
+        return;
+    }
+    f.Read(hdr, 512);
+    int scancnt = sscanf(hdr, "%8s %2d %8d %8d", filetype, &fileversion, &numch, &numper);
+    if (scancnt != 4 || strncmp(filetype, "xLights", 7) != 0 || numch <= 0 || numper <= 0) {
+        PlayerError(wxString("Invalid file header:\n") + FileName);
+    } else {
+        _seqData.init(numch, numper, 50);
+        char* buf = new char[numper];
+        wxString filename = FromAscii(hdr + 32);
+        if (mediaFilename) {
+            *mediaFilename = filename;
+        } else {
+            SetMediaFilename(filename);
+        }
+        for (int x = 0; x < numch; x++) {
+            size_t readcnt = f.Read(buf, numper);
+            if (readcnt < (size_t)numper) {
+                PlayerError(wxString("Unable to read all event data from:\n") + FileName);
+            }
+            for (int p = 0; p < numper; p++) {
+                _seqData[p][x] = buf[p];
+            }
+        }
+        delete[] buf;
+#ifndef NDEBUG
+        
+        spdlog::debug("ReadXlightsFile SeqData.NumFrames()={} SeqData.NumChannels()={}\n", _seqData.NumFrames(), _seqData.NumChannels());
+#endif
+    }
+    f.Close();
+}
+
+static void addRanges(Model* m, std::map<uint32_t, uint32_t>& ranges)
+{
+    ModelGroup* grp = dynamic_cast<ModelGroup*>(m);
+    if (grp != nullptr) {
+        for (auto m2 : grp->Models()) {
+            addRanges(m2, ranges);
+        }
+    } else {
+        uint32_t cur = ranges[m->GetFirstChannel()];
+        ranges[m->GetFirstChannel()] = std::max(m->GetChanCount(), cur);
+    }
+}
+
+void xLightsFrame::WriteFalconPiFile(const wxString& filename, bool allowSparse)
+{
+    
+
+    ConvertParameters write_params(filename,                               // filename
+                                   _seqData,                               // sequence data object
+                                   &_outputManager,                        // global network info
+                                   ConvertParameters::READ_MODE_LOAD_MAIN, // file read mode
+                                   this,                                   // xLights main frame
+                                   nullptr,
+                                   nullptr,
+                                   &mediaFilename, // media filename
+                                   nullptr,
+                                   filename);
+    write_params.elements = &_sequenceElements;
+    if (allowSparse) {
+        std::map<uint32_t, uint32_t> ranges;
+        int numElements = _sequenceElements.GetElementCount();
+        for (int i = 0; i < numElements; ++i) {
+            Element* element = _sequenceElements.GetElement(i);
+            if (element == nullptr)
+                spdlog::critical("Element {} returns as null.", i);
+            if (element->GetType() == ElementType::ELEMENT_TYPE_MODEL) {
+                std::string modelName = element->GetModelName();
+                Model* m = this->GetModel(modelName);
+                if (m == nullptr) {
+                    spdlog::critical("Model {} returns as null.", modelName);
+                } else {
+                    addRanges(m, ranges);
+                }
+            }
+        }
+
+        uint32_t gapEliminate = 0; // set if we want to eliminate gaps
+        std::pair<uint32_t, uint32_t> cur(INT_MAX, INT_MAX);
+        for (auto& a : ranges) {
+            if (cur.first == INT_MAX) {
+                cur.first = a.first;
+                cur.second = a.second;
+            } else {
+                if (a.first <= (cur.first + cur.second + gapEliminate)) {
+                    // overlap or within 1025 channels of an overlap, need to combine
+                    // if the two ranges are "close" (wthin 1025 channels) we'll combine
+                    // as the overhead of doing ranges wouldn't benefit with a small gap
+                    uint32_t max = cur.first + cur.second - 1;
+                    uint32_t amax = a.first + a.second - 1;
+                    max = std::max(max, amax);
+                    cur.second = max - cur.first + 1;
+                } else {
+                    write_params.ranges.push_back(cur);
+                    cur.first = a.first;
+                    cur.second = a.second;
+                }
+            }
+        }
+        if (cur.first != INT_MAX) {
+            write_params.ranges.push_back(cur);
+        }
+    }
+
+    FileConverter::WriteFalconPiFile(write_params);
+}

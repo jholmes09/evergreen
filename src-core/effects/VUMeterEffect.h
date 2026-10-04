@@ -1,0 +1,125 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "RenderableEffect.h"
+#include "../render/RenderBuffer.h"
+#include "../utils/xlPoint.h"
+
+#include <string>
+#include <list>
+
+// Use prefixed nanosvg type to avoid conflicts with wxWidgets' bundled version
+#define NSVGimage xl_NSVGimage
+struct NSVGimage;
+
+class VUMeterEffect : public RenderableEffect
+{
+public:
+    VUMeterEffect(int id);
+    virtual ~VUMeterEffect();
+    virtual void Render(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer) override;
+    // Tier-2: Snapshottable modes advance their scalar cache state (and consume the
+    // random-bar RNG / Level Shape size decay) here and return an immutable draw
+    // snapshot; Render then draws purely from it.  Returns nullptr for the
+    // Pure and Stateful modes (spectrogram family, external-SVG Level Shape) - see
+    // ClassifyMode, the single partition shared with GetFrameParallelism.
+    virtual std::unique_ptr<EffectFrameState> AdvanceState(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer) override;
+    virtual FrameParallelism GetFrameParallelism(const SettingsMap& settings) const override;
+    // Single source of truth for this effect's frame-parallel partition, shared by
+    // GetFrameParallelism and AdvanceState so classification and implementation can
+    // never drift (invariant: Snapshottable <=> AdvanceState returns non-null).
+    FrameParallelism ClassifyMode(const SettingsMap& settings) const;
+    virtual void RenameTimingTrack(std::string oldname, std::string newname, Effect* effect) override;
+    virtual std::list<std::string> CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache) override;
+    virtual bool needToAdjustSettings(const std::string& version) override;
+    virtual void adjustSettings(const std::string& version, Effect* effect, bool removeDefaults = true) override;
+    bool needsLoadFiles() const override { return true; }
+    void loadFiles(Effect* effect) override;
+    virtual std::list<std::string> GetFileReferences(RenderContext* ctx, Model* model, const SettingsMap& SettingsMap) const override;
+    virtual bool CleanupFileLocations(RenderContext* ctx, SettingsMap& SettingsMap) override;
+
+    // Cached from VUMeter.json by OnMetadataLoaded().
+    static int sBarsDefault;
+    static int sSensitivityDefault;
+    static int sGainDefault;
+    static int sGainMin;
+    static int sGainMax;
+    static int sStartNoteDefault;
+    static int sEndNoteDefault;
+    static int sXOffsetDefault;
+    static int sYOffsetDefault;
+    static int sYOffsetMin;
+    static int sYOffsetMax;
+    static bool sSlowDownFallsDefault;
+    static bool sLogarithmicXDefault;
+    static bool sRegexDefault;
+    static std::string sTypeDefault;
+    static std::string sShapeDefault;
+
+protected:
+    virtual void OnMetadataLoaded() override;
+    static int DecodeType(const std::string& type);
+    static int DecodeShape(const std::string& shape);
+
+    void Render(RenderBuffer& buffer, SequenceElements* elements,
+                int bars, const std::string& type, const std::string& timingtrack, int sensitivity, const std::string& shape, bool slowdownfalls, int startnote, int endnote, int xoffset, int yoffset, int gain, bool logarithmicX, const std::string& filter, bool regex, const std::string& svgFile);
+    void RenderSpectrogramFrame(RenderBuffer& buffer, int bars, std::vector<float>& lastvalues, std::vector<float>& lastpeaks, std::list<int>& pauseuntilpeakfall, bool slowdownfalls, int startnote, int endnote, int xoffset, int yoffset, bool peak, int peakhold, bool line, bool logarithmicX, bool circle, int gain, int sensitivity, std::list<std::vector<xlPoint>>& lineHistory) const;
+    void RenderVolumeBarsFrame(RenderBuffer& buffer, int bars, int gain);
+    void RenderWaveformFrame(RenderBuffer& buffer, int bars, int yoffset, int gain, bool frameDetail);
+    void RenderTimingEventFrame(RenderBuffer& buffer, int bars, int type, std::string timingtrack, std::list<int>& timingmarks, const std::string& filter, bool regex);
+    void RenderTimingEventTimedSweepFrame(RenderBuffer& buffer, int bars, int type, std::string timingtrack, int& nCount, const std::string& filter, bool regex);
+    void RenderTimingEventTimedChaseFrame(RenderBuffer& buffer, int usebars, int nType, std::string timingtrack, int& nCount, const std::string& filter, bool regex);
+    void RenderOnFrame(RenderBuffer& buffer, int gain);
+    void RenderOnColourFrame(RenderBuffer& buffer, int gain);
+    void RenderPulseFrame(RenderBuffer& buffer, int fadeframes, std::string timingtrack, int& lasttimingmark);
+    void RenderTimingEventColourFrame(RenderBuffer& buffer, int& colourindex, std::string timingtrack, int sensitivity, const std::string& filter, bool regex);
+    void RenderLevelColourFrame(RenderBuffer& buffer, int& colourindex, int sensitivity, int& lasttimingmark, int gain);
+    void RenderIntensityWaveFrame(RenderBuffer& buffer, int bars, int gain);
+    void RenderLevelPulseFrame(RenderBuffer& buffer, int fadeframes, int sensitivity, int& lasttimingmark, int gain);
+    void RenderLevelJumpFrame(RenderBuffer& buffer, int fadeframes, int sensitivity, int& lasttimingmark, int gain, bool fullJump, float& lastVal);
+    void RenderLevelBarFrame(RenderBuffer& buffer, int bars, int sensitivity, float& lastbar, int& colourindex, int gain, bool random);
+    void RenderNoteLevelBarFrame(RenderBuffer& buffer, int bars, int sensitivity, float& lastbar, int& colourindex, int startNote, int endNote, int gain, bool random);
+    // advance==true (serial / Stateful path) runs the _lastsize slowdown-falls
+    // decay before drawing; advance==false draws purely from the passed-in
+    // lastsize (the AdvanceState snapshot), never touching audio.
+    void RenderLevelShapeFrame(RenderBuffer& buffer, const std::string& shape, float& lastsize, int scale, bool slowdownfalls, int xoffset, int yoffset, int usebars, int gain, NSVGimage* svgFile, bool advance = true);
+    // The Level Shape cross-frame transition: advance lastsize by the slowdown-
+    // falls decay from this frame's audio level.  Returns false when there is no
+    // media (nothing to draw).  Shared by RenderLevelShapeFrame (advance path) and
+    // AdvanceState so the two stay byte-identical.
+    bool AdvanceLevelShapeSize(RenderBuffer& buffer, int scale, bool slowdownfalls, int gain, float& lastsize) const;
+    void RenderTimingEventPulseFrame(RenderBuffer& buffer, int fadeframes, std::string timingtrack, float& lastsize, const std::string& filter, bool regex);
+    void RenderTimingEventPulseColourFrame(RenderBuffer& buffer, int fadeframes, std::string timingtrack, float& lastsize, int& colourindex, const std::string& filter, bool regex);
+    void RenderTimingEventBarFrame(RenderBuffer& buffer, int bars, std::string timingtrack, float& lastbar, int& colourindex, bool all, bool random, const std::string& filter, bool regex, bool bounce, int& lastDirection);
+    void RenderNoteOnFrame(RenderBuffer& buffer, int startNote, int endNote, int gain);
+    void RenderNoteLevelPulseFrame(RenderBuffer& buffer, int fadeframes, int sensitivity, int& lasttimingmark, int startNote, int endNote, int gain);
+    void RenderNoteLevelJumpFrame(RenderBuffer& buffer, int fadeframes, int sensitivity, int& lasttimingmark, int startNote, int endNote, int gain, bool fullJump, float& lastsize);
+    void RenderTimingEventJumpFrame(RenderBuffer& buffer, int fallframes, std::string timingtrack, float& lastval, bool useAudioLevel, int gain, const std::string& filter, bool regex);
+    void RenderLevelPulseColourFrame(RenderBuffer& buffer, int fadeframes, int sensitivity, int& lasttimingmark, int& colourindex, int gain);
+    void RenderDominantFrequencyColour(RenderBuffer& buffer, int sensitivity, int startNote, int endNote, bool gradient);
+
+    void DrawBox(RenderBuffer& buffer, int startx, int endx, int starty, int endy, xlColor& color1);
+    void DrawCircle(RenderBuffer& buffer, int x, int y, float radius, xlColor& color1);
+    void DrawStar(RenderBuffer& buffer, int x, int y, float radius, xlColor& color1, int points);
+    void DrawDiamond(RenderBuffer& buffer, int centerx, int centery, int size, xlColor& color1);
+    void DrawSnowflake(RenderBuffer& buffer, int xc, int yc, double radius, int sides, xlColor color, double rotation = 0);
+    void DrawHeart(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, int thickness = 1);
+    void DrawTree(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, int thickness = 1);
+    void DrawCandycane(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, int thickness = 1) const;
+    void DrawCrucifix(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, int thickness = 1);
+    void DrawPresent(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, int thickness = 1);
+    void DrawSVG(RenderBuffer& buffer, int xc, int yc, double radius, xlColor color, NSVGimage* svgFile, int thickness = 1);
+
+    Effect* GetTimingEvent(RenderBuffer& buffer, const std::string& timingTrack, uint32_t ms, const std::string& filter, bool regex);
+
+    inline float ApplyGain(float value, int gain) const;
+};

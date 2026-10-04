@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<wxsmith>
+	<object class="wxDialog" name="HinksPixExportDialog">
+		<title>HinksPix Export</title>
+		<id_arg>0</id_arg>
+		<style>wxCAPTION|wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER|wxCLOSE_BOX|wxMAXIMIZE_BOX</style>
+		<handler function="OnClose" entry="EVT_CLOSE" />
+		<object class="wxFlexGridSizer" variable="FlexGridSizer1" member="no">
+			<cols>1</cols>
+			<growablecols>0</growablecols>
+			<growablerows>0</growablerows>
+			<object class="sizeritem">
+				<object class="wxNotebook" name="ID_NOTEBOOK_EXPORT_ITEMS" variable="NotebookExportItems" member="yes">
+					<minsize>1100,400</minsize>
+					<object class="notebookpage">
+						<object class="wxScrolledWindow" name="ID_SCROLLEDWINDOW1" variable="HinkControllerList" member="yes">
+							<pos>-124,-53</pos>
+							<minsize>-1,150d</minsize>
+							<object class="wxFlexGridSizer" variable="HinkControllerSizer" member="yes">
+								<cols>9</cols>
+							</object>
+						</object>
+						<label>Controllers</label>
+					</object>
+					<object class="notebookpage">
+						<object class="wxPanel" name="ID_PANEL1" variable="Panel1" member="yes">
+							<object class="wxFlexGridSizer" variable="FlexGridSizer2" member="no">
+								<cols>2</cols>
+								<rows>2</rows>
+								<growablecols>1</growablecols>
+								<growablerows>1</growablerows>
+								<object class="spacer">
+									<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+									<border>5</border>
+									<option>1</option>
+								</object>
+								<object class="sizeritem">
+									<object class="wxBoxSizer" variable="BoxSizer3" member="no">
+										<object class="sizeritem">
+											<object class="wxStaticText" name="ID_STATICTEXT3" variable="StaticText3" member="yes">
+												<label>Playlist:</label>
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+											<border>5</border>
+										</object>
+										<object class="sizeritem">
+											<object class="wxChoice" name="ID_CHOICE_PLAYLISTS" variable="ChoicePlaylists" member="yes" />
+											<flag>wxALL|wxEXPAND</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+										<object class="sizeritem">
+											<object class="wxButton" name="ID_BUTTON_ADD_PLAYLIST" variable="ButtonAddPlaylist" member="yes">
+												<label>Add</label>
+												<handler function="OnButtonAddPlaylistClick" entry="EVT_BUTTON" />
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+											<border>5</border>
+										</object>
+										<object class="sizeritem">
+											<object class="wxButton" name="ID_BUTTON_REMOVE" variable="ButtonRemove" member="yes">
+												<label>Remove</label>
+												<handler function="OnButtonRemoveClick" entry="EVT_BUTTON" />
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+											<border>5</border>
+										</object>
+										<object class="spacer">
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+										<object class="sizeritem">
+											<object class="wxStaticText" name="ID_STATICTEXT1" variable="StaticText1" member="yes">
+												<label>Filter:</label>
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL|wxFIXED_MINSIZE</flag>
+											<border>5</border>
+										</object>
+										<object class="sizeritem">
+											<object class="wxChoice" name="ID_CHOICE_FILTER" variable="ChoiceFilter" member="yes">
+												<content>
+													<item>Recursive Search</item>
+													<item>Only Current Directory</item>
+												</content>
+												<selection>0</selection>
+											</object>
+											<flag>wxALL</flag>
+											<border>5</border>
+										</object>
+										<object class="sizeritem">
+											<object class="wxStaticText" name="ID_STATICTEXT2" variable="StaticText2" member="yes">
+												<label>Folder:</label>
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL|wxFIXED_MINSIZE</flag>
+											<border>5</border>
+										</object>
+										<object class="sizeritem">
+											<object class="wxChoice" name="ID_CHOICE_FOLDER" variable="ChoiceFolder" member="yes">
+												<selection>0</selection>
+											</object>
+											<flag>wxALL|wxEXPAND</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+									</object>
+									<flag>wxEXPAND</flag>
+									<option>1</option>
+								</object>
+								<object class="sizeritem">
+									<object class="wxBoxSizer" variable="BoxSizer2" member="no">
+										<orient>wxVERTICAL</orient>
+										<object class="sizeritem">
+											<object class="wxBitmapButton" name="ID_BITMAPBUTTON_MOVE_UP" variable="BitmapButtonMoveUp" member="yes">
+												<bitmap code='wxArtProvider::GetBitmapBundle(&quot;wxART_GO_UP&quot;, wxART_BUTTON)' />
+												<minsize>20,20</minsize>
+												<handler function="OnBitmapButtonMoveUpClick" entry="EVT_BUTTON" />
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL|wxFIXED_MINSIZE</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+										<object class="sizeritem">
+											<object class="wxBitmapButton" name="ID_BITMAPBUTTON_MOVE_DOWN" variable="BitmapButtonMoveDown" member="yes">
+												<bitmap code='wxArtProvider::GetBitmapBundle(&quot;wxART_GO_DOWN&quot;, wxART_BUTTON)' />
+												<minsize>20,20</minsize>
+												<handler function="OnBitmapButtonMoveDownClick" entry="EVT_BUTTON" />
+											</object>
+											<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL|wxFIXED_MINSIZE</flag>
+											<border>5</border>
+											<option>1</option>
+										</object>
+									</object>
+									<flag>wxALL|wxALIGN_CENTER_VERTICAL</flag>
+									<option>1</option>
+								</object>
+								<object class="sizeritem">
+									<object class="wxListView" name="ID_LISTVIEW_Sequences" variable="CheckListBox_Sequences" member="yes">
+										<style>wxLC_REPORT</style>
+										<handler function="SequenceListPopup" entry="EVT_LIST_ITEM_RIGHT_CLICK" />
+									</object>
+									<flag>wxEXPAND</flag>
+									<option>1</option>
+								</object>
+							</object>
+						</object>
+						<label>Playlists</label>
+					</object>
+					<object class="notebookpage">
+						<object class="wxPanel" name="ID_PANEL4" variable="Panel4" member="yes">
+							<object class="wxFlexGridSizer" variable="FlexGridSizer4" member="no">
+								<cols>1</cols>
+								<growablecols>0</growablecols>
+								<growablerows>0</growablerows>
+								<object class="sizeritem">
+									<object class="wxGrid" name="ID_GRID_SCHEDULE" variable="GridSchedule" member="yes">
+										<cols>6</cols>
+										<collabels>
+											<item>PlayList</item>
+											<item>Start Hour</item>
+											<item>Start Min</item>
+											<item>End Hour</item>
+											<item>End Min</item>
+											<item>Enabled</item>
+										</collabels>
+										<pos>0,-112</pos>
+										<style>wxVSCROLL|wxHSCROLL</style>
+										<handler function="OnGridScheduleCellRightClick" entry="EVT_CMD_GRID_CELL_RIGHT_CLICK" />
+										<handler function="OnGridScheduleCellChanged" entry="EVT_CMD_GRID_CELL_CHANGED" />
+									</object>
+									<flag>wxEXPAND</flag>
+								</object>
+							</object>
+						</object>
+						<label>Schedule</label>
+					</object>
+				</object>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+			<object class="sizeritem">
+				<object class="wxBoxSizer" variable="BoxSizer1" member="no">
+					<object class="sizeritem">
+						<object class="wxButton" name="ID_BUTTON_REFRESH" variable="AddRefreshButton" member="yes">
+							<label>Refresh USB Drives</label>
+							<handler function="OnAddRefreshButtonClick" entry="EVT_BUTTON" />
+						</object>
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+					</object>
+					<object class="spacer">
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+					</object>
+					<object class="spacer">
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+						<option>1</option>
+					</object>
+					<object class="sizeritem">
+						<object class="wxButton" name="ID_BUTTON_EXPORT" variable="Button_Export" member="yes">
+							<label>Export to SD Card</label>
+							<handler function="OnButton_ExportClick" entry="EVT_BUTTON" />
+						</object>
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+					</object>
+					<object class="sizeritem">
+						<object class="wxButton" name="ID_BUTTON_UPLOAD" variable="ButtonUpload" member="yes">
+							<label>Upload to Controller</label>
+							<handler function="OnButtonUploadClick" entry="EVT_BUTTON" />
+						</object>
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+					</object>
+					<object class="sizeritem">
+						<object class="wxButton" name="wxID_Close" variable="Button_Close" member="no">
+							<label>Close</label>
+							<handler function="OnButton_CloseClick" entry="EVT_BUTTON" />
+						</object>
+						<flag>wxALL|wxALIGN_CENTER_HORIZONTAL|wxALIGN_CENTER_VERTICAL</flag>
+						<border>5</border>
+					</object>
+				</object>
+				<flag>wxALL|wxEXPAND</flag>
+				<border>5</border>
+				<option>1</option>
+			</object>
+		</object>
+	</object>
+</wxsmith>

@@ -1,0 +1,1651 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "../../include/shader_64.xpm"
+#include "../../include/shader_48.xpm"
+#include "../../include/shader_32.xpm"
+#include "../../include/shader_24.xpm"
+#include "../../include/shader_16.xpm"
+#include <algorithm>
+#include <cassert>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <spdlog/fmt/fmt.h>
+#include <semaphore>
+#include <sstream>
+
+#ifdef __APPLE__
+    #include <TargetConditionals.h>
+#endif
+#ifndef TARGET_OS_IPHONE
+    #define TARGET_OS_IPHONE 0
+#endif
+
+// iOS has no OpenGL shader path — the native Metal ShaderEffect subclass
+// handles all shader rendering there.  Everything GL below (includes,
+// ShaderRenderCache, the Render body, programIdForShaderCode) is compiled
+// out with !TARGET_OS_IPHONE; the parse/config/settings code stays on all
+// platforms (the Metal translator and the UI depend on it).
+#if !defined(__APPLE__)
+    #ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+    #endif
+    #include <windows.h>
+    #endif
+    #include <GL/gl.h>
+    #include <GL/glext.h>
+
+    #ifdef _WIN32
+        extern PFNGLACTIVETEXTUREPROC glActiveTexture;
+    #endif
+    extern PFNGLGENBUFFERSPROC glGenBuffers;
+    extern PFNGLBINDBUFFERPROC glBindBuffer;
+    extern PFNGLBUFFERDATAPROC glBufferData;
+    extern PFNGLGETPROGRAMIVPROC glGetProgramiv;
+    extern PFNGLGETACTIVEUNIFORMPROC glGetActiveUniform;
+    extern PFNGLGETATTRIBLOCATIONPROC glGetAttribLocation;
+    extern PFNGLENABLEVERTEXATTRIBARRAYPROC glEnableVertexAttribArray;
+    extern PFNGLDISABLEVERTEXATTRIBARRAYPROC glDisableVertexAttribArray;
+    extern PFNGLVERTEXATTRIBPOINTERPROC glVertexAttribPointer;
+    extern PFNGLDELETEBUFFERSPROC glDeleteBuffers;
+    extern PFNGLDELETEPROGRAMPROC glDeleteProgram;
+    extern PFNGLUSEPROGRAMPROC glUseProgram;
+    extern PFNGLISPROGRAMPROC glIsProgram;
+    extern PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation;
+    extern PFNGLUNIFORMMATRIX2FVPROC glUniformMatrix4fv;
+    extern PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers;
+    extern PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer;
+    extern PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
+    extern PFNGLGENRENDERBUFFERSPROC glGenRenderbuffers;
+    extern PFNGLBINDRENDERBUFFERPROC glBindRenderbuffer;
+    extern PFNGLRENDERBUFFERSTORAGEPROC glRenderbufferStorage;
+    extern PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
+    extern PFNGLDELETERENDERBUFFERSPROC glDeleteRenderbuffers;
+    extern PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
+    extern PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
+    extern PFNGLDELETEVERTEXARRAYSPROC glDeleteVertexArrays;
+    extern PFNGLUNIFORM1IPROC glUniform1i;
+    extern PFNGLUNIFORM1FPROC glUniform1f;
+    extern PFNGLUNIFORM2FPROC glUniform2f;
+    extern PFNGLUNIFORM4FPROC glUniform4f;
+#elif !TARGET_OS_IPHONE
+    // Apple desktop GL (CGL)
+    #include "OpenGL/gl3.h"
+    #define __gl_h_
+    #include <OpenGL/OpenGL.h>
+
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+#include "ShaderEffect.h"
+#include "SPIRVShaderEffect.h" // ShaderBuildStats
+#include "media/AudioManager.h"
+#include "../graphics/GLContextManager.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "../render/SequenceElements.h"
+#include "../render/SequenceMedia.h"
+#include "../models/Model.h"
+#include "UtilClasses.h"
+#include "../render/RenderContext.h"
+#include "OpenGLShaders.h"
+#include "UtilFunctions.h"
+#include "utils/ExternalHooks.h"
+#include "utils/AppCallbacks.h"
+#include "../utils/FileUtils.h"
+#include <nlohmann/json.hpp>
+
+#include <regex>
+
+#include <log.h>
+
+#include <fstream>
+#include <map>
+#include <set>
+#include <mutex>
+#include <string>
+
+
+
+namespace
+{
+#if !TARGET_OS_IPHONE
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+
+    GLuint RenderBufferTexture(int w, int h)
+    {
+        GLuint texId = 0;
+
+        LOG_GL_ERRORV(glGenTextures(1, &texId));
+        LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, texId));
+
+        LOG_GL_ERRORV(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr));
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, 0));
+
+        return texId;
+    }
+
+    GLuint FFTAudioTexture()
+    {
+        GLuint texId = 0;
+
+        LOG_GL_ERRORV(glGenTextures(1, &texId));
+        LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, texId));
+
+        LOG_GL_ERRORV(glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 128, 1, 0, GL_RED, GL_FLOAT, nullptr));
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, 0));
+
+        return texId;
+    }
+
+    GLuint allocColorRenderbuffer(int width, int height)
+    {
+        GLuint rb = 0;
+        LOG_GL_ERRORV(glGenRenderbuffers(1, &rb));
+        LOG_GL_ERRORV(glBindRenderbuffer(GL_RENDERBUFFER, rb));
+        LOG_GL_ERRORV(glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA, width, height));
+        return rb;
+    }
+
+    const char* vsSrc =
+        "#version 330 core\n"
+        "uniform vec2 RENDERSIZE;\n"
+        "uniform vec2 XL_OFFSET;\n"
+        "uniform float XL_ZOOM;\n"
+        "uniform float XL_DURATION;\n"
+        "in vec2 vpos;\n"
+        "in vec2 tpos;\n"
+        "out vec2 texCoord;\n"
+        "out vec2 orig_FragNormCoord;\n"
+        "out vec2 orig_FragCoord;\n"
+        "out vec2 xl_FragNormCoord;\n"
+        "out vec2 xl_FragCoord;\n"
+        "vec2 XL_ZOOM_OFFSET(vec2 coord) {\n  return ((coord.xy - (XL_OFFSET - 0.5) - 0.5) / XL_ZOOM) + 0.5;\n}\n\n"
+        "void isf_vertShaderInit(void)\n"
+        "{\n"
+        //"   gl_Position = ftransform();\n"
+        "   gl_Position = vec4(vpos,0,1);\n"
+        "   texCoord = tpos;\n"
+        "   orig_FragNormCoord = vec2(tpos.x, tpos.y);\n"
+        "   xl_FragNormCoord = XL_ZOOM_OFFSET(vec2(tpos.x, tpos.y));\n"
+        "   orig_FragCoord = orig_FragNormCoord * RENDERSIZE;\n"
+        "   xl_FragCoord = xl_FragNormCoord * RENDERSIZE;\n"
+        "}\n"
+        "void main(){\n"
+        "    isf_vertShaderInit();"
+        "}\n";
+#endif // !TARGET_OS_IPHONE
+
+    void setRenderBufferAll(RenderBuffer& buffer, const xlColor& colour) {
+        buffer.Fill(colour);
+    }
+}
+
+void ShaderEffect::SetBackgroundRender(bool b) {
+    GLContextManager::Instance().SetBackgroundRenderEnabled(b);
+}
+
+std::string ShaderEffect::GetNativeVertexShaderSource() {
+    return
+        "#version 330 core\n"
+        // Enables explicit layout(location=) on the varyings below (needed in 330).
+        "#extension GL_ARB_separate_shader_objects : enable\n"
+        "uniform vec2 RENDERSIZE;\n"
+        "uniform vec2 XL_OFFSET;\n"
+        "uniform float XL_ZOOM;\n"
+        "uniform float XL_DURATION;\n"
+        "in vec2 vpos;\n"
+        "in vec2 tpos;\n"
+        // Explicit, matching locations so the separately-compiled MSL vertex and
+        // fragment stages agree on the varying interface (spirv-cross renumbers
+        // per-stage otherwise, since the fragment drops unused varyings).
+        "layout(location=0) out vec2 texCoord;\n"
+        "layout(location=1) out vec2 orig_FragNormCoord;\n"
+        "layout(location=2) out vec2 orig_FragCoord;\n"
+        "layout(location=3) out vec2 xl_FragNormCoord;\n"
+        "layout(location=4) out vec2 xl_FragCoord;\n"
+        "vec2 XL_ZOOM_OFFSET(vec2 coord) {\n  return ((coord.xy - (XL_OFFSET - 0.5) - 0.5) / XL_ZOOM) + 0.5;\n}\n\n"
+        "void isf_vertShaderInit(void)\n"
+        "{\n"
+        "   gl_Position = vec4(vpos,0,1);\n"
+        "   texCoord = tpos;\n"
+        "   orig_FragNormCoord = vec2(tpos.x, tpos.y);\n"
+        "   xl_FragNormCoord = XL_ZOOM_OFFSET(vec2(tpos.x, tpos.y));\n"
+        "   orig_FragCoord = orig_FragNormCoord * RENDERSIZE;\n"
+        "   xl_FragCoord = xl_FragNormCoord * RENDERSIZE;\n"
+        "}\n"
+        "void main(){\n"
+        "    isf_vertShaderInit();"
+        "}\n";
+}
+
+bool ShaderEffect::IsBackgroundRender() {
+    return GLContextManager::Instance().IsBackgroundRenderEnabled();
+}
+
+bool ShaderEffect::IsShaderFile(std::string filename)
+{
+    auto ext = std::filesystem::path(filename).extension().string();
+    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+    if (ext == "fs") {
+        return true;
+    }
+
+    return false;
+}
+
+std::list<std::string> ShaderEffect::CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache)
+{
+    std::list<std::string> res = RenderableEffect::CheckEffectSettings(settings, media, model, eff, renderCache);
+
+    std::string ifsFilename = settings.Get("E_0FILEPICKERCTRL_IFS", "");
+
+    if (ifsFilename.empty()) {
+        res.push_back(fmt::format("    ERR: Shader effect cant find file '{}'. Model '{}', Start {}", ifsFilename, model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+    } else {
+        auto& mm = eff->GetParentEffectLayer()->GetParentElement()->GetSequenceElements()->GetSequenceMedia();
+        auto entry = mm.GetShader(ifsFilename);
+        entry->MarkIsUsed();
+
+        if (entry->GetShaderSource().empty()) {
+            res.push_back(fmt::format("    ERR: Shader effect cant find file '{}'. Model '{}', Start {}", ifsFilename, model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        } else if (!entry->IsEmbedded()) {
+            if (!FileUtils::IsFileInShowDir(std::string(), ifsFilename)) {
+                res.push_back(fmt::format("    WARN: Shader effect file '{}' not under show directory. Model '{}', Start {}", ifsFilename, model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+            }
+        }
+    }
+
+    return res;
+}
+
+std::list<std::string> ShaderEffect::GetFileReferences(RenderContext* ctx, Model* model, const SettingsMap& SettingsMap) const
+{
+    std::list<std::string> res;
+    if (SettingsMap["E_0FILEPICKERCTRL_IFS"] != "") {
+        res.push_back(ResolveFileReference(ctx, SettingsMap["E_0FILEPICKERCTRL_IFS"]));
+    }
+    return res;
+}
+
+bool ShaderEffect::CleanupFileLocations(RenderContext* ctx, SettingsMap& SettingsMap)
+{
+    bool rc = false;
+    std::string file = SettingsMap["E_0FILEPICKERCTRL_IFS"];
+    if (FileExists(file))
+    {
+        if (!ctx->IsInShowFolder(file))
+        {
+            SettingsMap["E_0FILEPICKERCTRL_IFS"] = ctx->MoveToShowFolder(file, std::string(1, std::filesystem::path::preferred_separator) + "Shaders", true);
+            rc = true;
+        }
+    }
+
+    return rc;
+}
+
+ShaderConfig* ShaderEffect::ParseShaderFromSource(const std::string& filename, const std::string& source, SequenceElements* sequenceElements) {
+    if (source.empty()) {
+        return nullptr;
+    }
+
+    std::string code = source;
+    if (code[0] == '{' && code[1] == '"') {
+        nlohmann::json root = nlohmann::json::parse(code);
+        if (root.contains("rawFragmentSource")) {
+            code = root["rawFragmentSource"].get<std::string>();
+            if (code.empty()) {
+                return nullptr;
+            }
+        }
+    }
+
+    std::smatch match;
+    std::regex re("\\/\\*([\\s\\S]*?)\\*\\/", std::regex_constants::ECMAScript);
+    if (!std::regex_search(code, match, re)) {
+        return nullptr;
+    }
+    return new ShaderConfig(filename, code, match[1].str(), sequenceElements);
+}
+
+ShaderConfig* ShaderEffect::ParseShader(const std::string& filename, SequenceElements* sequenceElements) {
+    auto shader = sequenceElements->GetSequenceMedia().GetShader(filename);
+    if (!shader) {
+        return nullptr;
+    }
+    std::string code = shader->GetShaderSource();
+    return ParseShaderFromSource(filename, code, sequenceElements);
+}
+
+bool ShaderEffect::needToAdjustSettings(const std::string& version)
+{
+    return IsVersionOlder("2021.18", version) || RenderableEffect::needToAdjustSettings(version);
+}
+
+void ShaderEffect::adjustSettings(const std::string& version, Effect* effect, bool removeDefaults)
+{
+    // give the base class a chance to adjust any settings
+    if (RenderableEffect::needToAdjustSettings(version)) {
+        RenderableEffect::adjustSettings(version, effect, removeDefaults);
+    }
+
+    SettingsMap& settings = effect->GetSettings();
+
+    // The way we used to do names allowed for potential settings name clashes ... this should minimise them
+    std::list<std::pair<std::string, std::string>> renames;
+    for (auto& it : settings.keys()) {
+        if (it != "E_VALUECURVE_Shader_Zoom" &&
+            it != "E_VALUECURVE_Shader_Offset_Y" &&
+            it != "E_VALUECURVE_Shader_Speed" &&
+            it != "E_TEXTCTRL_Shader_LeadIn" &&
+            it != "E_0FILEPICKERCTRL_IFS" &&
+            it != "E_SLIDER_Shader_Speed" &&
+            it != "E_TEXTCTRL_Shader_Offset_X" &&
+            it != "E_TEXTCTRL_Shader_Offset_Y" &&
+            it != "E_TEXTCTRL_Shader_Zoom" &&
+            it != "E_VALUECURVE_Shader_Offset_X"
+           ) {
+            if (StartsWith(it, "E_") && !Contains(it, "SHADERXYZZY")) {
+                std::string undecorated = AfterFirst(it, '_');
+                std::string name = AfterFirst(undecorated, '_');
+                std::string prefix = it.substr(0, it.size() - name.size());
+                renames.push_back({ it, prefix + "SHADERXYZZY_" + name });
+            }
+        }
+    }
+    for (const auto& it : renames) {
+        settings[it.second] = settings[it.first];
+        settings.erase(it.first);
+    }
+}
+
+void ShaderEffect::loadFiles(Effect* effect)
+{
+    SettingsMap& settings = effect->GetSettings();
+    std::string file = settings["E_0FILEPICKERCTRL_IFS"];
+    if (!file.empty()) {
+        auto& media = effect->GetParentEffectLayer()->GetParentElement()->GetSequenceElements()->GetSequenceMedia();
+        const auto resolved = SequenceMedia::ResolveFilePath(file);
+        settings["E_0FILEPICKERCTRL_IFS"] = resolved.settingsPath;
+        media.GetShader(settings["E_0FILEPICKERCTRL_IFS"]);
+    }
+}
+
+// Platform-specific GL context management moved to graphics/GLContextManager.cpp
+
+#if !TARGET_OS_IPHONE
+
+#if defined(__APPLE__)
+constexpr int COMPILED_PROGRAM_RETAIN_COUNT = 24;
+#else
+constexpr int COMPILED_PROGRAM_RETAIN_COUNT = 10;
+#endif
+
+class ShaderRenderCache : public EffectRenderCache {
+public:
+    class ShaderInfo {
+        std::map<std::string, GLint> uniforms;
+
+    public:
+        std::list<unsigned> programIds;
+
+        ShaderInfo(GLint pid) {
+            LoadUniforms(pid);
+        }
+
+        inline bool SetUniformInt(const std::string &name, int v) const {
+            GLint loc = FindUniformLocation(name);
+            if (loc != -1) { glUniform1i(loc, v); return true; }
+            return false;
+        }
+        inline bool SetUniform1f(const std::string &name, float v) const {
+            GLint loc = FindUniformLocation(name);
+            if (loc != -1) { glUniform1f(loc, v); return true; }
+            return false;
+        }
+        inline bool SetUniform2f(const std::string &name, float v1, float v2) const {
+            GLint loc = FindUniformLocation(name);
+            if (loc != -1) { glUniform2f(loc, v1, v2); return true; }
+            return false;
+        }
+        inline bool SetUniform4f(const std::string &name, float v1, float v2, float v3, float v4) const {
+            GLint loc = FindUniformLocation(name);
+            if (loc != -1) { glUniform4f(loc, v1, v2, v3, v4); return true; }
+            return false;
+        }
+        inline bool HasUniform(const std::string &name) {
+            return FindUniformLocation(name) != -1;
+        }
+    private:
+        GLint FindUniformLocation(const std::string &name) const {
+            const auto &a = uniforms.find(name);
+            if (a != uniforms.end()) return a->second;
+            return -1;
+        }
+        void LoadUniforms(GLint program) {
+            int uniformCount = 0;
+            glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
+            char buf[256];
+            for (int i = 0; i < uniformCount; i++) {
+                int len = 0;
+                GLint size;
+                GLenum type;
+                glGetActiveUniform(program, i, sizeof(buf), &len, &size, &type, buf);
+                uniforms[buf] = glGetUniformLocation(program, buf);
+            }
+        }
+    };
+
+    static std::map<std::string, ShaderInfo*> shaderMap;
+    static std::set<std::string> failedShaders;
+    static std::set<std::string> warnedShaders;
+    static std::mutex shaderMapMutex;
+    static uint64_t purgedGeneration; // guarded by shaderMapMutex
+
+    // The GL share group died (Windows TDR / device reset) — every id cached
+    // below belongs to the dead group.  Drop them WITHOUT glDelete (deleting
+    // foreign ids in the new group is at best an error, at worst frees a
+    // recycled object), and forget the program handle rather than returning
+    // it to shaderMap.
+    void DropStaleGLState() {
+        s_shadersInit = false;
+        s_vertexBufferId = 0;
+        s_rbId = 0;
+        s_rbTex = 0;
+        s_audioTex = 0;
+        s_programId = 0;
+        s_rbWidth = 0;
+        s_rbHeight = 0;
+    }
+
+    // Once per generation: empty the global program-id pools (all stale) and
+    // let previously failed shaders retry — a compile that failed during the
+    // device-reset storm shouldn't be blacklisted for the rest of the session.
+    static void PurgeStaleShaderMap(uint64_t gen) {
+        std::unique_lock<std::mutex> lock(shaderMapMutex);
+        if (purgedGeneration == gen) return;
+        purgedGeneration = gen;
+        size_t dropped = 0;
+        for (auto& [code, info] : shaderMap) {
+            if (info != nullptr) {
+                dropped += info->programIds.size();
+                info->programIds.clear();
+            }
+        }
+        failedShaders.clear();
+        spdlog::warn("ShaderEffect: GL share group reset (generation {}) - dropped {} cached program ids; shaders will recompile", gen, dropped);
+    }
+
+    ShaderRenderCache() { _shaderConfig = nullptr; }
+    virtual ~ShaderRenderCache()
+    {
+        if (glGeneration != GLContextManager::Instance().ShareGroupGeneration()) {
+            // Ids were created in a share group that no longer exists; they
+            // must be neither returned to shaderMap nor glDeleted.
+            DropStaleGLState();
+        }
+        if (s_programId != 0 && _shaderConfig != nullptr) {
+            std::unique_lock<std::mutex> lock(shaderMapMutex);
+            shaderMap[s_code]->programIds.push_back(s_programId);
+            s_programId = 0;
+        }
+        if (_shaderConfig != nullptr) delete _shaderConfig;
+
+        // Acquire any pool context to glDelete the shareable resources; they
+        // all live in the share group rooted at the shader share-root.
+        if (s_vertexBufferId || s_rbId || s_rbTex || s_audioTex) {
+            auto& mgr = GLContextManager::Instance();
+            mgr.ExecuteOnGLThread([&]() {
+                GLContextManager::ContextHandle ctx = mgr.AcquireContext();
+                if (ctx) {
+                    if (mgr.MakeCurrent(ctx)) {
+                        if (s_vertexBufferId) { LOG_GL_ERRORV(glDeleteBuffers(1, &s_vertexBufferId)); }
+                        if (s_rbId)           { LOG_GL_ERRORV(glDeleteRenderbuffers(1, &s_rbId)); }
+                        if (s_rbTex)          { LOG_GL_ERRORV(glDeleteTextures(1, &s_rbTex)); }
+                        if (s_audioTex)       { LOG_GL_ERRORV(glDeleteTextures(1, &s_audioTex)); }
+                        mgr.DoneCurrent(ctx);
+                    }
+                    mgr.ReleaseContext(ctx);
+                }
+            });
+        }
+    }
+
+    void SetProgramId(unsigned programId, ShaderInfo *si) {
+        if (s_programId && s_shaderInfo) StoreProgramId();
+        s_programId = programId;
+        s_shaderInfo = si;
+        if (_shaderConfig) s_code = _shaderConfig->GetCode();
+    }
+    unsigned RefreshProgramId() {
+        if (s_shaderInfo) {
+            std::unique_lock<std::mutex> lock(shaderMapMutex);
+            if (s_shaderInfo->programIds.empty()) {
+                lock.unlock();
+                s_programId = ShaderEffect::programIdForShaderCode(_shaderConfig, this);
+            } else {
+                s_programId = s_shaderInfo->programIds.back();
+                s_shaderInfo->programIds.pop_back();
+            }
+        }
+        return s_programId;
+    }
+    void StoreProgramId() {
+        if (s_programId && s_shaderInfo) {
+            if (glGeneration != GLContextManager::Instance().ShareGroupGeneration()) {
+                // Program was compiled in a share group that has since been
+                // reset — don't recycle the id into shaderMap (RefreshProgramId
+                // pops without validating) and don't glDelete a foreign id.
+                s_programId = 0;
+                return;
+            }
+            std::unique_lock<std::mutex> lock(shaderMapMutex);
+            if (s_shaderInfo->programIds.size() > COMPILED_PROGRAM_RETAIN_COUNT) {
+                glDeleteProgram(s_programId);
+            } else {
+                s_shaderInfo->programIds.push_back(s_programId);
+            }
+            s_programId = 0;
+        }
+    }
+
+    ShaderConfig* _shaderConfig = nullptr;
+    // Only shareable resources are cached here; VAO and FBO are non-shareable
+    // and recreated per frame in Render().
+    bool s_shadersInit = false;
+    unsigned s_vertexBufferId = 0;
+    unsigned s_rbId = 0;
+    unsigned s_rbTex = 0;
+    unsigned s_audioTex = 0;
+    unsigned s_programId = 0;
+    ShaderInfo *s_shaderInfo = nullptr;
+    std::string s_code;
+    int s_rbWidth = 0;
+    int s_rbHeight = 0;
+    long _timeMS = 0;
+    uint64_t glGeneration = 0; // ShareGroupGeneration the ids above were created under
+    GLContextManager::ContextHandle contextHandle = nullptr;
+
+    void InitialiseShaderConfig(const std::string& filename, SequenceElements* sequenceElements) {
+        if (_shaderConfig != nullptr) delete _shaderConfig;
+        _shaderConfig = ShaderEffect::ParseShader(filename, sequenceElements);
+        s_shaderInfo = nullptr;
+    }
+};
+std::map<std::string, ShaderRenderCache::ShaderInfo*> ShaderRenderCache::shaderMap;
+std::set<std::string> ShaderRenderCache::failedShaders;
+std::set<std::string> ShaderRenderCache::warnedShaders;
+std::mutex ShaderRenderCache::shaderMapMutex;
+uint64_t ShaderRenderCache::purgedGeneration = 1; // matches GLContextManager's initial generation
+
+#endif // !TARGET_OS_IPHONE
+
+ShaderEffect::ShaderEffect(int i) : RenderableEffect(i, "Shader", shader_16_xpm, shader_24_xpm, shader_32_xpm, shader_48_xpm, shader_64_xpm)
+{
+}
+
+ShaderEffect::~ShaderEffect()
+{
+}
+
+#if !TARGET_OS_IPHONE
+
+bool ShaderEffect::SetGLContext(ShaderRenderCache *cache) {
+    auto& mgr = GLContextManager::Instance();
+    if (!cache->contextHandle) {
+        cache->contextHandle = mgr.AcquireContext();
+        if (!cache->contextHandle) return false;
+    }
+    if (!mgr.MakeCurrent(cache->contextHandle)) {
+        mgr.ReleaseContext(cache->contextHandle);
+        cache->contextHandle = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void ShaderEffect::UnsetGLContext(ShaderRenderCache* cache) {
+    auto& mgr = GLContextManager::Instance();
+    mgr.DoneCurrent(cache->contextHandle);
+    // Return the context to the pool every frame so a single GL worker
+    // context serves many ShaderRenderCaches in one frame instead of
+    // wglMakeCurrent-ing between N pinned HGLRCs (a common trigger for
+    // NVIDIA driver error 2004 / dropped shader frames on Windows).  Cached
+    // shareable resources survive the swap because pool contexts share a
+    // common root — see GLContextManager.cpp.
+    mgr.ReleaseContext(cache->contextHandle);
+    cache->contextHandle = nullptr;
+}
+
+void ShaderEffect::Render(Effect* eff, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    // All GL work runs through the GL thread.  On Windows that's a
+    // dedicated worker thread internal to GLContextManager (so flaky
+    // drivers see a stable single-thread caller); on other platforms
+    // the lambda runs directly on this thread.  ExecuteOnGLThread
+    // blocks until the lambda returns, so captures by reference are safe.
+    GLContextManager::Instance().ExecuteOnGLThread([&]() {
+    // No shader file configured - render red just like video/pictures effect
+    if (SettingsMap.Get("0FILEPICKERCTRL_IFS", "").empty()) {
+        setRenderBufferAll(buffer, xlRED);
+        return;
+    }
+
+    ShaderRenderCache* cache = (ShaderRenderCache*)buffer.infoCache[id];
+    if (cache == nullptr) {
+        cache = new ShaderRenderCache();
+        buffer.infoCache[id] = cache;
+    }
+
+    // This object has all the data from the json in the .fs file
+    ShaderConfig*& _shaderConfig = cache->_shaderConfig;
+    bool& s_shadersInit = cache->s_shadersInit;
+    unsigned& s_vertexBufferId = cache->s_vertexBufferId;
+    unsigned& s_rbId = cache->s_rbId;
+    unsigned& s_rbTex = cache->s_rbTex;
+    unsigned& s_audioTex = cache->s_audioTex;
+    int& s_rbWidth = cache->s_rbWidth;
+    int& s_rbHeight = cache->s_rbHeight;
+    long& _timeMS = cache->_timeMS;
+
+    bool contextSet = SetGLContext(cache);
+    if (contextSet) {
+        // A device reset (Windows WDDM TDR, typically under heavy NVDEC video
+        // decode) rebuilds the share group; every GL id cached before it is
+        // dangling and may alias a recycled object.  Drop and recreate.
+        uint64_t gen = GLContextManager::Instance().ShareGroupGeneration();
+        if (cache->glGeneration != gen) {
+            ShaderRenderCache::PurgeStaleShaderMap(gen);
+            cache->DropStaleGLState();
+            cache->glGeneration = gen;
+        }
+        // Load the gl* entry points now that a context is current — with no UI
+        // canvas (headless) nothing else ever loads them, and the capability
+        // check below would cyan-fill every shader frame.
+        GLContextManager::Instance().EnsureGLFunctions();
+    }
+    // Bail out if we don't have the necessary OpenGL support.  This must run
+    // AFTER the context is current + entry points are loaded: both checks read
+    // function pointers that are null until then.
+    if (!OpenGLShaders::HasFramebufferObjects() || !OpenGLShaders::HasShaderSupport()) {
+        setRenderBufferAll(buffer, xlCYAN);
+        spdlog::error("ShaderEffect::Render() - missing OpenGL support!!");
+        if (contextSet) {
+            UnsetGLContext(cache);
+        }
+        return;
+    }
+
+    float oset = buffer.GetEffectTimeIntervalPosition();
+    double timeRate = GetValueCurveDouble("Shader_Speed", 100, SettingsMap, oset, SHADER_SPEED_MIN, SHADER_SPEED_MAX, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1) / 100.0;
+
+    double offsetX = GetValueCurveInt("Shader_Offset_X", 0, SettingsMap, oset, SHADER_OFFSET_X_MIN, SHADER_OFFSET_X_MAX, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1);
+    // -100 - 100 -> 0-1
+    offsetX /= 200.0;
+    offsetX += 0.5;
+    double offsetY = GetValueCurveInt("Shader_Offset_Y", 0, SettingsMap, oset, SHADER_OFFSET_Y_MIN, SHADER_OFFSET_Y_MAX, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1);
+    offsetY /= 200.0;
+    offsetY += 0.5;
+    double zoom = GetValueCurveInt("Shader_Zoom", 0, SettingsMap, oset, SHADER_ZOOM_MIN, SHADER_ZOOM_MAX, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1);
+    if (zoom < 0) {
+        zoom = 1.0 - abs(zoom) / 100.0;
+    }
+    else if (zoom > 0) {
+        zoom = 1.0 + (zoom * 9.0) / 100.0;
+    }
+    else     {
+        zoom = 1.0;
+    }
+
+    unsigned programId = 0u;
+
+    if (buffer.needToInit) {
+        buffer.needToInit = false;
+        _timeMS = SettingsMap.GetInt("TEXTCTRL_Shader_LeadIn", 0) * buffer.frameTimeInMs;
+        if (contextSet) {
+            const std::string shaderFile = SettingsMap.Get("0FILEPICKERCTRL_IFS", "");
+            cache->InitialiseShaderConfig(shaderFile, GetSequenceElements(buffer));
+            if (_shaderConfig != nullptr) {
+                programId = programIdForShaderCode(_shaderConfig, cache);
+                if (programId == 0u) {
+                    std::unique_lock<std::mutex> lock(ShaderRenderCache::shaderMapMutex);
+                    if (ShaderRenderCache::warnedShaders.emplace(shaderFile).second) {
+                        lock.unlock();
+                        DisplayWarning("Shader effect failed to compile: " + shaderFile + "\nThis effect will render as solid yellow. Check xLights logs for details.");
+                    }
+                }
+            } else {
+                std::unique_lock<std::mutex> lock(ShaderRenderCache::shaderMapMutex);
+                if (ShaderRenderCache::warnedShaders.emplace(shaderFile).second) {
+                    lock.unlock();
+                    DisplayWarning("Shader effect failed to load: " + shaderFile + "\nThis effect will render as solid red. Check the shader file and xLights logs for details.");
+                }
+            }
+        } else {
+            spdlog::warn("Could not create/set OpenGL Context for ShaderEffect.  ShaderEffect disabled.");
+        }
+    } else {
+        if (!contextSet) {
+            setRenderBufferAll(buffer, xlYELLOW);
+            return;
+        }
+        if (_shaderConfig != nullptr) {
+            programId = cache->RefreshProgramId();
+        }
+        _timeMS += buffer.frameTimeInMs * timeRate;
+    }
+
+    ShaderRenderCache::ShaderInfo *si = cache->s_shaderInfo;
+    // if there is no config then we should paint it red ... just like the video effect
+    if (_shaderConfig == nullptr) {
+        setRenderBufferAll(buffer, xlRED);
+        UnsetGLContext(cache);
+        return;
+    } else if (programId == 0u || si == nullptr) {
+        setRenderBufferAll(buffer, xlYELLOW);
+        UnsetGLContext(cache);
+        return;
+    }
+
+    // ***********************************************************************************************************
+    // todo is there more of this code we could add to the needtoinit case as this only happens on the first frame
+    // ***********************************************************************************************************
+
+    // Per-shader table entry for XL_SHADER_BUILD_STATS: CPU wall of the whole
+    // synchronous GL block (setup + draw + glReadPixels).  The Vulkan side
+    // reports device-timestamp execution for the same table, so the two runs
+    // can be compared shader-by-shader.
+    const bool statsOn = ShaderBuildStats::Enabled();
+    const auto statsStart = statsOn ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+
+    sizeForRenderBuffer(buffer, s_shadersInit, s_vertexBufferId, s_rbId, s_rbTex, s_rbWidth, s_rbHeight);
+
+    // VAO and FBO are not shareable across GL contexts per the spec, so
+    // recreate them per frame rather than tracking which pool context owns
+    // them.
+    GLuint vao = 0;
+    GLuint fb = 0;
+    LOG_GL_ERRORV(glGenVertexArrays(1, &vao));
+    LOG_GL_ERRORV(glBindVertexArray(vao));
+    LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, s_vertexBufferId));
+    LOG_GL_ERRORV(glBindVertexArray(0));
+    LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, 0));
+
+    LOG_GL_ERRORV(glGenFramebuffers(1, &fb));
+    LOG_GL_ERRORV(glBindFramebuffer(GL_FRAMEBUFFER, fb));
+    LOG_GL_ERRORV(glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, s_rbId));
+
+    preparePixelTextures(buffer, s_shadersInit, fb);
+
+    LOG_GL_ERRORV(glBindFramebuffer(GL_FRAMEBUFFER, fb));
+    LOG_GL_ERRORV(glViewport(0, 0, buffer.BufferWi, buffer.BufferHt));
+
+    LOG_GL_ERRORV(glClearColor(0.f, 0.f, 0.f, 0.f));
+    LOG_GL_ERRORV(glClear(GL_COLOR_BUFFER_BIT));
+
+    if (_shaderConfig->IsAudioFFTShader() || _shaderConfig->IsAudioIntensityShader()) {
+        if (s_audioTex == 0)
+            s_audioTex = FFTAudioTexture();
+
+        LOG_GL_ERRORV(glActiveTexture(GL_TEXTURE0));
+        LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, s_audioTex));
+
+        AudioManager* audioManager = buffer.GetMedia();
+        if (audioManager != nullptr) {
+            auto fftData = audioManager->GetFrameData(buffer.curPeriod, "");
+            if (fftData) {
+                std::vector<float> fft128;
+                if ( _shaderConfig->IsAudioFFTShader() )
+                    fft128.insert( fft128.begin(), fftData->vu.cbegin(), fftData->vu.cend()  );
+                else
+                    fft128.insert( fft128.begin(), 127, fftData->max );
+                fft128.push_back( 0.f );
+
+                LOG_GL_ERRORV(glTexSubImage2D(GL_TEXTURE_2D, 0, 0,0, fft128.size(),1, GL_RED, GL_FLOAT, fft128.data()));
+            }
+        }
+    } else {
+        LOG_GL_ERRORV(glActiveTexture(GL_TEXTURE0));
+        copyPixelDataToTexture(buffer, s_rbTex);
+    }
+
+    LOG_GL_ERRORV(glBindVertexArray(vao));
+    LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, s_vertexBufferId));
+    // If the bind didn't take (stale id after a device reset, failed
+    // creation), glVertexAttribPointer(offset 0) below would legally point
+    // attribute 0 at client address NULL and glDrawArrays would crash inside
+    // the driver reading it.  Skip the frame instead.
+    GLint boundVbo = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &boundVbo);
+    if (boundVbo == 0) {
+        spdlog::error("ShaderEffect::Render() - vertex buffer {} not bindable (device reset?), skipping frame", s_vertexBufferId);
+        s_shadersInit = false; // recreate GL objects next frame
+        LOG_GL_ERRORV(glBindVertexArray(0));
+        LOG_GL_ERRORV(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+        LOG_GL_ERRORV(glDeleteFramebuffers(1, &fb));
+        LOG_GL_ERRORV(glDeleteVertexArrays(1, &vao));
+        setRenderBufferAll(buffer, xlYELLOW);
+        cache->StoreProgramId();
+        UnsetGLContext(cache);
+        return;
+    }
+    LOG_GL_ERRORV(glUseProgram(programId));
+    
+    int colourIndex = 0;
+    if (!si->SetUniform2f("RENDERSIZE", buffer.BufferWi, buffer.BufferHt)) {
+        if (buffer.curPeriod == buffer.curEffStartPer && _shaderConfig->HasRendersize()) {
+            spdlog::warn("Unable to bind to RENDERSIZE in shader '{}'", _shaderConfig->GetFilename());
+        }
+    }
+    if (!si->SetUniform2f("XL_OFFSET", offsetX, offsetY)) {
+        spdlog::warn("Unable to bind to XL_OFFSET");
+    }
+    if (!si->SetUniform1f("XL_ZOOM", zoom)) {
+        spdlog::warn("Unable to bind to XL_ZOOM");
+    }
+    if (!si->SetUniform1f("XL_DURATION", (GLfloat)((buffer.GetEndTimeMS() - buffer.GetStartTimeMS()) / 1000.0))) {
+        // This may just have been optimized out of the shader program.  If it cannot be set, it is not worth logging.
+        //spdlog::warn("Unable to bind to XL_DURATION");
+    }
+    if (!si->SetUniform1f("TIME", (GLfloat)(_timeMS) / 1000.0)) {
+        if (buffer.curPeriod == buffer.curEffStartPer && _shaderConfig->HasTime()) {
+            spdlog::warn("Unable to bind to TIME in shader '{}'", _shaderConfig->GetFilename());
+        }
+    }
+    si->SetUniform1f("TIMEDELTA", (GLfloat)(buffer.frameTimeInMs /1000.f));
+
+    if (si->HasUniform("DATE")) {
+        // Sequence timeline, not the wall clock — see the matching comment in
+        // SPIRVShaderEffect. A render-time clock is meaningless in a baked
+        // .fseq and makes the render irreproducible.
+        const double seqSeconds = (buffer.curPeriod * (double)buffer.frameTimeInMs) / 1000.0;
+        si->SetUniform4f("DATE", 2000, 1, 1, (GLfloat)seqSeconds);
+    }
+    si->SetUniformInt("NUMCOLORS", buffer.GetColorCount());
+    si->SetUniformInt("PASSINDEX", 0);
+    si->SetUniformInt("FRAMEINDEX", _timeMS / buffer.frameTimeInMs);
+    si->SetUniform1f("clearBuffer", SettingsMap.GetBool("CHECKBOX_OverlayBkg", false) ? 1.0 : 0.0);
+    si->SetUniform1f("resetNow", (buffer.curPeriod == buffer.curEffStartPer) ? 1.0 : 0.0);
+    si->SetUniformInt("texSampler", 0);
+
+    for (const auto& it : _shaderConfig->GetParms())
+    {
+        if (si->HasUniform(it._name)) {
+            switch (it._type)
+            {
+            case ShaderParmType::SHADER_PARM_FLOAT:
+            {
+                double f = GetValueCurveDouble(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_VALUECURVE), it._default * 100.0, SettingsMap, oset, it._min * 100.0, it._max * 100.0, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1) / 100.0;
+                si->SetUniform1f(it._name, f);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_POINT2D:
+            {
+                double x = GetValueCurveDouble(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_VALUECURVE) + "X", it._defaultPt.x * 100, SettingsMap, oset, it._minPt.x * 100, it._maxPt.x * 100, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1) / 100.0;
+                double y = GetValueCurveDouble(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_VALUECURVE) + "Y", it._defaultPt.y * 100, SettingsMap, oset, it._minPt.y * 100, it._maxPt.y * 100, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1) / 100.0;
+                si->SetUniform2f(it._name, x, y);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_BOOL:
+            {
+                bool b = SettingsMap.GetBool(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_CHECKBOX));
+                si->SetUniform1f(it._name, b);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_EVENT:
+            {
+                auto timingtrack = SettingsMap.Get(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_TIMING), "");
+
+                EffectLayer* el = GetTiming(timingtrack, GetSequenceElements(buffer));
+
+                bool b = false;
+                if (el != nullptr) {
+                    int ms = buffer.curPeriod * buffer.frameTimeInMs;
+                    for (int j = 0; j < el->GetEffectCount(); j++) {
+                        int ems = el->GetEffect(j)->GetStartTimeMS();
+                        if (ems == ms) {
+                            b = true;
+                            break;
+                        }
+                        else if (ems > ms) break;
+                    }
+                }
+
+                si->SetUniform1f(it._name, b);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_LONGCHOICE:
+            {
+                long l = it.EncodeChoice(SettingsMap[it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_CHOICE)]);
+                si->SetUniformInt(it._name, l);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_LONG:
+            {
+                long l = GetValueCurveInt(it.GetUndecoratedId(ShaderCtrlType::SHADER_CTRL_VALUECURVE), it._default, SettingsMap, oset, it._min, it._max,
+                    buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), 1);
+                si->SetUniformInt(it._name, l);
+                break;
+            }
+            case ShaderParmType::SHADER_PARM_COLOUR:
+            {
+                xlColor c = buffer.palette.GetColor(colourIndex);
+                colourIndex++;
+                if (colourIndex > (int)buffer.GetColorCount()) colourIndex = 0;
+                si->SetUniform4f(it._name, (double)c.red / 255.0, (double)c.green / 255.0, (double)c.blue / 255.0, 1.0);
+                break;
+            }
+            default:
+                spdlog::warn("No binding supported for {} ... we have more work to do.", (const char*)it._name.c_str());
+                break;
+            }
+        } else {
+            if (buffer.curPeriod == buffer.curEffStartPer)
+                spdlog::warn("Unable to bind to {} in shader '{}'", (const char*)it._name.c_str(), _shaderConfig->GetFilename());
+        }
+    }
+
+    LOG_GL_ERRORV(GLuint vattrib = glGetAttribLocation(programId, "vpos"));
+    LOG_GL_ERRORV(glVertexAttribPointer(vattrib, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTex), reinterpret_cast<void*>(offsetof(VertexTex, v))));
+    LOG_GL_ERRORV(glEnableVertexAttribArray(vattrib));
+
+    LOG_GL_ERRORV(GLuint tattrib = glGetAttribLocation(programId, "tpos"));
+    LOG_GL_ERRORV(glVertexAttribPointer(tattrib, 2, GL_FLOAT, GL_FALSE, sizeof(VertexTex), reinterpret_cast<void*>(offsetof(VertexTex, t))));
+    LOG_GL_ERRORV(glEnableVertexAttribArray(tattrib));
+
+    LOG_GL_ERRORV(glDrawArrays(GL_TRIANGLE_STRIP, 0, 4));
+
+    LOG_GL_ERRORV(glDisableVertexAttribArray(vattrib));
+    LOG_GL_ERRORV(glDisableVertexAttribArray(tattrib));
+
+    LOG_GL_ERRORV(glBindVertexArray(0));
+    LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, 0));
+
+    copyPixelDataFromTexture(buffer);
+
+    if (statsOn) {
+        ShaderBuildStats::AddPerShader(
+            _shaderConfig->GetFilename(),
+            (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - statsStart).count(),
+            (uint32_t)buffer.BufferWi, (uint32_t)buffer.BufferHt);
+    }
+
+    LOG_GL_ERRORV(glUseProgram(0));
+    LOG_GL_ERRORV(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    LOG_GL_ERRORV(glDeleteFramebuffers(1, &fb));
+    LOG_GL_ERRORV(glDeleteVertexArrays(1, &vao));
+    cache->StoreProgramId();
+    UnsetGLContext(cache);
+    });
+}
+
+void ShaderEffect::preparePixelTextures(RenderBuffer& buffer, bool shadersInit, unsigned fbId) {
+}
+
+void ShaderEffect::copyPixelDataToTexture(RenderBuffer& buffer, unsigned rbTex) {
+    LOG_GL_ERRORV(glBindTexture(GL_TEXTURE_2D, rbTex));
+    LOG_GL_ERRORV(glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, buffer.BufferWi, buffer.BufferHt, GL_RGBA, GL_UNSIGNED_BYTE, buffer.GetPixels()));
+}
+
+void ShaderEffect::copyPixelDataFromTexture(RenderBuffer& buffer) {
+    LOG_GL_ERRORV(glReadPixels(0, 0, buffer.BufferWi, buffer.BufferHt, GL_RGBA, GL_UNSIGNED_BYTE, buffer.GetPixels()));
+}
+
+
+
+void ShaderEffect::sizeForRenderBuffer(const RenderBuffer& rb,
+    bool& s_shadersInit,
+    unsigned& s_vertexBufferId, unsigned& s_rbId,
+    unsigned& s_rbTex, int& s_rbWidth, int& s_rbHeight)
+{
+    if (!s_shadersInit) {
+        LOG_GL_ERRORV(glGenBuffers(1, &s_vertexBufferId));
+
+        VertexTex vt[4] =
+        {
+           { {  1.f, -1.f }, { 1.f, 0.f } },
+           { { -1.f, -1.f }, { 0.f, 0.f } },
+           { {  1.f,  1.f }, { 1.f, 1.f } },
+           { { -1.f,  1.f }, { 0.f, 1.f } }
+        };
+        LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, s_vertexBufferId));
+        LOG_GL_ERRORV(glBufferData(GL_ARRAY_BUFFER, sizeof(VertexTex[4]), vt, GL_STATIC_DRAW));
+        LOG_GL_ERRORV(glBindBuffer(GL_ARRAY_BUFFER, 0));
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+           spdlog::error( "ShaderEffect::sizeForRenderBuffer() - Error with vertex buffer - {}", err );
+        }
+    } else if (rb.BufferWi > s_rbWidth || rb.BufferHt > s_rbHeight) {
+        LOG_GL_ERRORV(glBindRenderbuffer(GL_RENDERBUFFER, 0));
+        LOG_GL_ERRORV(glDeleteRenderbuffers(1, &s_rbId));
+        LOG_GL_ERRORV(glDeleteTextures(1, &s_rbTex));
+    } else {
+        return;
+    }
+
+    s_rbId = allocColorRenderbuffer(rb.BufferWi, rb.BufferHt);
+    s_rbTex = RenderBufferTexture(rb.BufferWi, rb.BufferHt);
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+       spdlog::error( "ShaderEffect::sizeForRenderBuffer() - Error allocating renderbuffer/texture - {}", err );
+    }
+
+    s_rbWidth = rb.BufferWi;
+    s_rbHeight = rb.BufferHt;
+    s_shadersInit = true;
+}
+
+unsigned ShaderEffect::programIdForShaderCode(ShaderConfig* cfg, ShaderRenderCache *cache)
+{
+    
+
+    if (cfg == nullptr) {
+        spdlog::error("ShaderEffect::programIdForShaderCode() - NULL ShaderConfig!");
+        return 0u;
+    }
+
+    std::unique_lock<std::mutex> lock(ShaderRenderCache::shaderMapMutex);
+    std::string fragmentShaderSrc(cfg->GetCode());
+    if (ShaderRenderCache::failedShaders.find(fragmentShaderSrc) != ShaderRenderCache::failedShaders.end()) {
+        //previously failed to compile, don't try again
+        return 0u;
+    }
+
+    ShaderRenderCache::ShaderInfo *shaderInfo = nullptr;
+    auto iter = ShaderRenderCache::shaderMap.find(fragmentShaderSrc);
+    if (iter != ShaderRenderCache::shaderMap.cend()) {
+        shaderInfo = (*iter).second;
+        while (!shaderInfo->programIds.empty()) {
+            unsigned programId = shaderInfo->programIds.front();
+            shaderInfo->programIds.pop_front();
+            if (!glIsProgram(programId)) {
+                spdlog::error("ShaderEffect::programIdForShaderCode() - program id {} is not a shader program!", programId);
+            } else {
+                //spdlog::debug("ShaderEffect::programIdForShaderCode() - shader program {} unchanged -- id {}", (const char*)cfg->GetFilename().c_str(), programId);
+                cache->SetProgramId(programId, shaderInfo);
+                return programId;
+            }
+        }
+    }
+
+    lock.unlock();
+    unsigned programId = OpenGLShaders::compile(vsSrc, fragmentShaderSrc, cfg->GetFilename());
+    if (programId == 0u) {
+        lock.lock();
+        spdlog::error("ShaderEffect::programIdForShaderCode() - failed to compile shader program {}", (const char *)cfg->GetFilename().c_str());
+        ShaderRenderCache::failedShaders.emplace(fragmentShaderSrc);
+        lock.unlock();
+    } else {
+        spdlog::debug("ShaderEffect::programIdForShaderCode() - fragment shader {} compiled successfully", (const char*)cfg->GetFilename().c_str());
+        if (shaderInfo == nullptr) {
+            lock.lock();
+            shaderInfo = ShaderRenderCache::shaderMap[fragmentShaderSrc];
+            if (shaderInfo  == nullptr) {
+                shaderInfo = new ShaderRenderCache::ShaderInfo(programId);
+                ShaderRenderCache::shaderMap[fragmentShaderSrc] = shaderInfo;
+            }
+            lock.unlock();
+        }
+        cache->SetProgramId(programId, shaderInfo);
+    }
+    return programId;
+}
+
+#else // TARGET_OS_IPHONE — no GL; MetalShaderEffect overrides Render, so this should never run
+
+void ShaderEffect::Render(Effect* eff, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    setRenderBufferAll(buffer, xlRED);
+}
+
+void ShaderEffect::preparePixelTextures(RenderBuffer& buffer, bool shadersInit, unsigned fbId) {
+}
+
+void ShaderEffect::copyPixelDataToTexture(RenderBuffer& buffer, unsigned rbTex) {
+}
+
+void ShaderEffect::copyPixelDataFromTexture(RenderBuffer& buffer) {
+}
+
+#endif // !TARGET_OS_IPHONE
+
+std::string SafeFloat(const std::string& s)
+{
+    if (!s.empty() && s[0] == '.') {
+        return "0" + s;
+    } else if (s.find('.') == std::string::npos) {
+        return s + ".0";
+    }
+    return s;
+}
+
+std::string SafeValueOption(std::string value)
+{
+    value.erase(std::remove(value.begin(), value.end(), ','), value.end());
+    return value;
+}
+
+ShaderConfig::ShaderConfig(const std::string& filename, const std::string& code, const std::string& json, SequenceElements* sequenceElements) :
+    _filename(filename) {
+    
+    std::string canvasImgName;
+    std::string audioFFTName;
+
+    auto getNumberProperty = [&filename](nlohmann::json const& item, std::string const& name, double defaultVal) {
+        if (!item.contains(name) || item.at(name).is_null()) {
+            return defaultVal;
+        }
+        if (item.at(name).is_number()) {
+            return item.at(name).get<double>();
+        }
+        if (item.at(name).is_boolean()) {
+            return static_cast<double>(item.at(name).get<bool>());
+        }
+        if (item.at(name).is_string()) {
+            const auto& s = item.at(name).get<std::string>();
+            char* end;
+            double val = std::strtod(s.c_str(), &end);
+            if (end != s.c_str()) {
+                return val;
+            }
+            spdlog::warn("Error parsing shader Property : {} (not a number) in shader '{}'.", name, filename);
+        }
+        return defaultVal;
+    };
+
+    auto getStringProperty = [](nlohmann::json const& item, std::string const& name, const std::string& defaultVal = "") {
+        if (!item.contains(name) || item.at(name).is_null()) {
+            return defaultVal;
+        }
+        if (item.at(name).is_string()) {
+            return item.at(name).get<std::string>();
+        }
+        return defaultVal;
+    };
+
+    auto getPointProperty = [](nlohmann::json const& item, std::string const& name, double defaultX, double defaultY) {
+        if (!item.contains(name) || item.at(name).is_null() || item.at(name).empty()) {
+            return xlPointD(defaultX, defaultY);
+        }
+        const auto& arr = item.at(name);
+        auto getComponent = [](const nlohmann::json& v, double def) {
+            if (v.is_number()) {
+                return v.get<double>();
+            }
+            if (v.is_string()) {
+                char* end;
+                double val = std::strtod(v.get<std::string>().c_str(), &end);
+                if (end != v.get<std::string>().c_str()) {
+                    return val;
+                }
+            }
+            return def;
+        };
+        if (arr.size() >= 2) {
+            defaultX = getComponent(arr[0], defaultX);
+            defaultY = getComponent(arr[1], defaultY);
+        }
+        return xlPointD(defaultX, defaultY);
+    };
+
+    try {
+        nlohmann::json root = nlohmann::json::parse(json,
+                                                    nullptr,
+                                                    true,    // allow_exceptions
+                                                    true,    // ignore_comments
+                                                    true,    // ignore_trailing_commas
+                                                    true);   // ignore_missing_values
+        if (root.contains("DESCRIPTION")) {
+            _description = getStringProperty(root, "DESCRIPTION");
+        }
+        if (_description == "xLights AudioFFT") {
+            _audioFFTMode = true;
+        } else if (_description == "xLights Audio2") {
+            _audioIntensityMode = true;
+        }
+        if (root.contains("INPUTS")) {
+            const auto& inputs = root["INPUTS"];
+
+            for (const auto& input : inputs) {
+                std::string const name = getStringProperty(input, "NAME");
+
+                // we ignore these as xlights provides these settings
+                if (name == "XL_OFFSET" || name == "XL_DURATION" || name == "XL_ZOOM") {
+                    continue;
+                }
+
+                std::string const type = getStringProperty(input, "TYPE");
+                if (type == "float") {
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_FLOAT,
+                        getNumberProperty(input, "MIN", 0.0),
+                        getNumberProperty(input, "MAX", 1.0),
+                        getNumberProperty(input, "DEFAULT", 0.0));
+                } else if (type == "long") {
+                    if (input.contains("MIN")) {
+                        _parms.emplace_back(
+                            name,
+                            getStringProperty(input, "LABEL"),
+                            ShaderParmType::SHADER_PARM_LONG,
+                            getNumberProperty(input, "MIN", 0.0),
+                            getNumberProperty(input, "MAX", 1.0),
+                            getNumberProperty(input, "DEFAULT", 0.0));
+                    } else if (input.contains("LABELS") && input.contains("VALUES")) {
+                        _parms.emplace_back(
+                            name,
+                            getStringProperty(input, "LABEL"),
+                            ShaderParmType::SHADER_PARM_LONGCHOICE,
+                            0.0,
+                            0.0,
+                            getNumberProperty(input, "DEFAULT", 0.0));
+                        const auto& ls = input["LABELS"];
+                        const auto& vs = input["VALUES"];
+                        int const no = std::min(ls.size(), vs.size());
+                        for (int i = 0; i < static_cast<int>(no); i++) {
+                            _parms.back()._valueOptions[vs[i].get<int>()] = SafeValueOption(ls[i].get<std::string>());
+                        }
+                    } else {
+                        assert(false);
+                    }
+                } else if (type == "color") {
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_COLOUR);
+                } else if (type == "audio") {
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_AUDIO);
+                } else if (type == "bool") {
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_BOOL,
+                        0.0,
+                        0.0,
+                        getNumberProperty(input, "DEFAULT", 0.0));
+                } else if (type == "point2D") {
+                    xlPointD const minPt = getPointProperty(input, "MIN", 0.0, 0.0);
+                    xlPointD const maxPt = getPointProperty(input, "MAX", 1.0, 1.0);
+                    xlPointD const defPt = getPointProperty(input, "DEFAULT", 0.0, 0.0);
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_POINT2D,
+                        minPt,
+                        maxPt,
+                        defPt);
+                } else if (type == "image") {
+                    // ignore these as we will use the existing buffer content
+                    if (!name.empty()) {
+                        canvasImgName = name;
+                    }
+                } else if (type == "audioFFT") {
+                    if (!name.empty()) {
+                        audioFFTName = name;
+                        spdlog::info("ShaderEffect - found audioFFT shader with name '{}'", audioFFTName.c_str());
+                    }
+                } else if (type == "text") {
+                    // ignore these
+                    if (!name.empty()) {
+                        spdlog::warn("ShaderEffect - found text property with name '{}' ... ignored", name.c_str());
+                    }
+                } else if (type == "event") {
+                    _parms.emplace_back(
+                        name,
+                        getStringProperty(input, "LABEL"),
+                        ShaderParmType::SHADER_PARM_EVENT,
+                        0.0,
+                        0.0,
+                        0.0);
+
+                    // Add timing tracks
+                    if (sequenceElements != nullptr) {
+                        int tt = 0;
+                        for (int i = 0; i < static_cast<int>(sequenceElements->GetElementCount()); i++) {
+                            Element* e = sequenceElements->GetElement(i);
+                            if (e->GetType() == ElementType::ELEMENT_TYPE_TIMING) {
+                                _parms.back()._valueOptions[tt++] = e->GetName();
+                            }
+                        }
+                    }
+                } else {
+                    spdlog::warn("Unknown type parsing shader JSON : {}.", type.c_str());
+                    assert(false);
+                }
+            }
+            if (root.contains("PASSES")) {
+                const auto& inputs2 = root["INPUTS"];
+                const auto& passes = root["PASSES"];
+                for (int i = 0; i < static_cast<int>(passes.size()); i++) {
+                    _passes.push_back({ (i < static_cast<int>(inputs2.size()) && inputs2[i].contains("TARGET")) ? inputs2[i]["TARGET"].get<std::string>() : "",
+                                        passes[i].contains("PERSISTENT") ? getStringProperty(passes[i], "PERSISTENT") == "true" : false });
+                }
+            }
+        }
+    } catch (const nlohmann::json::exception& e) {
+        spdlog::warn("Error parsing shader JSON :  {} {}.", filename.c_str(), e.what());
+    } catch (std::exception& ex) {
+        spdlog::warn("Error parsing shader JSON :  {} {}.", filename.c_str(), ex.what());
+    }
+
+    // The shader code needs declarations for the uniforms that we silently set with each call to Render()
+    // and the uniforms that correspond to user-visible settings
+    std::string prependText =
+        "uniform float TIME;\n"
+        "uniform float TIMEDELTA;\n"
+        "uniform vec2 RENDERSIZE;\n"
+        "uniform bool clearBuffer;\n"
+        "uniform bool resetNow;\n"
+        "uniform int NUMCOLORS;\n"
+        "uniform int PASSINDEX;\n"
+        "uniform int FRAMEINDEX;\n"
+        "uniform vec2 XL_OFFSET;\n"
+        "uniform float XL_ZOOM;\n"
+        "uniform float XL_DURATION;\n"
+        "uniform sampler2D texSampler;\n\n"
+        "// THESE ARE THE PRE ZOOM AND OFFSET COORDS\n"
+        "in vec2 orig_FragNormCoord;\n"
+        "in vec2 orig_FragCoord;\n"
+        "// THESE ARE THE POST ZOOM AND OFFSET COORDS\n"
+        "in vec2 xl_FragNormCoord;\n"
+        "in vec2 xl_FragCoord;\n"
+        "out vec4 fragmentColor;\n"
+        "uniform vec4 DATE;\n\n"
+        "// USE THIS IN PUBLIC SHADERS FOR CODE WHICH ONLY RUNS IN XLIGHTS\n"
+        "#define XL_SHADER\n\n";
+
+    for (const auto& p : _parms) {
+        const std::string& name = p._name;
+        switch (p._type) {
+        case ShaderParmType::SHADER_PARM_FLOAT: {
+            prependText += fmt::format("uniform float {};\n", name);
+            break;
+        }
+        case ShaderParmType::SHADER_PARM_BOOL:
+        case ShaderParmType::SHADER_PARM_EVENT: {
+            prependText += fmt::format("uniform bool {};\n", name);
+            break;
+        }
+        case ShaderParmType::SHADER_PARM_LONG:
+        case ShaderParmType::SHADER_PARM_LONGCHOICE: {
+            prependText += fmt::format("uniform int {};\n", name);
+            break;
+        }
+        case ShaderParmType::SHADER_PARM_POINT2D: {
+            prependText += fmt::format("uniform vec2 {};\n", name);
+            break;
+        }
+        case ShaderParmType::SHADER_PARM_COLOUR: {
+            prependText += fmt::format("uniform vec4 {};\n", name);
+            break;
+        }
+        default: {
+            // rest of these are un-implemented currently
+        }
+        }
+    }
+
+    prependText += "vec4 IMG_NORM_PIXEL_2D(sampler2D sampler, vec2 pct, vec2 normLoc) {\n   vec2 coord = normLoc;\n   return texture(sampler, coord* pct);\n}\n\n";
+    prependText += "vec4 IMG_NORM_PIXEL(sampler2D sampler, vec2 normLoc) {\n   vec2 coord = normLoc;\n   return texture(sampler, coord);\n}\n\n";
+    prependText += "vec4 IMG_PIXEL_2D(sampler2D sampler, vec2 pct, vec2 loc) {\n   return IMG_NORM_PIXEL_2D(sampler, pct, loc / RENDERSIZE);\n}\n\n";
+    prependText += "vec4 IMG_PIXEL(sampler2D sampler, vec2 loc) {\n   return texture(sampler, loc / RENDERSIZE);\n}\n\n";
+    prependText += "vec4 IMG_THIS_PIXEL(sampler2D sampler) {\n   vec2 coord = xl_FragNormCoord;\n   return texture(sampler, coord);\n}\n\n";
+    prependText += "vec4 IMG_THIS_NORM_PIXEL_2D(sampler2D sampler, vec2 pct) {\n   vec2 coord = xl_FragNormCoord;\n   return texture(sampler, coord * pct);\n}\n\n";
+    prependText += "vec4 IMG_THIS_NORM_PIXEL(sampler2D sampler) {\n   vec2 coord = xl_FragNormCoord;\n   return texture(sampler, coord);\n}\n\n";
+    prependText += "vec4 IMG_THIS_PIXEL_2D(sampler2D sampler, vec2 pct) {\n   return IMG_THIS_NORM_PIXEL_2D(sampler, pct);\n}\n\n";
+    prependText += "vec4 IMG_NORM_PIXEL_RECT(sampler2DRect sampler, vec2 pct, vec2 normLoc) {\n   vec2 coord = normLoc;\n   return texture(sampler, coord * RENDERSIZE);\n}\n\n";
+    prependText += "vec4 IMG_PIXEL_RECT(sampler2DRect sampler, vec2 pct, vec2 loc) {\n   return IMG_NORM_PIXEL_RECT(sampler, pct, loc / RENDERSIZE);\n}\n\n";
+    prependText += "vec4 IMG_THIS_NORM_PIXEL_RECT(sampler2DRect sampler, vec2 pct) {\n   vec2 coord = xl_FragNormCoord;\n   return texture(sampler, coord * RENDERSIZE);\n}\n\n";
+    prependText += "vec4 IMG_THIS_PIXEL_RECT(sampler2DRect sampler, vec2 pct) {\n   return IMG_THIS_NORM_PIXEL_RECT(sampler, pct);\n}\n\n";
+    prependText += "ivec2 IMG_SIZE(sampler2D sampler) {\n   return textureSize(sampler, 0);\n}\n\n";
+
+#ifdef __DEBUG
+    int i = 0;
+    for (auto c : code) {
+        if ((int)c < 32 || (int)c > 127) {
+            if (c != 13 && c != 10 && c != 9)
+                spdlog::debug("{} {:X} {}", i, (int)c, c);
+            assert(false);
+        }
+        i++;
+    }
+#endif
+
+    std::string shaderCode = code;
+    for (char& c : shaderCode) {
+        if ((unsigned char)c == 133) {
+            c = '.';
+        }
+    }
+    auto pos = shaderCode.find("*/");
+    if (pos != std::string::npos && pos > 0) {
+        shaderCode = shaderCode.substr(pos + 2);
+    }
+    Replace(shaderCode, "gl_FragColor", "fragmentColor");
+    Replace(shaderCode, "vv_FragNormCoord", "xl_FragNormCoord");
+    Replace(shaderCode, "isf_FragNormCoord", "xl_FragNormCoord");
+    Replace(shaderCode, "isf_FragCoord", "xl_FragCoord");
+    Replace(shaderCode, "gl_FragCoord", "xl_FragCoord");
+    Replace(shaderCode, "gl_FragNormCoord", "xl_FragNormCoord");
+    Replace(shaderCode, "varying ", "uniform ");
+    Replace(shaderCode, "texture2D(", "texture(");
+    Replace(shaderCode, "texture2D (", "texture(");
+    if (!audioFFTName.empty()) {
+        Replace(shaderCode, audioFFTName, "texSampler");
+        _audioFFTMode = true;
+    } else if (!canvasImgName.empty()) {
+        Replace(shaderCode, canvasImgName, "texSampler");
+        _canvasMode = true;
+    }
+
+    _hasRendersize = Contains(shaderCode, "RENDERSIZE");
+    _hasTime = Contains(shaderCode, "TIME");
+    _hasCoord = Contains(shaderCode, "xl_FragCoord");
+
+    _code = "#version 330\n\n";
+    // Hoist ALL #extension directives to immediately after #version, ahead of
+    // the `precision` preamble.  ESSL 3.00 requires every #extension to precede
+    // any non-preprocessor token, and `precision` statements ARE non-preprocessor
+    // tokens — so an #extension left in the body (or, as the old single-directive
+    // hoist did, appended after the precision lines) is rejected: "extension
+    // directive must occur before any non-preprocessor tokens in ESSL3".  Most
+    // legacy shaders use `: enable`, so extensions unsupported under ES3 (e.g.
+    // GL_OES_standard_derivatives, whose functions are core in ES3) degrade to a
+    // harmless warning rather than a compile error.
+    std::string extensions;
+    for (size_t idx = 0; (idx = shaderCode.find("#extension", idx)) != std::string::npos; ) {
+        if (idx != 0 && shaderCode[idx - 1] != '\n') { idx += 10; continue; }  // not at line start
+        size_t eol = shaderCode.find('\n', idx);
+        size_t lineEnd = (eol == std::string::npos) ? shaderCode.size() : eol + 1;
+        extensions += shaderCode.substr(idx, lineEnd - idx);
+        if (eol == std::string::npos) extensions += "\n";
+        shaderCode.erase(idx, lineEnd - idx);
+    }
+    if (!extensions.empty()) {
+        size_t afterVersion = _code.find('\n');  // end of the "#version ..." line
+        if (afterVersion != std::string::npos) {
+            _code.insert(afterVersion + 1, extensions);
+        }
+    }
+    _code += prependText;
+    _code += shaderCode;
+    assert(_code != "");
+#if 0
+    std::ofstream s("C:\\Temp\\shader.txt");
+    if (s.good())
+    {
+        s << _code;
+        s.close();
+    }
+#endif
+}
+
+bool ShaderConfig::UsesEvents() const
+{
+    return std::any_of(_parms.begin(), _parms.end(),
+                       [](const ShaderParm& p) { return p._type == ShaderParmType::SHADER_PARM_EVENT; });
+}
+
+nlohmann::json ShaderConfig::GetDynamicPropertiesJson() const
+{
+    // Panel-builder settingPrefix decides which control owns the serialized
+    // value. Shader floats/longs historically stored the primary under
+    // E_SLIDER_SHADERXYZZY_<name> with 100× scaling for floats; keeping that
+    // exact key is what makes old .xsq sequences still load. Choices serialize
+    // as label strings under E_CHOICE_; bools under E_CHECKBOX_. Point2d
+    // expands into two sibling slider rows suffixed X / Y, matching the
+    // legacy ShaderPanel layout and the render path in
+    // ShaderEffect::Render (which appends "X"/"Y" to the VC-undecorated id).
+    nlohmann::json out = nlohmann::json::array();
+
+    for (const auto& p : _parms) {
+        if (!p.ShowParm())
+            continue;
+
+        // Namespace the id to match the legacy SHADERXYZZY_<name> setting-map
+        // keys that the render code reads via GetUndecoratedId.
+        const std::string id = "SHADERXYZZY_" + p._name;
+
+        nlohmann::json entry;
+        entry["id"] = id;
+        entry["label"] = p.GetLabel();
+
+        switch (p._type) {
+        case ShaderParmType::SHADER_PARM_FLOAT: {
+            entry["type"] = "float";
+            entry["controlType"] = "slider";
+            entry["settingPrefix"] = "SLIDER";
+            entry["divisor"] = 100;
+            int minInt = static_cast<int>(p._min * 100.0);
+            int maxInt = static_cast<int>(p._max * 100.0);
+            // A narrow ISF-declared range can truncate to the same int (or
+            // the shader can just declare min >= max); wxSlider::Create()
+            // asserts "minValue < maxValue" on that and leaves the control's
+            // native peer uncreated, which then corrupts state for whatever
+            // uses the panel next. Guarantee a usable range here instead.
+            if (maxInt <= minInt) maxInt = minInt + 1;
+            entry["min"] = minInt;
+            entry["max"] = maxInt;
+            entry["default"] = p._default;
+            entry["valueCurve"] = true;
+            break;
+        }
+
+        case ShaderParmType::SHADER_PARM_LONG: {
+            entry["type"] = "int";
+            entry["controlType"] = "slider";
+            int minInt = static_cast<int>(p._min);
+            int maxInt = static_cast<int>(p._max);
+            if (maxInt <= minInt) maxInt = minInt + 1;
+            entry["min"] = minInt;
+            entry["max"] = maxInt;
+            entry["default"] = static_cast<int>(p._default);
+            entry["valueCurve"] = true;
+            break;
+        }
+
+        case ShaderParmType::SHADER_PARM_LONGCHOICE: {
+            entry["type"] = "enum";
+            entry["controlType"] = "choice";
+            nlohmann::json options = nlohmann::json::array();
+            std::string defaultLabel;
+            const int defaultIdx = static_cast<int>(p._default);
+            for (const auto& [idx, label] : p._valueOptions) {
+                options.push_back(label);
+                if (idx == defaultIdx)
+                    defaultLabel = label;
+            }
+            entry["options"] = std::move(options);
+            if (!defaultLabel.empty())
+                entry["default"] = defaultLabel;
+            break;
+        }
+
+        case ShaderParmType::SHADER_PARM_EVENT: {
+            // Event params are populated with timing-track names at parse time
+            // (see ShaderConfig ctor's SHADER_PARM_EVENT branch). Emit the
+            // current list as a plain choice — render reads it as a string
+            // name and matches against timing tracks.
+            entry["type"] = "enum";
+            entry["controlType"] = "choice";
+            nlohmann::json options = nlohmann::json::array();
+            std::string defaultLabel;
+            const int defaultIdx = static_cast<int>(p._default);
+            for (const auto& [idx, label] : p._valueOptions) {
+                options.push_back(label);
+                if (idx == defaultIdx)
+                    defaultLabel = label;
+            }
+            entry["options"] = std::move(options);
+            if (!defaultLabel.empty())
+                entry["default"] = defaultLabel;
+            break;
+        }
+
+        case ShaderParmType::SHADER_PARM_BOOL:
+            entry["type"] = "bool";
+            entry["controlType"] = "checkbox";
+            entry["default"] = (p._default != 0.0);
+            break;
+
+        case ShaderParmType::SHADER_PARM_POINT2D:
+            entry["type"] = "float";
+            entry["controlType"] = "point2d";
+            entry["settingPrefix"] = "SLIDER";
+            entry["divisor"] = 100;
+            entry["minX"] = static_cast<int>(p._minPt.x * 100.0);
+            entry["maxX"] = static_cast<int>(p._maxPt.x * 100.0);
+            entry["defaultX"] = p._defaultPt.x;
+            entry["minY"] = static_cast<int>(p._minPt.y * 100.0);
+            entry["maxY"] = static_cast<int>(p._maxPt.y * 100.0);
+            entry["defaultY"] = p._defaultPt.y;
+            entry["valueCurve"] = true;
+            break;
+
+        default:
+            continue;
+        }
+
+        out.push_back(std::move(entry));
+    }
+
+    return out;
+}
+
+#if defined(__APPLE__) && !TARGET_OS_IPHONE
+#pragma clang diagnostic pop
+#endif

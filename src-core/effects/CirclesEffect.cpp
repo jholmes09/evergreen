@@ -1,0 +1,513 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "CirclesEffect.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+#include "UtilFunctions.h"
+
+#include "../../include/circles-16.xpm"
+#include "../../include/circles-24.xpm"
+#include "../../include/circles-32.xpm"
+#include "../../include/circles-48.xpm"
+#include "../../include/circles-64.xpm"
+
+#include "ispc/CirclesFunctions.ispc.h"
+#include "Parallel.h"
+
+#include <algorithm>
+#include <array>
+#include <memory>
+
+
+#define MAX_ISPC_CIRCLES_BALLS  20
+#define MAX_ISPC_CIRCLES_COLORS  8
+
+#define CIRCLES_MODE_RADIAL     0
+#define CIRCLES_MODE_RADIAL_3D  1
+#define CIRCLES_MODE_METABALLS  2
+#define CIRCLES_MODE_REGULAR    3
+#define CIRCLES_MODE_FADING     4
+
+int CirclesEffect::sCountDefault = 3;
+int CirclesEffect::sCountMin = 1;
+int CirclesEffect::sCountMax = 10;
+int CirclesEffect::sSizeDefault = 5;
+int CirclesEffect::sSizeMin = 1;
+int CirclesEffect::sSizeMax = 20;
+int CirclesEffect::sSpeedDefault = 10;
+int CirclesEffect::sSpeedMin = 1;
+int CirclesEffect::sSpeedMax = 30;
+int CirclesEffect::sXCDefault = 0;
+int CirclesEffect::sYCDefault = 0;
+int CirclesEffect::sPosMin = -50;
+int CirclesEffect::sPosMax = 50;
+bool CirclesEffect::sBounceDefault = false;
+bool CirclesEffect::sRadialDefault = false;
+bool CirclesEffect::sPlasmaDefault = false;
+bool CirclesEffect::sRadial3DDefault = false;
+bool CirclesEffect::sBubblesDefault = false;
+bool CirclesEffect::sLinearFadeDefault = false;
+
+CirclesEffect::CirclesEffect(int i) : RenderableEffect(i, "Circles", circles_16, circles_24, circles_32, circles_48, circles_64)
+{
+    //ctor
+}
+
+CirclesEffect::~CirclesEffect()
+{
+    //dtor
+}
+
+void CirclesEffect::OnMetadataLoaded()
+{
+    sCountDefault = GetIntDefault("Circles_Count", sCountDefault);
+    sCountMin = (int)GetMinFromMetadata("Circles_Count", sCountMin);
+    sCountMax = (int)GetMaxFromMetadata("Circles_Count", sCountMax);
+    sSizeDefault = GetIntDefault("Circles_Size", sSizeDefault);
+    sSizeMin = (int)GetMinFromMetadata("Circles_Size", sSizeMin);
+    sSizeMax = (int)GetMaxFromMetadata("Circles_Size", sSizeMax);
+    sSpeedDefault = GetIntDefault("Circles_Speed", sSpeedDefault);
+    sSpeedMin = (int)GetMinFromMetadata("Circles_Speed", sSpeedMin);
+    sSpeedMax = (int)GetMaxFromMetadata("Circles_Speed", sSpeedMax);
+    sXCDefault = GetIntDefault("Circles_XC", sXCDefault);
+    sYCDefault = GetIntDefault("Circles_YC", sYCDefault);
+    // XC and YC share the same ±50 range in Circles.json — take it from XC.
+    sPosMin = (int)GetMinFromMetadata("Circles_XC", sPosMin);
+    sPosMax = (int)GetMaxFromMetadata("Circles_XC", sPosMax);
+    sBounceDefault = GetBoolDefault("Circles_Bounce", sBounceDefault);
+    sRadialDefault = GetBoolDefault("Circles_Radial", sRadialDefault);
+    sPlasmaDefault = GetBoolDefault("Circles_Plasma", sPlasmaDefault);
+    sRadial3DDefault = GetBoolDefault("Circles_Radial_3D", sRadial3DDefault);
+    sBubblesDefault = GetBoolDefault("Circles_Bubbles", sBubblesDefault);
+    sLinearFadeDefault = GetBoolDefault("Circles_Linear_Fade", sLinearFadeDefault);
+}
+
+bool CirclesEffect::needToAdjustSettings(const std::string& version)
+{
+    return IsVersionOlder("2026.05.2", version) || RenderableEffect::needToAdjustSettings(version);
+}
+
+void CirclesEffect::adjustSettings(const std::string& version, Effect* effect, bool removeDefaults)
+{
+    if (RenderableEffect::needToAdjustSettings(version)) {
+        RenderableEffect::adjustSettings(version, effect, removeDefaults);
+    }
+
+    SettingsMap& settings = effect->GetSettings();
+
+    if (IsVersionOlder("2026.05.2", version)) {
+        // The Collide checkbox was removed when migrating to the JSON-driven panel.
+        // Old behavior was: wrap = !(bounce || collide). New behavior: wrap = !bounce.
+        // Promote any old Collide=1 to Bounce=1 so existing sequences keep their
+        // non-wrapping render behavior.
+        if (settings.GetBool("E_CHECKBOX_Circles_Collide", false)) {
+            settings["E_CHECKBOX_Circles_Bounce"] = "1";
+        }
+        settings.erase("E_CHECKBOX_Circles_Collide");
+    }
+}
+
+RenderableEffect::FrameParallelism CirclesEffect::GetFrameParallelism(const SettingsMap& settings) const {
+    // Radial / Radial 3D derive each frame from (curPeriod - effStart) alone -
+    // no cross-frame state at all, so they are Pure (AdvanceState returns nullptr
+    // for them - this partition MUST mirror the one here exactly).  Every other
+    // mode integrates ball positions frame-to-frame in CirclesRenderCache;
+    // AdvanceState advances that serially and snapshots the post-advance balls,
+    // and the draw is a pure, RNG-free function of the snapshot - so it is
+    // Snapshottable.
+    if (settings.GetBool("CHECKBOX_Circles_Radial", sRadialDefault)
+        || settings.GetBool("CHECKBOX_Circles_Radial_3D", sRadial3DDefault)) {
+        return FrameParallelism::Pure;
+    }
+    return FrameParallelism::Snapshottable;
+}
+
+CirclesRenderCache* CirclesEffect::UpdateCacheState(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    float oset = buffer.GetEffectTimeIntervalPosition();
+    int number = GetValueCurveInt("Circles_Count", sCountDefault, SettingsMap, oset, sCountMin, sCountMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int circleSpeed = GetValueCurveInt("Circles_Speed", sSpeedDefault, SettingsMap, oset, sSpeedMin, sSpeedMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int radius = GetValueCurveInt("Circles_Size", sSizeDefault, SettingsMap, oset, sSizeMin, sSizeMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+
+    bool plasma  = SettingsMap.GetBool("CHECKBOX_Circles_Plasma",  sPlasmaDefault);
+    bool bubbles = SettingsMap.GetBool("CHECKBOX_Circles_Bubbles", sBubblesDefault);
+    bool bounce  = SettingsMap.GetBool("CHECKBOX_Circles_Bounce",  sBounceDefault);
+
+    int start_x = buffer.BufferWi / 2;
+    int start_y = buffer.BufferHt / 2;
+
+    CirclesRenderCache* cache = (CirclesRenderCache*)buffer.infoCache[id];
+    if (cache == nullptr) {
+        cache = new CirclesRenderCache();
+        buffer.infoCache[id] = cache;
+    }
+
+    size_t colorCnt = buffer.GetColorCount();
+
+    RgbBalls* effectObjects = plasma ? cache->metaballs : cache->balls;
+    if (number > MAX_RGB_BALLS) {
+        number = MAX_RGB_BALLS;
+    }
+
+    if (buffer.needToInit || radius != effectObjects[0]._radius || number != cache->numBalls || cache->metaType != plasma)
+    {
+        for (int ii = 0; ii < number; ii++)
+        {
+            int colorIdx = 0;
+            float angle;
+            float spd;
+            if (ii >= cache->numBalls || buffer.needToInit)
+            {
+                start_x = buffer.randInt(0, buffer.BufferWi - 1);
+                start_y = buffer.randInt(0, buffer.BufferHt - 1);
+                colorIdx = ii % colorCnt;
+                angle = buffer.randInt(0, 1) ? buffer.randInt(0, 89) : -buffer.randInt(0, 89);
+                spd = buffer.randInt(0, 2) + 1;
+            }
+            else
+            {
+                start_x = effectObjects[ii]._x;
+                start_y = effectObjects[ii]._y;
+                colorIdx = effectObjects[ii]._colorindex;
+                angle = effectObjects[ii]._angle;
+                spd = effectObjects[ii]._spd;
+            }
+            effectObjects[ii].Reset((float)start_x, (float)start_y, spd, angle, (float)radius, colorIdx);
+            if (bubbles)
+            {
+                angle = 90 + buffer.randInt(0, 44) - 22.5f;
+                angle *= 2.0f * (float)M_PI / 180.0f;
+                effectObjects[ii]._dx = spd * cos(angle);
+                effectObjects[ii]._dy = spd * sin(angle);
+            }
+        }
+        cache->numBalls = number;
+        cache->metaType = plasma;
+        buffer.needToInit = false;
+    }
+    else
+    {
+        RenderCirclesUpdate(buffer, number, effectObjects, circleSpeed);
+    }
+
+    if (bounce)
+    {
+        for (int ii = 0; ii < number; ii++)
+        {
+            effectObjects[ii].Bounce(buffer.BufferWi, buffer.BufferHt);
+        }
+    }
+
+    return cache;
+}
+
+std::unique_ptr<EffectFrameState> CirclesEffect::AdvanceState(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer)
+{
+    // Radial / Radial 3D are Pure (see GetFrameParallelism): no cross-frame
+    // state, no snapshot - returning nullptr makes the engine run Render
+    // normally.  This partition MUST mirror GetFrameParallelism exactly.
+    if (SettingsMap.GetBool("CHECKBOX_Circles_Radial", sRadialDefault)
+        || SettingsMap.GetBool("CHECKBOX_Circles_Radial_3D", sRadial3DDefault)) {
+        return nullptr;
+    }
+
+    // Advance the ball simulation on the live cache (the init RNG on needToInit /
+    // count-or-size-change frames is consumed here, in the serial advance) and
+    // snapshot the POST-advance ball state.  The draw is a pure, RNG-free
+    // function of that snapshot, so serial and parallel draws stay byte-identical.
+    CirclesRenderCache* cache = UpdateCacheState(effect, SettingsMap, buffer);
+
+    auto fs = std::make_unique<CirclesFrameState>();
+    std::copy(cache->balls, cache->balls + MAX_RGB_BALLS, fs->balls.begin());
+    std::copy(cache->metaballs, cache->metaballs + MAX_RGB_BALLS, fs->metaballs.begin());
+    fs->numBalls = cache->numBalls;
+    fs->metaType = cache->metaType;
+    return fs;
+}
+
+void CirclesEffect::RenderPixels(const SettingsMap& SettingsMap, RenderBuffer& buffer, const CirclesFrameState& fs,
+                                 bool plasma, bool fade, bool bubbles, bool bounce)
+{
+    if (plasma)
+    {
+        RenderMetaBalls(buffer, fs.numBalls, fs.metaballs.data());
+    }
+    else
+    {
+        for (int ii = 0; ii < fs.numBalls; ii++)
+        {
+            HSVValue hsv;
+            buffer.palette.GetHSV(fs.balls[ii]._colorindex, hsv);
+            if (fade)
+            {
+                buffer.DrawFadingCircle(fs.balls[ii]._x, fs.balls[ii]._y, fs.balls[ii]._radius, hsv, !bounce);
+            }
+            else
+            {
+                buffer.DrawCircle(fs.balls[ii]._x, fs.balls[ii]._y, fs.balls[ii]._radius, hsv, !bubbles, !bounce);
+            }
+        }
+    }
+}
+
+void CirclesEffect::Render(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+
+    bool radial   = SettingsMap.GetBool("CHECKBOX_Circles_Radial",    sRadialDefault);
+    bool radial_3D= SettingsMap.GetBool("CHECKBOX_Circles_Radial_3D", sRadial3DDefault);
+
+    if (radial || radial_3D)
+    {
+        // Pure mode: derives entirely from (curPeriod - effStart); no snapshot.
+        float oset = buffer.GetEffectTimeIntervalPosition();
+        int number = GetValueCurveInt("Circles_Count", sCountDefault, SettingsMap, oset, sCountMin, sCountMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+        int circleSpeed = GetValueCurveInt("Circles_Speed", sSpeedDefault, SettingsMap, oset, sSpeedMin, sSpeedMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+        int radius = GetValueCurveInt("Circles_Size", sSizeDefault, SettingsMap, oset, sSizeMin, sSizeMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+        size_t colorCnt = buffer.GetColorCount();
+        if (number > MAX_RGB_BALLS) {
+            number = MAX_RGB_BALLS;
+        }
+        int effectState = (buffer.curPeriod - buffer.curEffStartPer) * circleSpeed * buffer.frameTimeInMs / 50;
+
+        int start_x = buffer.BufferWi / 2;
+        int start_y = buffer.BufferHt / 2;
+        start_x = start_x + (GetValueCurveInt("Circles_XC", sXCDefault, SettingsMap, oset, sPosMin, sPosMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS()) / float(sPosMax) * start_x);
+        start_y = start_y + (GetValueCurveInt("Circles_YC", sYCDefault, SettingsMap, oset, sPosMin, sPosMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS()) / float(sPosMax) * start_y);
+
+
+        bool hasSpatial = false;
+        for (size_t i = 0; i < colorCnt; i++) {
+            if (buffer.palette.IsSpatial(i)) { hasSpatial = true; break; }
+        }
+
+        if (!hasSpatial &&  ((int)colorCnt <= MAX_ISPC_CIRCLES_COLORS)) {
+            int barht = buffer.BufferHt / (radius + 1);
+            if (barht < 1) barht = 1;
+            int blockHt = (int)colorCnt * barht;
+            int maxRadius = effectState > buffer.BufferHt ? buffer.BufferHt : effectState / 2 + radius;
+
+            ispc::CirclesData sdata = {};
+            sdata.width       = buffer.BufferWi;
+            sdata.height      = buffer.BufferHt;
+            sdata.mode        = radial_3D ? CIRCLES_MODE_RADIAL_3D : CIRCLES_MODE_RADIAL;
+            sdata.colorCount  = (int)colorCnt;
+            sdata.allowAlpha  = buffer.allowAlpha ? 1 : 0;
+            sdata.cx          = start_x;
+            sdata.cy          = start_y;
+            sdata.barSize     = barht;
+            sdata.blockSize   = blockHt;
+            sdata.f_offset    = effectState / 4 % (blockHt + 1);
+            sdata.maxRadius   = maxRadius;
+            sdata.number      = number;
+            sdata.effectState = effectState;
+            for (size_t i = 0; i < colorCnt; i++) {
+                xlColor c;
+                buffer.palette.GetColor(i, c);
+                sdata.colorsAsRGBA[i].v[0] = c.red;
+                sdata.colorsAsRGBA[i].v[1] = c.green;
+                sdata.colorsAsRGBA[i].v[2] = c.blue;
+                sdata.colorsAsRGBA[i].v[3] = c.alpha;
+                HSVValue hsv = c.asHSV();
+                sdata.colorsH[i] = (float)hsv.hue;
+                sdata.colorsS[i] = (float)hsv.saturation;
+                sdata.colorsV[i] = (float)hsv.value;
+            }
+
+            if (buffer.dmx_buffer) {
+                // DMX fixtures need the colour routed through SetPixel()
+                ispc::uint8_t4 single { { 0, 0, 0, 255 } };
+                ispc::CirclesEffectISPC(&sdata, 0, 1, &single);
+                buffer.SetPixel(0, 0, xlColor(single.v[0], single.v[1], single.v[2], single.v[3]));
+                return;
+            }
+
+            // Clamp to the real allocation: GetPixelCount() can be < BufferWi*BufferHt
+            // for a variable/oversized sub-buffer, and the kernel writes result[index]
+            // with no bounds check.
+            int total = std::min<int>(buffer.GetPixelCount(), buffer.BufferWi * buffer.BufferHt);
+            constexpr int bfBlockSize = 4096;
+            int blocks = total / bfBlockSize + 1;
+            parallel_for(0, blocks, [&sdata, &buffer, total](int blk) {
+                int start = blk * bfBlockSize;
+                int end = start + bfBlockSize;
+                if (end > total) end = total;
+                ispc::CirclesEffectISPC(&sdata, start, end, (ispc::uint8_t4*)buffer.GetPixels());
+            });
+            return;
+        }
+
+        RenderRadial(buffer, start_x, start_y, radius, colorCnt, number, radial_3D, effectState);
+        return;
+    }
+
+    // Snapshottable draw pass: rasterise the post-advance ball snapshot
+    // AdvanceState produced.  The engine sets pendingSnapshot in BOTH serial and
+    // frame-parallel rendering, so this is the path normally reached.
+    if (buffer.pendingSnapshot != nullptr) {
+        RenderFromState(SettingsMap, buffer, static_cast<const CirclesFrameState&>(*buffer.pendingSnapshot));
+        return;
+    }
+
+    // Defensive fall-through for a caller that invokes Render without first going
+    // through AdvanceState: advance then draw.  The draw is a pure function of
+    // the snapshot, so this stays byte-identical to the legacy body.
+    auto fs = AdvanceState(effect, SettingsMap, buffer);
+    RenderFromState(SettingsMap, buffer, static_cast<const CirclesFrameState&>(*fs));
+}
+
+void CirclesEffect::RenderFromState(const SettingsMap& SettingsMap, RenderBuffer& buffer, const CirclesFrameState& fs)
+{
+    bool plasma   = SettingsMap.GetBool("CHECKBOX_Circles_Plasma",    sPlasmaDefault);
+    bool fade     = SettingsMap.GetBool("CHECKBOX_Circles_Linear_Fade", sLinearFadeDefault);
+    bool bubbles  = SettingsMap.GetBool("CHECKBOX_Circles_Bubbles",   sBubblesDefault);
+    bool bounce   = SettingsMap.GetBool("CHECKBOX_Circles_Bounce",    sBounceDefault);
+
+    size_t colorCnt = buffer.GetColorCount();
+
+    do {
+        if (bubbles) break;
+        if ((int)colorCnt > MAX_ISPC_CIRCLES_COLORS) break;
+        if (fs.numBalls > MAX_ISPC_CIRCLES_BALLS) break;
+        bool hasSpatial = false;
+        for (size_t i = 0; i < colorCnt; i++) {
+            if (buffer.palette.IsSpatial(i)) { hasSpatial = true; break; }
+        }
+        if (hasSpatial) break;
+
+        const RgbBalls* effObjs = plasma ? (const RgbBalls*)fs.metaballs.data() : fs.balls.data();
+
+        ispc::CirclesData sdata = {};
+        sdata.width      = buffer.BufferWi;
+        sdata.height     = buffer.BufferHt;
+        sdata.mode       = plasma ? CIRCLES_MODE_METABALLS
+                                  : (fade ? CIRCLES_MODE_FADING : CIRCLES_MODE_REGULAR);
+        sdata.numBalls   = fs.numBalls;
+        sdata.colorCount = (int)colorCnt;
+        sdata.allowAlpha = buffer.allowAlpha ? 1 : 0;
+        sdata.wrap       = bounce ? 0 : 1;
+        for (int ii = 0; ii < fs.numBalls; ii++) {
+            sdata.balls[ii].x        = effObjs[ii]._x;
+            sdata.balls[ii].y        = effObjs[ii]._y;
+            sdata.balls[ii].radius   = effObjs[ii]._radius;
+            sdata.balls[ii].colorIdx = effObjs[ii]._colorindex;
+        }
+        for (size_t i = 0; i < colorCnt; i++) {
+            xlColor c;
+            buffer.palette.GetColor(i, c);
+            sdata.colorsAsRGBA[i].v[0] = c.red;
+            sdata.colorsAsRGBA[i].v[1] = c.green;
+            sdata.colorsAsRGBA[i].v[2] = c.blue;
+            sdata.colorsAsRGBA[i].v[3] = c.alpha;
+            HSVValue hsv = c.asHSV();
+            sdata.colorsH[i] = (float)hsv.hue;
+            sdata.colorsS[i] = (float)hsv.saturation;
+            sdata.colorsV[i] = (float)hsv.value;
+        }
+
+        if (buffer.dmx_buffer) {
+            // DMX fixtures need the colour routed through SetPixel()
+            ispc::uint8_t4 single{ { 0, 0, 0, 255 } };
+            ispc::CirclesEffectISPC(&sdata, 0, 1, &single);
+            buffer.SetPixel(0, 0, xlColor(single.v[0], single.v[1], single.v[2], single.v[3]));
+            return;
+        }
+
+        // Clamp to the real allocation: GetPixelCount() can be < BufferWi*BufferHt
+        // for a variable/oversized sub-buffer, and the kernel writes result[index]
+        // with no bounds check.
+        int total = std::min<int>(buffer.GetPixelCount(), buffer.BufferWi * buffer.BufferHt);
+        constexpr int bfBlockSize = 4096;
+        int blocks = total / bfBlockSize + 1;
+        parallel_for(0, blocks, [&sdata, &buffer, total](int blk) {
+            int start = blk * bfBlockSize;
+            int end = start + bfBlockSize;
+            if (end > total) end = total;
+            ispc::CirclesEffectISPC(&sdata, start, end, (ispc::uint8_t4*)buffer.GetPixels());
+        });
+        return;
+    } while (false);
+
+    RenderPixels(SettingsMap, buffer, fs, plasma, fade, bubbles, bounce);
+}
+
+void CirclesEffect::RenderCirclesUpdate(RenderBuffer& buffer, int ballCnt, RgbBalls* effObjs, int circleSpeed)
+{
+    for (int ii = 0; ii < ballCnt; ii++)
+    {
+        effObjs[ii].updatePosition((float)circleSpeed * (float)buffer.frameTimeInMs / 200.0, buffer.BufferWi, buffer.BufferHt);
+    }
+}
+
+void CirclesEffect::RenderRadial(RenderBuffer& buffer, int x, int y, int thickness, int colorCnt, int number, bool radial_3D, const int effectState)
+{
+    int barht = buffer.BufferHt / (thickness + 1);
+    if (barht < 1) barht = 1;
+    int maxRadius = effectState > buffer.BufferHt ? buffer.BufferHt : effectState / 2 + thickness;
+    int blockHt = colorCnt * barht;
+    int f_offset = effectState / 4 % (blockHt + 1);
+
+    barht = barht > 0 ? barht : 1;
+    HSVValue hsv;
+    buffer.palette.GetHSV(0, hsv);
+
+    xlColor lastColor = xlBLACK;
+    for (int ii = maxRadius; ii >= 0; ii--)
+    {
+        int n = ii - f_offset + blockHt;
+        int colorIdx = (n) % blockHt / barht;
+        buffer.palette.GetHSV(colorIdx, hsv);
+
+        if (radial_3D)
+        {
+            hsv.hue = (float)(ii + effectState) / ((float)maxRadius / (float)number);
+            if (hsv.hue > 1.0) hsv.hue = hsv.hue - (long)hsv.hue;
+            hsv.saturation = 1.0;
+            hsv.value = 1.0;
+        }
+        xlColor color(hsv);
+        if (lastColor != color) {
+            buffer.DrawCircle(x, y, ii, hsv, true);
+            lastColor = color;
+        }
+    }
+}
+
+void CirclesEffect::RenderMetaBalls(RenderBuffer& buffer, int numBalls, const MetaBall* metaballs)
+{
+    for (int row = 0; row < buffer.BufferHt; row++)
+    {
+        for (int col = 0; col < buffer.BufferWi; col++)
+        {
+            float sum = 0.0f;
+            HSVValue hsv;
+            hsv.hue = 0.0f;
+            hsv.saturation = 0.0f;
+            hsv.value = 0.0f;
+
+            for (int ii = 0; ii < numBalls; ii++)
+            {
+                float val = metaballs[ii].Equation((float)col, (float)row);
+                sum += val;
+                HSVValue temp;
+                buffer.palette.GetHSV(metaballs[ii]._colorindex, temp);
+                if (val > 0.30f)
+                {
+                    temp.value = val > 1.0f ? 1.0f : val;
+                    hsv = buffer.Get2ColorAdditive(hsv, temp);
+                }
+            }
+            if (sum >= 0.90f)
+            {
+                buffer.SetPixel(col, row, hsv);
+            }
+        }
+    }
+}

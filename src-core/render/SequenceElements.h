@@ -1,0 +1,314 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "EffectLayer.h"
+#include "Element.h"
+#include "EffectSymbolManager.h"
+#include "SequenceFaces.h"
+#include "SequenceMedia.h"
+#include "SongStructureManager.h"
+namespace pugi { class xml_node; class xml_document; }
+#include <array>
+#include <vector>
+#include <map>
+#include <set>
+#include <string>
+#include <mutex>
+#include "UndoManager.h"
+
+class SequenceFile;
+class SequenceViewManager;
+
+#define CURRENT_VIEW -1
+#define MASTER_VIEW 0
+
+class Row_Information_Struct
+{
+public:
+    Element *element;
+    int Index;
+    int RowNumber;
+    bool Collapsed;
+    int colorIndex;
+    int layerIndex;
+    int strandIndex = -1;
+    int nodeIndex = -1;
+    std::string displayName;
+    std::string layerName;
+    bool submodel = false;
+    int nestDepth = 0;
+};
+
+struct EffectRange
+{
+    double StartTime;
+    double EndTime;
+    EffectLayer* Layer;
+    int Row;
+};
+
+struct EventPlayEffectArgs
+{
+    Element* element;
+    Effect* effect;
+    bool renderEffect;
+};
+
+class EffectLayer;
+class RenderContext;
+class EffectManager;
+
+class SequenceElements : public ChangeListener
+{
+public:
+    SequenceElements(RenderContext *ctx);
+    virtual ~SequenceElements();
+    bool LoadSequencerFile(SequenceFile& xml_file, pugi::xml_document& doc, const std::string& ShowDir, bool importing = false);
+    void Clear();
+    void PrepareViews(SequenceFile& xml_file);
+    Element* AddElement(const std::string &name, const std::string &type, bool visible, bool collapsed, bool active, bool selected, bool renderDisabled);
+    Element* AddElement(int index, const std::string &name, const std::string &type, bool visible, bool collapsed, bool active, bool selected, bool renderDisabled);
+    Element* GetElement(const std::string &name) const;
+    int GetElementIndex(const std::string &name, int view = MASTER_VIEW);
+    Element* GetElement(size_t index, int view = MASTER_VIEW) const;
+    TimingElement* GetTimingElement(int n);
+    TimingElement* GetTimingElement(const std::string& name);
+    size_t GetElementCount(int view = MASTER_VIEW) const;
+    Row_Information_Struct* GetVisibleRowInformation(size_t index);
+    Row_Information_Struct* GetVisibleRowInformationFromRow(int row_number);
+    size_t GetVisibleRowInformationSize();
+    Row_Information_Struct* GetRowInformation(size_t index);
+    Row_Information_Struct* GetRowInformationFromRow(int row_number);
+    std::string UniqueElementName(const std::string& basename) const;
+    int GetRowInformationSize();
+    int GetMaxModelsDisplayed();
+    int GetFirstVisibleModelRow();
+    Effect* SelectEffectUsingDescription(std::string description);
+    Effect* SelectEffectUsingElementLayerTime(std::string element, int layer, int time);
+    std::list<std::string> GetAllEffectDescriptions();
+    std::list<std::string> GetUniqueEffectPropertyValues(const std::string& id);
+    std::list<std::string> GetAllReferencedFiles();
+    std::list<std::string> GetAllUsedEffectTypes() const;
+    std::list<std::string> GetAllElementNamesWithEffects();
+    std::list<std::string> GetAllElementNamesWithEffectsExtended(); // this also gets submodels and strands
+    int GetElementLayerCount(std::string elementName, std::list<int>* layers = nullptr);
+    std::list<Effect*> GetElementLayerEffects(std::string elementName, int layer);
+    bool IsValidEffect(Effect* e) const;
+    bool IsValidElement(Element* e) const;
+    size_t GetHiddenTimingCount() const;
+    void HideAllTimingTracks(bool hide);
+    bool GetHideUnusedSubmodels() const { return mHideUnusedSubmodels; }
+    void SetHideUnusedSubmodels(bool hide) { mHideUnusedSubmodels = hide; }
+
+    int GetTotalNumberOfModelRows();
+    void SetMaxRowsDisplayed(int maxRows);
+    void SetVisibilityForAllModels(bool visibility, int view = MASTER_VIEW);
+    void MoveSequenceElement(int index, int dest, int view);
+    void MoveElementUp(const std::string &name, int view);
+    void MoveElementDown(const std::string &name, int view);
+    int SetFirstVisibleModelRow(int row);
+    void SetCurrentView(int view);
+    void AddMissingModelsToSequence(const std::string &models, bool visible = true);
+    int GetCurrentView() const { return mCurrentView; }
+    void SetTimingVisibility(const std::string& name);
+    void PopulateView(const std::string &models, int view);
+    void AddView(const std::string &viewName);
+    void RemoveView(int view_index);
+    void AddViewToTimings(const std::vector<std::string>& timings, const std::string& name);
+    void AddTimingToAllViews(const std::string& timing);
+    void AddTimingToView(const std::string& timing, const std::string& name);
+    void AddTimingToCurrentView(const std::string& timing);
+    int GetIndexOfModelFromModelIndex(int modelIndex);
+    int GetElementIndexOfTimingFromListIndex(int timingIndex);
+    int GetViewCount();
+    void RenameModelInViews(const std::string& old_name, const std::string& new_name);
+    // Tag position storage (timeline bookmarks, -1 = unset). The index reaches
+    // here straight off the sequence file, so both accessors have to hold the
+    // range themselves - a file written with more tags than we store used to
+    // run off the end of the array.
+    static constexpr int TagCount = 10;
+    int GetTagPosition(int tag) const { return (tag >= 0 && tag < TagCount) ? _tagPositions[tag] : -1; }
+    void SetTagPosition(int tag, int position) {
+        if (tag >= 0 && tag < TagCount) {
+            _tagPositions[tag] = position;
+        }
+    }
+    void ClearTags() { _tagPositions.fill(-1); }
+
+    void DeleteElement(const std::string &name);
+    void DeleteElementFromView(const std::string &name, int view);
+    void DeleteTimingFromView(const std::string &name, int view);
+    void DeleteTimingsFromView(int view);
+
+    void PopulateRowInformation();
+    void PopulateVisibleRowInformation();
+
+    void SetSequenceEnd(int ms);
+    int GetSequenceEnd() const;
+    int GetMaxEffectEndTimeMS() const;
+    // Selected Ranges
+    size_t GetSelectedRangeCount();
+    EffectRange* GetSelectedRange(int index);
+    void AddSelectedRange(EffectRange* range);
+    void DeleteSelectedRange(int index);
+    void ClearSelectedRanges();
+
+    int GetSelectedTimingRow();
+    void SetSelectedTimingRow(int row);
+
+    int GetNumberOfTimingRows() const;
+    int GetNumberOfTimingElements();
+    int GetNumberOfActiveTimingEffects();
+    bool ElementExists(const std::string &elementName, int view = MASTER_VIEW);
+    void RenameTimingTrack(std::string oldname, std::string newname);
+    bool TimingIsPartOfView(TimingElement* timing, int view) const;
+    std::string GetViewName(int view) const;
+
+    void SetViewsManager(SequenceViewManager* viewsManager);
+    SequenceViewManager* GetViewsManager() const { return _viewsManager; }
+    std::string GetViewModels(const std::string &viewName) const;
+
+    void SortElements();
+    void MoveElement(int index, int destinationIndex);
+
+    void DeactivateAllTimingElements(bool allViews = false);
+    void SetFrequency(double frequency);
+    double GetFrequency();
+    int GetFrameMS();
+    int GetMinPeriod();
+
+    std::vector<std::string> GetUsedColours(bool selectedOnly) const;
+    int ReplaceColours(RenderContext* ctx, const std::string& from, const std::string& to, bool selectedOnly);
+    int SelectEffectsInRowAndTimeRange(int startRow, int endRow, int startMS, int endMS);
+    int SelectVisibleEffectsInRowAndTimeRange(int startRow, int endRow, int startMS, int endMS);
+    int SelectEffectsInRowAndColumnRange(int startRow, int endRow, int startCol, int endCol);
+    void SelectAllEffects();
+    void SelectAllEffectsNoTiming();
+    void SelectAllEffectsInRow(int row);
+    void UnSelectAllEffects();
+    void SelectAllElements();
+    void UnSelectAllElements();
+
+    EffectLayer* GetEffectLayer(const Row_Information_Struct *s) const;
+    EffectLayer* GetEffectLayer(int row);
+    EffectLayer* GetVisibleEffectLayer(int row);
+
+    virtual void IncrementChangeCount(Element *el);
+    unsigned int GetChangeCount() const { return mChangeCount; }
+    unsigned int GetMasterViewChangeCount() const { return mMasterViewChangeCount; }
+
+    bool HasPapagayoTiming() const { return hasPapagayoTiming; }
+
+    UndoManager& get_undo_mgr() { return undo_mgr; }
+
+    EffectSymbolManager& GetEffectSymbolManager() { return _effectSymbolManager; }
+    const EffectSymbolManager& GetEffectSymbolManager() const { return _effectSymbolManager; }
+
+    void AddRenderDependency(const std::string &layer, const std::string &model);
+    bool GetElementsToRender(std::vector<Element *> &models);
+
+    // A model's face definition was renamed - repoint Faces effects on that
+    // model's element (including submodel/strand layers) so they follow the
+    // rename. Returns the number of effects updated.
+    int RenameModelFaceReferences(const std::string& modelName, const std::string& oldName, const std::string& newName);
+
+    bool SupportsModelBlending() const { return supportsModelBlending; }
+    void SetSupportsModelBlending(bool b) { supportsModelBlending = b; }
+
+    EffectManager &GetEffectManager();
+    RenderContext *GetRenderContext() const { return renderContext; };
+
+    // Color palettes from the loaded sequence
+    const std::vector<std::string>& GetColorPalettes() const { return mColorPalettes; }
+
+    // Media cache management
+    SequenceMedia& GetSequenceMedia() { return mSequenceMedia; }
+    const SequenceMedia& GetSequenceMedia() const { return mSequenceMedia; }
+
+    // Repoint every reference to a media file - effect settings (exact-value
+    // match on any key), and the sequence-level face definitions - from one
+    // path to another. Returns model name -> [startMS, endMS] covering the
+    // effects that changed, so a caller can re-render just those.
+    std::map<std::string, std::pair<int, int>> RewriteMediaReferences(const std::string& from, const std::string& to);
+
+    // Strip the show/media folder prefix off a media entry's stored path and
+    // repoint every reference at the relative form. Embedded bytes travel in
+    // the document, so an absolute path just pins the sequence to one machine.
+    // No-op (returns `path`) when the file is outside the show and media
+    // folders, or when the relative key is already taken by another entry.
+    std::string MakeMediaPathRelative(const std::string& path);
+
+    // Sequence-level face definitions (Matrix/image style only)
+    SequenceFaces& GetSequenceFaces() { return mSequenceFaces; }
+    const SequenceFaces& GetSequenceFaces() const { return mSequenceFaces; }
+
+    // Song structure regions
+    SongStructureManager& GetSongStructureManager() { return mSongStructure; }
+    const SongStructureManager& GetSongStructureManager() const { return mSongStructure; }
+protected:
+private:
+    int LoadEffects(EffectLayer *layer,
+        const std::string &type,
+        const pugi::xml_node &effectLayerNode,
+        const std::vector<std::string> & effectStrings,
+        const std::vector<std::string> & colorPalettes,
+        bool importing = false);
+    static bool SortElementsByIndex(const Element *element1, const Element *element2)
+    {
+        return (element1->GetIndex() < element2->GetIndex());
+    }
+    void addTimingElement(TimingElement *elem, std::vector<Row_Information_Struct> &mRowInformation,
+        int &rowIndex, int &selectedTimingRow, int &timingRowCount, int &timingColorIndex);
+
+    void ClearAllViews();
+    std::vector<std::vector <Element*> > mAllViews;
+
+    // A vector of all the visible elements that may not be on screen
+    // because they all do not fit. The timing elements will always
+    // be the first in this list.
+    std::vector<Row_Information_Struct> mRowInformation;
+    // A vector of the visible elements that are in shown current window view
+    // Scrolling up/down changes this vector. The timing elements will always
+    // be the first in this list.
+    std::vector<Row_Information_Struct> mVisibleRowInformation;
+
+    std::vector<EffectRange> mSelectedRanges;
+    int mSelectedTimingRow;
+    SequenceViewManager* _viewsManager = nullptr;
+    std::array<int, TagCount> _tagPositions{};
+    RenderContext *renderContext = nullptr;
+    double mFrequency;
+    int mTimingRowCount = 0;
+    int mMaxRowsDisplayed = 0;
+    int mCurrentView;
+    bool hasPapagayoTiming;
+    bool mHideUnusedSubmodels = false;
+    int mSequenceEndMS;
+    bool supportsModelBlending;
+
+    // mFirstVisibleModelRow=0 is first model row not the row in Row_Information struct.
+    int mFirstVisibleModelRow;
+    unsigned int mChangeCount;
+    unsigned int mMasterViewChangeCount;
+    UndoManager undo_mgr;
+
+    std::map<std::string, std::set<std::string>> renderDependency;
+    std::set<std::string> modelsToRender;
+    std::mutex renderDepLock;
+    
+    std::vector<std::string> mColorPalettes;
+    SequenceMedia mSequenceMedia;
+    SequenceFaces mSequenceFaces;
+    SongStructureManager mSongStructure;
+    EffectSymbolManager _effectSymbolManager;
+};
+

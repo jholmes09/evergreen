@@ -1,0 +1,442 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <cassert>
+#include <filesystem>
+#include <spdlog/fmt/fmt.h>
+
+#include "ImageModel.h"
+#include "../utils/xlImage.h"
+#include "ModelScreenLocation.h"
+#include "../graphics/IModelPreview.h"
+#include "../render/RenderBuffer.h"
+#include "../render/RenderContext.h"
+#include "utils/FileUtils.h"
+#include "utils/ExternalHooks.h"
+#include "../XmlSerializer/XmlNodeKeys.h"
+
+#include <log.h>
+
+#include "../graphics/xlGraphicsAccumulators.h"
+#include "../graphics/xlGraphicsContext.h"
+
+
+ImageModel::ImageModel(const ModelManager &manager) : ModelWithScreenLocation(manager)
+{
+    DisplayAs = DisplayAsType::Image;
+    _whiteAsAlpha = false;
+    _offBrightness = 80;
+    _imageFile = "";
+}
+
+ImageModel::~ImageModel()
+{
+    for (auto it = _images.begin(); it != _images.end(); ++it) {
+        delete it->second;
+    }
+}
+
+void ImageModel::GetBufferSize(const std::string &type, const std::string &camera, const std::string &transform, int &BufferWi, int &BufferHi, int stagger) const {
+	BufferHi = 1;
+	BufferWi = 1;
+}
+
+void ImageModel::InitRenderBufferNodes(const std::string &type, const std::string &camera, const std::string &transform,
+    std::vector<NodeBaseClassPtr> &newNodes, int &BufferWi, int &BufferHi, int stagger, bool deep) const {
+    BufferHi = 1;
+    BufferWi = 1;
+
+    //newNodes.push_back(NodeBaseClassPtr(Nodes[0]->clone()));
+    NodeBaseClass* node = Nodes[0]->clone();
+    node->Coords.resize(1);
+
+    // set it to zero zero
+    node->Coords[0].bufX = 0;
+    node->Coords[0].bufY = 0;
+    float x = 0.0;
+    float y = 0.0;
+    float z = 0.0;
+    GetModelScreenLocation().TranslatePoint(x, y, z);
+    node->Coords[0].screenX = x;
+    node->Coords[0].screenY = y;
+    node->Coords[0].screenZ = z;
+
+    newNodes.push_back(NodeBaseClassPtr(node));
+}
+
+void ImageModel::InitModel()
+{
+    SetNodeCount(1, 1, rgbOrder);
+	Nodes[0]->ActChan = stringStartChan[0];
+	Nodes[0]->StringNum = 0;
+    // the screenx/screeny positions are used to fake it into giving a bigger selection area
+    Nodes[0]->Coords[0].screenX = -0.5f;
+    Nodes[0]->Coords[0].screenY = -0.5f;
+    Nodes[0]->Coords[0].screenZ = -0.5f;
+    Nodes[0]->AddBufCoord(0, 0);
+    Nodes[0]->Coords[1].screenX = 0.5f;
+    Nodes[0]->Coords[1].screenY = 0.5f;
+    Nodes[0]->Coords[1].screenZ = 0.5f;
+
+    SetBufferSize(1, 1);
+    screenLocation.SetRenderSize(1, 1);
+    screenLocation.RenderDp = 10.0f;  // give the bounding box a little depth
+}
+
+void ImageModel::SetImageFile(const std::string & imageFile)
+{
+    ObtainAccessToURL(imageFile);
+    _imageFile = FileUtils::FixFile("", imageFile);
+}
+void ImageModel::ClearImageCache() {
+    for (auto it = _images.begin(); it != _images.end(); ++it) {
+        delete it->second;
+    }
+    _images.clear();
+}
+
+void ImageModel::DisplayEffectOnWindow(IModelPreview* preview, double pointSize)
+{
+    bool mustEnd = false;
+    xlGraphicsContext *ctx = preview->getCurrentGraphicsContext();
+    if (ctx == nullptr) {
+        bool success = preview->StartDrawing(pointSize);
+        if (success) {
+            ctx = preview->getCurrentGraphicsContext();
+            mustEnd = true;
+        }
+    }
+    if (ctx) {
+        GetModelScreenLocation().PrepareToDraw(false, false);
+
+        int w, h;
+        w = preview->getWidth(); h = preview->getHeight();
+
+        bool drawColor = (StringType.rfind("Single Color", 0) != 0 && StringType != "Node Single Color");
+
+        xlTexture *texture = _images[preview->getName()];
+        xlTexture* textureColorOverlay = _images[preview->getName() + "_color_overlay"];
+        if (texture == nullptr && FileExists(_imageFile)) {
+            xlImage img;
+            if (img.LoadFromFile(_imageFile)) {
+                if (_whiteAsAlpha) {
+                    for (int x = 0; x < img.GetWidth(); x++) {
+                        for (int y = 0; y < img.GetHeight(); y++) {
+                            int r = img.GetRed(x, y);
+                            if (r == img.GetGreen(x, y) && r == img.GetBlue(x, y)) {
+                                img.SetAlpha(x, y, r);
+                            }
+                        }
+                    }
+                }
+                int maxBrightness = 0;
+                if (drawColor) {
+                    // Color Image mode selected. Convert image to grayscale image so custom color can be applied later
+                    for (int x = 0; x < img.GetWidth(); x++) {
+                        for (int y = 0; y < img.GetHeight(); y++) {
+                            int r = img.GetRed(x, y);
+                            int g = img.GetGreen(x, y);
+                            int b = img.GetBlue(x, y);
+                            // Colorimetric (perceptual luminance-preserving) conversion to grayscale
+                            int c = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 3; // Weights from https://en.wikipedia.org/wiki/Grayscale
+                            maxBrightness = std::max(c, maxBrightness);
+                            img.SetRGB(x, y, c, c, c);
+                        }
+                    }
+                }
+                width = img.GetWidth();
+                height = img.GetHeight();
+                texture = ctx->createTexture(img, GetName(), true);
+
+                // Modify image for color overlay
+                if (drawColor) {
+                    for (int x = 0; x < img.GetWidth(); x++) {
+                        for (int y = 0; y < img.GetHeight(); y++) {
+                            int l = img.GetGreen(x, y); // Take green as luminance. Red, Green, Blue should now be equal after grayscale conversion
+                            int a = img.GetAlpha(x, y);
+                            l = (l * 255) / maxBrightness;
+                            img.SetAlpha(x, y, std::min(a, l));
+                        }
+                    }
+                }
+                textureColorOverlay = ctx->createTexture(img, GetName() + "_color_overlay", true);
+            }
+        }
+        if (texture) {
+            float scaleX = float(w) / float(width);
+            float scaleY = float(h) / float(height);
+            
+            float scale = scaleY < scaleX ? scaleY : scaleX;
+            
+            float offX = (float(w) - float(width) * scale) / 2.0f;
+            float offY = (float(h) - float(height) * scale) / 2.0f;
+
+            float x1 = offX;
+            float x2 = offX;
+            float x3 = offX + float(width) * scale;
+            float x4 = offX + float(width) * scale;
+            float y1 = offY;
+            float y2 = offY + float(height) * scale;
+            float y3 = offY + float(height) * scale;
+            float y4 = offY;
+            
+            int brightness = (100.0 - transparency) * 255.0 / 100.0;
+            brightness = (float)_offBrightness + (float)(255 - _offBrightness) * (float)brightness / 255.0 * (float)GetChannelValue(0) / 255.0;
+            
+            xlVertexTextureAccumulator *va = ctx->createVertexTextureAccumulator();
+            
+            va->PreAlloc(6);
+            va->AddVertex(x1, y1, 0, 0.0, 1.0);
+            va->AddVertex(x4, y4, 0, 1.0, 1.0);
+            va->AddVertex(x2, y2, 0, 0.0, 0.0);
+            va->AddVertex(x2, y2, 0, 0.0, 0.0);
+            va->AddVertex(x4, y4, 0, 1.0, 1.0);
+            va->AddVertex(x3, y3, 0, 1.0, 0.0);
+
+            preview->getCurrentSolidProgram()->addStep([=, this](xlGraphicsContext *ctx) {
+                ctx->drawTexture(va, texture, brightness, 255, 0, va->getCount());
+                if (drawColor) {
+                    xlColor c;
+                    Nodes[0]->GetColor(c);
+                    ctx->drawTexture(va, textureColorOverlay, c, 0, va->getCount());
+                }
+                delete va;
+            });
+        } else {
+            
+            xlGraphicsProgram *program = preview->getCurrentSolidProgram();
+            xlVertexColorAccumulator *vac= program->getAccumulator();
+            int start = vac->getCount();
+            
+            float offX = float(w) * 0.95;
+            float offY = float(h) * 0.95;
+
+            vac->AddVertex(offX, offY, 0, xlRED);
+            vac->AddVertex(w - offX, offY, 0, xlRED);
+
+            vac->AddVertex(w - offX, offY, 0, xlRED);
+            vac->AddVertex(w - offX, h - offY, 0, xlRED);
+
+            vac->AddVertex(w - offX, h - offY, 0, xlRED);
+            vac->AddVertex(offX, h - offY, 0, xlRED);
+
+            vac->AddVertex(offX, h - offY, 0, xlRED);
+            vac->AddVertex(offX, offY, 0, xlRED);
+            
+            vac->AddVertex(offX, offY, 0, xlRED);
+            vac->AddVertex(w - offX, h - offY, 0, xlRED);
+
+            vac->AddVertex(w - offX, offY, 0, xlRED);
+            vac->AddVertex(offX, h - offY, 0, xlRED);
+
+            int count = vac->getCount();
+            program->addStep([=](xlGraphicsContext *ctx) {
+                ctx->drawLines(vac, start, count - start);
+            });
+        }
+
+    }
+    if (mustEnd) {
+        preview->EndDrawing();
+    }
+}
+
+
+void ImageModel::DisplayModelOnWindow(IModelPreview* preview, xlGraphicsContext *ctx,
+                                      xlGraphicsProgram *solidProgram, xlGraphicsProgram *transparentProgram, bool is_3d,
+                                      const xlColor* color, bool allowSelected, bool wiring,
+                                      bool highlightFirst, int highlightpixel,
+                                      float *boundingBox) {
+    GetModelScreenLocation().PrepareToDraw(is_3d, allowSelected);
+
+    int w, h;
+    preview->GetVirtualCanvasSize(w, h);
+
+    bool drawColor = !allowSelected && StringType.rfind("Single Color",0) != 0 && StringType != "Node Single Color";
+
+    xlTexture *texture = _images[preview->getName()];
+    xlTexture* textureColorOverlay = _images[preview->getName() + "_color_overlay"];
+    if (texture == nullptr && FileExists(_imageFile)) {
+        xlImage img;
+        if (img.LoadFromFile(_imageFile)) {
+            if (_whiteAsAlpha) {
+                for (int x = 0; x < img.GetWidth(); x++) {
+                    for (int y = 0; y < img.GetHeight(); y++) {
+                        int r = img.GetRed(x, y);
+                        if (r == img.GetGreen(x, y) && r == img.GetBlue(x, y)) {
+                            img.SetAlpha(x, y, r);
+                        }
+                    }
+                }
+            }
+            int maxBrightness = 0;
+            if (drawColor) {
+                // Color Image mode selected. Convert image to grayscale image so custom color can be applied later
+                for (int x = 0; x < img.GetWidth(); x++) {
+                    for (int y = 0; y < img.GetHeight(); y++) {
+                        int r = img.GetRed(x, y);
+                        int g = img.GetGreen(x, y);
+                        int b = img.GetBlue(x, y);
+                        // Colorimetric (perceptual luminance-preserving) conversion to grayscale
+                        int c = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 3; // Weights from https://en.wikipedia.org/wiki/Grayscale
+                        maxBrightness = std::max(c, maxBrightness);
+                        img.SetRGB(x, y, c, c, c);
+                    }
+                }
+            }
+
+            width = img.GetWidth();
+            height = img.GetHeight();
+            hasAlpha = true; // xlImage always has alpha
+            texture = ctx->createTexture(img, GetName(), true);
+            _images[preview->getName()] = texture;
+
+            // Modify image for color overlay
+            if (drawColor) {
+                for (int x = 0; x < img.GetWidth(); x++) {
+                    for (int y = 0; y < img.GetHeight(); y++) {
+                        int l = img.GetGreen(x, y); // Take green as luminance. Red and Blue should now be equal to Green after grayscale conversion
+                        int a = img.GetAlpha(x, y);
+                        l = (l * 255) / maxBrightness;
+                        img.SetAlpha(x, y, std::min(a, l));
+                    }
+                }
+            }
+            textureColorOverlay = ctx->createTexture(img, GetName() + "_color_overlay", true);
+            _images[preview->getName() + "_color_overlay"] = textureColorOverlay;
+        }
+    }
+    GetModelScreenLocation().UpdateBoundingBox(Nodes);  // FIXME: Modify to only call this when position changes
+   
+    
+    xlGraphicsProgram *program = (transparency != 0 || hasAlpha) ? transparentProgram : solidProgram;
+    if (texture) {
+        xlVertexTextureAccumulator *va = ctx->createVertexTextureAccumulator();
+        
+        va->PreAlloc(6);
+        va->AddVertex(-0.5, -0.5, 0, 0.0, 1.0);
+        va->AddVertex(0.5, -0.5, 0, 1.0, 1.0);
+        va->AddVertex(-0.5, 0.5, 0, 0.0, 0.0);
+        va->AddVertex(-0.5, 0.5, 0, 0.0, 0.0);
+        va->AddVertex(0.5, -0.5, 0, 1.0, 1.0);
+        va->AddVertex(0.5, 0.5, 0, 1.0, 0.0);
+
+        int alpha = (100.0 - transparency) / 100.0 * 255.0;
+        int brightness = (float)_offBrightness + (float)(100 - _offBrightness) * (float)GetChannelValue(0) / 255.0;
+        if (color) {
+            brightness = color->red;
+            brightness /= 2.55f;
+        }
+
+        preview->getCurrentSolidProgram()->addStep([=, this](xlGraphicsContext *ctx) {
+            ctx->PushMatrix();
+            if (!is_3d) {
+                //not 3d, flatten to the 0 plane
+                ctx->ScaleViewMatrix(1.0f, 1.0f, 0.0f);
+            }
+            GetModelScreenLocation().ApplyModelViewMatrices(ctx);
+            ctx->drawTexture(va, texture, brightness, alpha, 0, va->getCount());
+            if (drawColor) {
+                xlColor c;
+                Nodes[0]->GetColor(c);
+                ctx->drawTexture(va, textureColorOverlay, c, 0, va->getCount());
+            }
+            ctx->PopMatrix();
+            delete va;
+        });
+    } else {
+        xlVertexColorAccumulator *vac= program->getAccumulator();
+        int start = vac->getCount();
+        vac->AddVertex(-0.5, -0.5, 0, xlRED);
+        vac->AddVertex(0.5, -0.5, 0, xlRED);
+
+        vac->AddVertex(0.5, -0.5, 0, xlRED);
+        vac->AddVertex(0.5, 0.5, 0, xlRED);
+
+        vac->AddVertex(0.5, 0.5, 0, xlRED);
+        vac->AddVertex(-0.5, 0.5, 0, xlRED);
+
+        vac->AddVertex(-0.5, 0.5, 0, xlRED);
+        vac->AddVertex(-0.5, -0.5, 0, xlRED);
+
+        vac->AddVertex(-0.5, -0.5, 0, xlRED);
+        vac->AddVertex(0.5, 0.5, 0, xlRED);
+
+        vac->AddVertex(0.5, -0.5, 0, xlRED);
+        vac->AddVertex(-0.5, 0.5, 0, xlRED);
+
+        int count = vac->getCount();
+        program->addStep([=, this](xlGraphicsContext *ctx) {
+            ctx->PushMatrix();
+            GetModelScreenLocation().ApplyModelViewMatrices(ctx);
+            ctx->drawLines(vac, start, count - start);
+            ctx->PopMatrix();
+        });
+    }
+    
+    if ((Selected() || (Highlighted() && is_3d)) && color != nullptr && allowSelected) {
+        if (is_3d) {
+            GetModelScreenLocation().DrawHandles(transparentProgram, preview->GetCameraZoomForHandles(), preview->GetHandleScale(), Highlighted(), IsFromBase());
+        } else {
+            GetModelScreenLocation().DrawHandles(transparentProgram, preview->GetCameraZoomForHandles(), preview->GetHandleScale(), IsFromBase());
+        }
+    }
+}
+
+bool ImageModel::CleanupFileLocations(RenderContext* ctx)
+{
+    bool rc = false;
+    if (FileExists(_imageFile)) {
+        if (!ctx->IsInShowFolder(_imageFile)) {
+            _imageFile = ctx->MoveToShowFolder(_imageFile, std::string(1, std::filesystem::path::preferred_separator) + "Images");
+            Setup();
+            rc = true;
+        }
+    }
+
+    return Model::CleanupFileLocations(ctx) || rc;
+}
+
+std::list<std::string> ImageModel::GetFileReferences()
+{
+    std::list<std::string> res;
+    if (FileExists(_imageFile)) {
+        res.push_back(_imageFile);
+    }
+    return res;
+}
+
+std::list<std::string> ImageModel::CheckModelSettings()
+{
+    std::list<std::string> res;
+
+    if (_imageFile == "" || !FileExists(_imageFile)) {
+        res.push_back(fmt::format("    ERR: Image model '{}' cant find image file '{}'", GetName(), _imageFile));
+    } else if (xlImage testImg; !testImg.LoadFromFile(_imageFile)) {
+        res.push_back(fmt::format("    ERR: Image model '{}' cant load image file '{}'", GetName(), _imageFile));
+    } else {
+        if (!FileUtils::IsFileInShowDir(std::string(), _imageFile)) {
+            res.push_back(fmt::format("    WARN: Image model '{}' image file '{}' not under show/media/resource directories.", GetName(), _imageFile));
+        }
+    }
+    res.splice(res.end(), Model::CheckModelSettings());
+    return res;
+}
+
+
+int ImageModel::GetChannelValue(int channel)
+{
+    assert(channel == 0);
+
+    xlColor c;
+    Nodes[channel]->GetColor(c);
+    return std::max(c.red, std::max(c.green, c.blue));
+}
+

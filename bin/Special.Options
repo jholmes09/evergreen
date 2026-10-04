@@ -1,0 +1,49 @@
+<!-- This file sets obscure options not available via the UI -->
+<!-- Place it in your xLights show directory, named exactly "special.options" -->
+<!-- This copy (in the xLights bin/ folder) is a reference template only - it is not read by xLights -->
+
+<SpecialOptions>
+
+  <!-- When set to true adds a menu item to the tools menu to crash xLights -->
+  <!--Option name="EnableCrash" value="false"/-->
+
+  <!-- Allows control over device used in windows directx9 hardware video decode -->
+  <!--Option name="dxva2_device" value="0"/-->
+
+  <!-- Prioritises the D3DTEXTUREFILTERTYPE used in windows directx9 hardware video decode -->
+  <!--Option name="dxva2_filter" value="-1"/-->
+
+  <!-- Controls the base URL for remote falcon -->
+  <!--Option name="RemoteFalconURL" value=""/-->
+  
+  <!-- Forces artnet to send sync packets from the defined artnet port -->
+  <!--Option name="ForceArtNetSourcePort" value="true"/-->
+
+  <!-- Logger levels control the minimum severity written to xLights_spdlog.log -->
+  <!-- Valid values (lowest to highest verbosity): trace, debug, info, warn, error, critical, off -->
+
+  <!-- Main / default logger - covers everything not handled by a named logger below (default: info) -->
+  <!--Option name="xLights_logger" value="info"/-->
+
+  <!-- Render logger - effect rendering pipeline: frame jobs, blend, per-model render loops (default: warn) -->
+  <!--Option name="render_logger" value="warn"/-->
+
+  <!-- cURL / HTTP logger - all HTTP/HTTPS traffic via CurlManager: controller uploads, FPP comms, discovery (default: info) -->
+  <!--Option name="curl_logger" value="info"/-->
+
+  <!-- OpenGL logger - GL context creation, shader compilation, draw-call diagnostics (default: info) -->
+  <!--Option name="opengl_logger" value="info"/-->
+
+  <!-- Job-pool logger - background thread-pool lifecycle and job dispatch (default: info) -->
+  <!--Option name="job_logger" value="info"/-->
+
+  <!-- Work logger - channel-mapping recalculations, model-chain updates, controller output work (default: info) -->
+  <!--Option name="work_logger" value="info"/-->
+
+  <!-- Mirror all log output to stdout with ANSI colour - useful when running from a terminal (default: false) -->
+  <!--Option name="console_logger" value="true"/-->
+
+  <!-- Enable verbose wxWidgets internal logging - only useful when debugging wx UI issues (default: false) -->
+  <!--Option name="wxLogging" value="true"/-->
+
+</SpecialOptions>

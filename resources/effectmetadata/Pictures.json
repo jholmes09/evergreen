@@ -1,0 +1,262 @@
+{
+    "effectName": "Pictures",
+    "properties": [
+        {
+            "id": "Pictures_FilenameBlock",
+            "label": "",
+            "type": "string",
+            "controlType": "custom",
+            "default": "",
+            "description": "Image file selection: Select / AI Generate / Clear buttons, animated preview thumbnail, filename label, and a hidden text control that holds the actual path so the saved E_TEXTCTRL_Pictures_Filename round-trips."
+        },
+        {
+            "id": "Pictures_Direction",
+            "label": "Movement",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "none",
+                "left",
+                "right",
+                "up",
+                "down",
+                "up-left",
+                "down-left",
+                "up-right",
+                "down-right",
+                "peekaboo",
+                "wiggle",
+                "zoom in",
+                "peekaboo 90",
+                "peekaboo 180",
+                "peekaboo 270",
+                "flag wave",
+                "up once",
+                "down once",
+                "vector",
+                "tile-left",
+                "tile-right",
+                "tile-down",
+                "tile-up"
+            ],
+            "default": "none",
+            "lockable": true,
+            "description": "Direction the image moves across the model. Includes scrolling, peekaboo pop-in effects, wiggle, zoom, flag wave, single-pass movements, and tiling modes."
+        },
+        {
+            "id": "Pictures_Speed",
+            "label": "Movement Speed",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "lockable": true,
+            "min": 0,
+            "max": 200,
+            "description": "How fast the image moves in the chosen direction. Higher values make the image scroll or animate more quickly."
+        },
+        {
+            "id": "Pictures_FrameRateAdj",
+            "label": "Frame Rate Adj",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "lockable": true,
+            "min": 0,
+            "max": 200,
+            "description": "Multiplier for the playback speed of animated GIF frames. Values above 1.0 speed up the animation, values below 1.0 slow it down."
+        },
+        {
+            "id": "Pictures_PixelOffsets",
+            "label": "Offsets In Pixels",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the X and Y center offset values are treated as pixel counts rather than percentages of the model dimensions."
+        },
+        {
+            "id": "Scaling",
+            "label": "Scaling",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "No Scaling",
+                "Scale To Fit",
+                "Scale Keep Aspect Ratio",
+                "Scale Keep Aspect Ratio Crop"
+            ],
+            "default": "No Scaling",
+            "description": "How the image is resized to fit the model. No Scaling uses the original pixel size, Scale To Fit stretches to fill, and the aspect ratio options preserve proportions with or without cropping."
+        },
+        {
+            "id": "Pictures_Shimmer",
+            "label": "Shimmer",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the image flickers on and off on alternating frames, creating a shimmering visual effect."
+        },
+        {
+            "id": "LoopGIF",
+            "label": "Loop Animated GIF",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, an animated GIF restarts from the first frame after reaching the last frame, looping continuously for the duration of the effect."
+        },
+        {
+            "id": "SuppressGIFBackground",
+            "label": "Suppress GIF Background",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, the background color of an animated GIF is treated as transparent, allowing underlying effects to show through."
+        },
+        {
+            "id": "Pictures_TransparentBlackRow",
+            "label": "",
+            "type": "string",
+            "controlType": "custom",
+            "default": "",
+            "description": "Transparent Black checkbox with an inline brightness threshold slider (0-300). When enabled, image pixels at or below the threshold are keyed out as transparent."
+        },
+        {
+            "id": "PicturesXC",
+            "label": "X-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Horizontal offset for the starting position of the image, as a percentage of the model width."
+        },
+        {
+            "id": "Pictures_WrapX",
+            "label": "Wrap X",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the image wraps around horizontally so pixels that scroll off one side reappear on the other."
+        },
+        {
+            "id": "PicturesYC",
+            "label": "Y-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Vertical offset for the starting position of the image, as a percentage of the model height."
+        },
+        {
+            "id": "PicturesEndXC",
+            "label": "X-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "description": "Horizontal offset for the ending position of the image when using the vector movement mode."
+        },
+        {
+            "id": "PicturesEndYC",
+            "label": "Y-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "description": "Vertical offset for the ending position of the image when using the vector movement mode."
+        },
+        {
+            "id": "Pictures_StartScale",
+            "label": "Scaling",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 0,
+            "max": 1000,
+            "description": "Scale factor for the image at the start of the effect, as a percentage. 100 is the original size."
+        },
+        {
+            "id": "Pictures_EndScale",
+            "label": "Scaling",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 0,
+            "max": 1000,
+            "description": "Scale factor for the image at the end of the effect. The image smoothly transitions from the start scale to this value over the effect duration."
+        }
+    ],
+    "groups": [
+        {
+            "type": "section",
+            "columns": 1,
+            "properties": ["Pictures_FilenameBlock"]
+        },
+        {
+            "type": "section",
+            "columns": 1,
+            "properties": ["Pictures_TransparentBlackRow"]
+        },
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Start Position",
+                    "properties": [
+                        "PicturesXC",
+                        "Pictures_WrapX",
+                        "PicturesYC"
+                    ]
+                },
+                {
+                    "label": "End Position",
+                    "properties": [
+                        "PicturesEndXC",
+                        "PicturesEndYC"
+                    ]
+                },
+                {
+                    "label": "Start Scale",
+                    "properties": [
+                        "Pictures_StartScale"
+                    ]
+                },
+                {
+                    "label": "End Scale",
+                    "properties": [
+                        "Pictures_EndScale"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "PicturesXC",
+            "yProperty": "PicturesYC",
+            "wrapX": "Pictures_WrapX"
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "PicturesEndXC",
+            "yProperty": "PicturesEndYC"
+        }
+    ],
+    "visibilityRules": [
+        {
+            "when": {
+                "property": "Pictures_Direction",
+                "equals": "vector"
+            },
+            "enable": [
+                "PicturesEndXC",
+                "PicturesEndYC"
+            ]
+        }
+    ]
+}

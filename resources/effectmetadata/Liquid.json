@@ -1,0 +1,583 @@
+{
+    "effectName": "Liquid",
+    "properties": [
+        {
+            "id": "TopBarrier",
+            "label": "Top Barrier",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Places a solid wall along the top edge of the model that prevents particles from escaping upward."
+        },
+        {
+            "id": "BottomBarrier",
+            "label": "Bottom Barrier",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "Places a solid wall along the bottom edge of the model that prevents particles from falling through."
+        },
+        {
+            "id": "LeftBarrier",
+            "label": "Left Barrier",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Places a solid wall along the left edge of the model that prevents particles from escaping to the left."
+        },
+        {
+            "id": "RightBarrier",
+            "label": "Right Barrier",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Places a solid wall along the right edge of the model that prevents particles from escaping to the right."
+        },
+        {
+            "id": "HoldColor",
+            "label": "Hold Particle Color",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, particles keep the color they were assigned at creation. When disabled, particle colors are not preserved during rendering."
+        },
+        {
+            "id": "MixColors",
+            "label": "Mix Colors",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, particles that touch each other blend their colors together over time using the physics engine's color mixing."
+        },
+        {
+            "id": "ParticleType",
+            "label": "Type",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Powder",
+                "Elastic",
+                "Spring",
+                "Tensile",
+                "Viscous",
+                "Static Pressure",
+                "Water",
+                "Reactive",
+                "Repulsive"
+            ],
+            "default": "Elastic",
+            "description": "Selects the physics behavior of the particles. Each type has different properties: Water flows freely, Elastic particles bounce, Viscous particles stick together, Powder behaves like sand, etc."
+        },
+        {
+            "id": "LifeTime",
+            "label": "Lifetime",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 1000,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "How long each particle lives before disappearing, in hundredths of seconds. A value of 1000 means particles last about 10 seconds. Zero means particles live for the entire effect duration."
+        },
+        {
+            "id": "Size",
+            "label": "Size",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 500,
+            "min": 1,
+            "max": 10000,
+            "description": "Radius of each particle in thousandths of a pixel. Larger values create bigger, blobby particles; smaller values create fine granular particles. Values above 1000 can slow rendering."
+        },
+        {
+            "id": "WarmUpTime",
+            "label": "Warm Up Time",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "divisor": 100,
+            "min": 0,
+            "max": 2500,
+            "description": "How long to run the simulation before the first visible frame, in hundredths of seconds (e.g. 100 = 1 second, 500 = 5 seconds). This lets particles settle into a natural state before the effect begins. Frame-rate independent."
+        },
+        {
+            "id": "Despeckle",
+            "label": "Despeckle Threshold",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "min": 0,
+            "max": 4,
+            "description": "Fills in isolated black pixels surrounded by colored particles. The value is the maximum number of neighboring black pixels allowed before a gap is filled with the average surrounding color."
+        },
+        {
+            "id": "Liquid_Gravity",
+            "label": "Gravity",
+            "type": "float",
+            "controlType": "slider",
+            "default": 10.0,
+            "divisor": 10,
+            "valueCurve": true,
+            "min": -1000,
+            "max": 1000,
+            "description": "Strength of the gravitational force applied to particles. Positive values pull in the direction set by Gravity Angle. Negative values push in the opposite direction."
+        },
+        {
+            "id": "Liquid_GravityAngle",
+            "label": "Gravity Angle",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 360,
+            "description": "Direction of gravity in degrees. 0 pulls downward, 90 pulls to the left, 180 pulls upward, and 270 pulls to the right."
+        },
+        {
+            "id": "Enabled1",
+            "label": "Enabled",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "Enables particle source 1. When disabled, no particles are emitted from this source."
+        },
+        {
+            "id": "X1",
+            "label": "X",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 50,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Horizontal position of particle source 1 as a percentage of the buffer width."
+        },
+        {
+            "id": "Y1",
+            "label": "Y",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Vertical position of particle source 1 as a percentage of the buffer height."
+        },
+        {
+            "id": "Direction1",
+            "label": "Direction",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 270,
+            "valueCurve": true,
+            "min": 0,
+            "max": 360,
+            "description": "Angle in degrees at which particles are emitted from source 1. 0 is right, 90 is up, 180 is left, 270 is down."
+        },
+        {
+            "id": "Velocity1",
+            "label": "Velocity",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Initial speed of particles emitted from source 1. Higher values launch particles faster in the emission direction."
+        },
+        {
+            "id": "Flow1",
+            "label": "Flow",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Number of new particles created per frame from source 1. Higher values produce a denser stream of particles."
+        },
+        {
+            "id": "Liquid_SourceSize1",
+            "label": "Source Size",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Width of the emission area for source 1, spread perpendicular to the emission direction. Zero emits from a point; higher values create a wider spray."
+        },
+        {
+            "id": "FlowMusic1",
+            "label": "Flow Matches Music",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the particle flow rate from source 1 scales with the current music volume level."
+        },
+        {
+            "id": "Enabled2",
+            "label": "Enabled",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Enables particle source 2. When disabled, no particles are emitted from this source."
+        },
+        {
+            "id": "X2",
+            "label": "X",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Horizontal position of particle source 2 as a percentage of the buffer width."
+        },
+        {
+            "id": "Y2",
+            "label": "Y",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 50,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Vertical position of particle source 2 as a percentage of the buffer height."
+        },
+        {
+            "id": "Direction2",
+            "label": "Direction",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 360,
+            "description": "Angle in degrees at which particles are emitted from source 2. 0 is right, 90 is up, 180 is left, 270 is down."
+        },
+        {
+            "id": "Velocity2",
+            "label": "Velocity",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Initial speed of particles emitted from source 2. Higher values launch particles faster in the emission direction."
+        },
+        {
+            "id": "Flow2",
+            "label": "Flow",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Number of new particles created per frame from source 2. Higher values produce a denser stream of particles."
+        },
+        {
+            "id": "Liquid_SourceSize2",
+            "label": "Source Size",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Width of the emission area for source 2, spread perpendicular to the emission direction. Zero emits from a point; higher values create a wider spray."
+        },
+        {
+            "id": "FlowMusic2",
+            "label": "Flow Matches Music",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the particle flow rate from source 2 scales with the current music volume level."
+        },
+        {
+            "id": "Enabled3",
+            "label": "Enabled",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Enables particle source 3. When disabled, no particles are emitted from this source."
+        },
+        {
+            "id": "X3",
+            "label": "X",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 50,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Horizontal position of particle source 3 as a percentage of the buffer width."
+        },
+        {
+            "id": "Y3",
+            "label": "Y",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Vertical position of particle source 3 as a percentage of the buffer height."
+        },
+        {
+            "id": "Direction3",
+            "label": "Direction",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 90,
+            "valueCurve": true,
+            "min": 0,
+            "max": 360,
+            "description": "Angle in degrees at which particles are emitted from source 3. 0 is right, 90 is up, 180 is left, 270 is down."
+        },
+        {
+            "id": "Velocity3",
+            "label": "Velocity",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Initial speed of particles emitted from source 3. Higher values launch particles faster in the emission direction."
+        },
+        {
+            "id": "Flow3",
+            "label": "Flow",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Number of new particles created per frame from source 3. Higher values produce a denser stream of particles."
+        },
+        {
+            "id": "Liquid_SourceSize3",
+            "label": "Source Size",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Width of the emission area for source 3, spread perpendicular to the emission direction. Zero emits from a point; higher values create a wider spray."
+        },
+        {
+            "id": "FlowMusic3",
+            "label": "Flow Matches Music",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the particle flow rate from source 3 scales with the current music volume level."
+        },
+        {
+            "id": "Enabled4",
+            "label": "Enabled",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "Enables particle source 4. When disabled, no particles are emitted from this source."
+        },
+        {
+            "id": "X4",
+            "label": "X",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Horizontal position of particle source 4 as a percentage of the buffer width."
+        },
+        {
+            "id": "Y4",
+            "label": "Y",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 50,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Vertical position of particle source 4 as a percentage of the buffer height."
+        },
+        {
+            "id": "Direction4",
+            "label": "Direction",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 180,
+            "valueCurve": true,
+            "min": 0,
+            "max": 360,
+            "description": "Angle in degrees at which particles are emitted from source 4. 0 is right, 90 is up, 180 is left, 270 is down."
+        },
+        {
+            "id": "Velocity4",
+            "label": "Velocity",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Initial speed of particles emitted from source 4. Higher values launch particles faster in the emission direction."
+        },
+        {
+            "id": "Flow4",
+            "label": "Flow",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 100,
+            "valueCurve": true,
+            "min": 0,
+            "max": 1000,
+            "description": "Number of new particles created per frame from source 4. Higher values produce a denser stream of particles."
+        },
+        {
+            "id": "Liquid_SourceSize4",
+            "label": "Source Size",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 0,
+            "valueCurve": true,
+            "min": 0,
+            "max": 100,
+            "description": "Width of the emission area for source 4, spread perpendicular to the emission direction. Zero emits from a point; higher values create a wider spray."
+        },
+        {
+            "id": "FlowMusic4",
+            "label": "Flow Matches Music",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the particle flow rate from source 4 scales with the current music volume level."
+        }
+    ],
+    "groups": [
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Top",
+                    "properties": [
+                        "Enabled1",
+                        "X1",
+                        "Y1",
+                        "Direction1",
+                        "Velocity1",
+                        "Flow1",
+                        "Liquid_SourceSize1",
+                        "FlowMusic1"
+                    ]
+                },
+                {
+                    "label": "Lef",
+                    "properties": [
+                        "Enabled2",
+                        "X2",
+                        "Y2",
+                        "Direction2",
+                        "Velocity2",
+                        "Flow2",
+                        "Liquid_SourceSize2",
+                        "FlowMusic2"
+                    ]
+                },
+                {
+                    "label": "Bot",
+                    "properties": [
+                        "Enabled3",
+                        "X3",
+                        "Y3",
+                        "Direction3",
+                        "Velocity3",
+                        "Flow3",
+                        "Liquid_SourceSize3",
+                        "FlowMusic3"
+                    ]
+                },
+                {
+                    "label": "Rig",
+                    "properties": [
+                        "Enabled4",
+                        "X4",
+                        "Y4",
+                        "Direction4",
+                        "Velocity4",
+                        "Flow4",
+                        "Liquid_SourceSize4",
+                        "FlowMusic4"
+                    ]
+                }
+            ]
+        }
+    ],
+    "visibilityRules": [
+        {
+            "when": { "property": "Enabled1", "equals": true },
+            "enable": [
+                "X1", "Y1", "Direction1", "Velocity1", "Flow1",
+                "Liquid_SourceSize1", "FlowMusic1"
+            ]
+        },
+        {
+            "when": { "property": "Enabled2", "equals": true },
+            "enable": [
+                "X2", "Y2", "Direction2", "Velocity2", "Flow2",
+                "Liquid_SourceSize2", "FlowMusic2"
+            ]
+        },
+        {
+            "when": { "property": "Enabled3", "equals": true },
+            "enable": [
+                "X3", "Y3", "Direction3", "Velocity3", "Flow3",
+                "Liquid_SourceSize3", "FlowMusic3"
+            ]
+        },
+        {
+            "when": { "property": "Enabled4", "equals": true },
+            "enable": [
+                "X4", "Y4", "Direction4", "Velocity4", "Flow4",
+                "Liquid_SourceSize4", "FlowMusic4"
+            ]
+        }
+    ]
+}

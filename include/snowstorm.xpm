@@ -1,0 +1,37 @@
+/* XPM */
+static const char *snowstorm[] = {
+/* width height num_colors chars_per_pixel */
+"16 16 13 1",
+/* colors */
+"  c #000000",
+". c #00ff26",
+"X c #33ff52",
+"o c #60ff78",
+"O c #91fea2",
+"+ c #bbffc5",
+"@ c #0084ff",
+"# c #2897ff",
+"$ c #d4ffda",
+"% c #57aeff",
+"& c #91cafe",
+"* c #b9ddff",
+"= c #e4f1ff",
+/* pixels */
+"   .XoO         ",
+"       + @#     ",
+"        $  %    ",
+"  @         &   ",
+" #   oX.     *= ",
+" %  O           ",
+" &  +           ",
+"  * $   #%&*    ",
+"   =   @    =  =",
+"               *",
+"$             & ",
+"+  #%&*=  X  %  ",
+"O @       .  #  ",
+"o         o  @  ",
+" X.       O     ",
+"        $+      "
+};
+

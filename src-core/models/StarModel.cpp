@@ -1,0 +1,510 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "StarModel.h"
+#include "xLightsVersion.h"
+#include "UtilFunctions.h"
+#include "../graphics/IModelPreview.h"
+#include "../XmlSerializer/XmlNodeKeys.h"
+
+#include <math.h>
+
+std::vector<std::string> StarModel::STAR_BUFFER_STYLES;
+
+StarModel::StarModel(const ModelManager& manager) : ModelWithScreenLocation(manager)
+{
+    DisplayAs = DisplayAsType::Star;
+}
+
+StarModel::~StarModel()
+{
+}
+
+// Converts from the old start position formats into the new one
+std::string StarModel::ConvertFromDirStartSide()
+{
+    if (GetDirection() == "L" && GetStartSide() == "B") {
+        return "Bottom Ctr-CW";
+    }
+    if (GetDirection() == "L") {
+        return "Top Ctr-CCW";
+    }
+
+    if (GetStartSide() == "B") {
+        return "Bottom Ctr-CCW";
+    }
+
+    return "Top Ctr-CW";
+}
+
+const std::vector<std::string> &StarModel::GetBufferStyles() const {
+    struct Initializer {
+        Initializer() {
+            STAR_BUFFER_STYLES = Model::DEFAULT_BUFFER_STYLES;
+            STAR_BUFFER_STYLES.push_back("Layer Star");
+        }
+    };
+    static Initializer ListInitializationGuard;
+    return STAR_BUFFER_STYLES;
+}
+
+void StarModel::GetBufferSize(const std::string& tp, const std::string& camera, const std::string& transform, int& BufferWi, int& BufferHi, int stagger) const
+{
+    std::string type = tp.starts_with("Per Model ") ? tp.substr(10) : tp;
+    if (type == "Layer Star") {
+        BufferHi = GetNumStrands();
+        BufferWi = 0;
+        for (int x = 0; x < BufferHi; x++) {
+            int w = GetStarSize(x);
+            if (w > BufferWi) {
+                BufferWi = w;
+            }
+        }
+        AdjustForTransform(transform, BufferWi, BufferHi);
+    }
+    else if (SingleChannel || SingleNode) {
+        BufferHi = GetNumStrands();
+        BufferWi = 1;
+        AdjustForTransform(transform, BufferWi, BufferHi);
+    }
+    else {
+        Model::GetBufferSize(type, camera, transform, BufferWi, BufferHi, stagger);
+    }
+}
+
+void StarModel::InitRenderBufferNodes(const std::string& tp,
+    const std::string& camera,
+    const std::string& transform,
+    std::vector<NodeBaseClassPtr>& newNodes, int& BufferWi, int& BufferHi, int stagger, bool deep) const
+{
+    std::string type = tp.starts_with("Per Model ") ? tp.substr(10) : tp;
+    if (type == "Layer Star") {
+        BufferHi = GetNumStrands();
+        BufferWi = 0;
+        for (int x = 0; x < BufferHi; x++) {
+            int w = GetStarSize(x);
+            if (w > BufferWi) {
+                BufferWi = w;
+            }
+        }
+        for (const auto& it : Nodes) {
+            newNodes.push_back(NodeBaseClassPtr(it.get()->clone()));
+        }
+
+        int start = 0;
+        for (int cur = 0; cur < (int)GetLayerSizeCount(); cur++) {
+
+            int layer = cur;
+            if (!Contains(_starStartLocation, "Inside")) {
+                layer = (GetLayerSizeCount() - cur) - 1;
+            }
+
+            int numlights = GetLayerSize(layer);
+            if (numlights == 0) {
+                continue;
+            }
+
+            for (size_t cnt = 0; cnt < (size_t)numlights; cnt++) {
+                int n;
+                if (!SingleNode) {
+                    n = cnt + start;
+                } else {
+                    n = cur;
+                }
+                if (n >= (int)Nodes.size()) {
+                    n = Nodes.size() - 1;
+                }
+                for (auto& it : newNodes[n]->Coords) {
+                    it.bufY = layer;
+                    it.bufX = cnt * BufferWi / numlights;
+                }
+            }
+            start += numlights;
+        }
+        ApplyTransform(transform, newNodes, BufferWi, BufferHi);
+    }
+    else if (SingleChannel || SingleNode) {
+        // I am not 100% about this change but it makes sense to me
+        // While the custom model may have a height and width if it is single channel then the render buffer really should be Nodes x 1
+        // and all nodes should point to one cell.
+        // Without this change effects like twinkle do really strange things
+        Model::InitRenderBufferNodes(type, camera, transform, newNodes, BufferWi, BufferHi, stagger);
+        BufferHi = Nodes.size();
+        BufferWi = 1;
+        int x = 0;
+        for (auto& it : Nodes) {
+            for (auto& it2 : it->Coords) {
+                it2.bufX = 0;
+                it2.bufY = x;
+            }
+            x++;
+        }
+        return;
+    }
+    else {
+        Model::InitRenderBufferNodes(type, camera, transform, newNodes, BufferWi, BufferHi, stagger);
+    }
+}
+
+int StarModel::GetStrandLength(int strand) const
+{
+    if (SingleNode) {
+        return 1;
+    }
+    else {
+        if (Contains(_starStartLocation, "Inside")) {
+            return GetStarSize(GetLayerSizeCount() - 1 - strand);
+        }
+        else {
+            return GetStarSize(strand);
+        }
+    }
+}
+
+int StarModel::MapToNodeIndex(int strand, int node) const
+{
+    int idx = 0;
+    for (int x = GetLayerSizeCount() - 1; x > strand; x--) {
+        idx += GetStrandLength(x);
+    }
+    idx += node;
+    return idx;
+}
+
+int StarModel::GetNumStrands() const {
+    return GetLayerSizeCount();
+}
+
+int StarModel::GetMappedStrand(int strand) const {
+    if (GetLayerSizeCount() != 0) {
+        return GetLayerSizeCount() - strand - 1;
+    }
+    return strand;
+}
+
+bool StarModel::AllNodesAllocated() const
+{
+    int allocated = 0;
+    for (const auto& it : GetLayerSizes()) {
+        allocated += it;
+    }
+
+    return (allocated == (int)GetNodeCount());
+}
+
+// _starPoints is number of points
+// top left=top ccw, top right=top cw, bottom left=bottom cw, bottom right=bottom ccw
+
+StarModel::xlRealPoint StarModel::GetPointOnCircle(double radius, double angle)
+{
+    return xlRealPoint(radius * std::sin(angle), radius * std::cos(angle));
+}
+
+double StarModel::LineLength(const xlRealPoint& start, const xlRealPoint& end)
+{
+    return std::sqrt((end.x - start.x) * (end.x - start.x) + (end.y - start.y) * (end.y - start.y));
+}
+
+StarModel::xlRealPoint StarModel::GetPositionOnLine(const xlRealPoint& start, const xlRealPoint& end, double distance)
+{
+    if (LineLength(start, end) == 0) return start;
+    double t = distance / LineLength(start, end);
+    return xlRealPoint(((1.0 - t) * start.x + t * end.x), ((1.0 - t) * start.y + t * end.y));
+}
+
+int StarModel::NodesPerString() const
+{
+    if (SingleNode) {
+        return 1;
+    }
+    int ts = GetSmartTs();
+    if (ts <= 1) {
+        return _nodesPerString;
+    }
+    return _nodesPerString * ts;
+}
+
+void StarModel::InitModel()
+{
+    if (_starPoints < 2) _starPoints = 2; // need at least 2 arms
+    SetNodeCount(_numStrings, _nodesPerString, rgbOrder);
+
+    // Found a problem where a user had multiple layer sizes but just 1 string and set to RGB dumb string type.
+    // I think the commented out code would fix this but I am not sure it would work in all situations.
+    // It needs more testing and late november is not a good time to be doing it. So throwing an assertion in
+    // If this fires for us a lot when there is nothing wrong with our models then we will know the code is bad and we wont implement it.
+    // Maybe you can help fix the condition at that time ... rather than just commenting out the assert.
+    // assert(starSizes.size() <= Nodes.size());
+    //if (starSizes.size() > Nodes.size())
+    //{
+    //    starSizes.resize(Nodes.size());
+    //}
+
+    // stars are drawn using pairs of circles. The outer radius touches the edge of the grid.
+    // the inside is proportionate to the ratio
+    // each layer is then applied inside the prior one by some factor
+    // the radius of the outer circle starts are bufferWi / 2
+
+    int numlights = _numStrings * _nodesPerString;
+    if (numlights == 0) return;
+    if (GetLayerSizeCount() == 0) {
+        SetLayerSizeCount(1);
+    }
+    if (GetLayerSizeCount() == 1) {
+        SetLayerSize(0, numlights);
+    }
+
+    int maxLightsOnLayer = 0;
+    for (int l = 0; l < (int)GetLayerSizeCount(); l++) {
+        // we inflate a layer for every layer outside it by 1 / number of layers ... so 5th layer of 10 should be inflated by 50%
+        int layersoutside = GetLayerSizeCount() - l - 1;
+        maxLightsOnLayer = std::max(maxLightsOnLayer, 1 + (int)((float)GetLayerSize(l) * (1.0 + ((float)layersoutside / (float)GetLayerSizeCount()))));
+    }
+    SetBufferSize(maxLightsOnLayer, maxLightsOnLayer);
+
+    double outerRadius = (double)BufferWi / 2.0; // stars are 2 circles ... and inner and an outer with lines travelling between them
+    if (_starRatio < 1) _starRatio = 1;
+    double innerRadius = outerRadius / _starRatio;
+    int layerCount = GetLayerSizeCount();
+    double layerRadiusDelta = 0;
+    if (layerCount > 1) {
+        if (_innerPercent == -1) {
+            _innerPercent = 100.0f / layerCount;
+        }
+        layerRadiusDelta = (outerRadius * (float)(100.0f-_innerPercent)) / (100.0f * ((float)layerCount - 1.0f)); // space between the outer layer radii
+    }
+    if (_starPoints == 0) _starPoints = 1;
+    double pointAngleGap = (M_PI * 2.0) / _starPoints;
+    double directionUnit = Contains(_starStartLocation, "-CCW") ? -1.0 : 1.0; // which way the angle should be applied
+    double startAngle;
+    if (Contains(_starStartLocation, "Top")) { // head
+        startAngle = (M_PI * 2.0 * 0.0) / 4.0;
+    } else if (Contains(_starStartLocation, "Bottom Ctr")) { // crotch
+        startAngle = (M_PI * 2.0 * 2.0) / 4.0;
+    } else if (Contains(_starStartLocation, "Left")) { // left leg
+        startAngle = (M_PI * 2.0 * 2.0) / 4.0;
+        if (_starPoints % 2 == 1) {
+            startAngle += pointAngleGap / 2.0;
+        }
+    } else { // Right leg
+        startAngle = (M_PI * 2.0 * 2.0) / 4.0;
+        if (_starPoints % 2 == 1) {
+            startAngle -= pointAngleGap / 2.0;
+        }
+    }
+    int starSegments = 2 * _starPoints;
+    int channelsPerNode = GetNodeChannelCount(StringType);
+    int coordsPerNode = GetCoordCount(0);
+    if (coordsPerNode == 0) return;
+
+    int startLayer = GetLayerSizeCount() - 1;
+    int endLayer = -1;
+    int layerIncr = -1;
+    if (Contains(_starStartLocation, "Inside")) {
+        // when inside we process the layers in reverse
+        startLayer = 0;
+        endLayer = GetLayerSizeCount();
+        layerIncr = 1;
+        outerRadius -= layerRadiusDelta * (GetLayerSizeCount() - 1);
+        innerRadius = outerRadius / _starRatio;
+        layerRadiusDelta *= -1;
+    }
+
+    uint32_t chan = 0;
+    int currentNode = 0;
+
+    if (!SingleNode) {
+        for (int l = startLayer; l != endLayer; l+= layerIncr) {
+
+            if (currentNode >= (int)Nodes.size()) break;
+
+            int layerNodes = GetLayerSize(l);
+            int endNodeForLayer = currentNode + layerNodes;
+
+            if (layerNodes == 0) continue;
+
+            bool startOuter = !Contains(_starStartLocation, "Bottom Ctr");
+
+            // segments are all the same length so i can calculate length once
+            xlRealPoint start = GetPointOnCircle(startOuter ? outerRadius : innerRadius, startAngle);
+            xlRealPoint end = GetPointOnCircle(startOuter ? innerRadius : outerRadius, startAngle + (pointAngleGap / 2.0));
+            double segmentLength = LineLength(start, end);
+            double totalSegmentLength = starSegments * segmentLength;
+            double coordGap = totalSegmentLength / (layerNodes * coordsPerNode);
+
+            double curPos = 0; // This is our position along the stretched out lines of the star
+            double curAngle = startAngle; // This is the angle on the circle of the starting point for each segment
+            double segStartLen = 0;
+            double segEndLen = 0;
+            for (int s = 0; s < starSegments; s++) {
+
+                if (currentNode >= (int)Nodes.size()) break;
+
+                start = GetPointOnCircle(startOuter ? outerRadius : innerRadius, curAngle);
+                end = GetPointOnCircle(startOuter ? innerRadius : outerRadius, curAngle + (pointAngleGap * directionUnit) / 2.0);
+                segStartLen = segEndLen;
+                segEndLen = segStartLen + segmentLength;
+                if (s == starSegments - 1) {
+                    // last segment so beware rounding issues ... so bump it slightly
+                    segEndLen += 0.001;
+                }
+
+                while (curPos < segEndLen && currentNode < endNodeForLayer) {
+
+                    int currentString = currentNode / _nodesPerString;
+                    int nodeInString = currentNode % _nodesPerString;
+                    if (nodeInString == 0 && currentString < GetNumStrings()) {
+                        chan = stringStartChan[currentString];
+                    }
+                    Nodes[currentNode]->ActChan = chan;
+
+                    for (int c = 0; c < coordsPerNode; c++) {
+                        xlRealPoint point = GetPositionOnLine(start, end, curPos - segStartLen);
+
+                        Nodes[currentNode]->Coords[c].bufX = point.x + BufferWi / 2;
+                        Nodes[currentNode]->Coords[c].bufY = point.y + BufferHt / 2 - 1;
+
+                        Nodes[currentNode]->Coords[c].screenX = point.x;
+                        Nodes[currentNode]->Coords[c].screenY = point.y;
+
+                        curPos += coordGap;
+                    }
+
+                    chan += channelsPerNode;
+
+
+                    currentNode++;
+                    if (currentNode >= (int)Nodes.size()) break;
+                }
+
+                // move to the next arm
+                curAngle += (pointAngleGap * directionUnit) / 2.0;
+                startOuter = !startOuter;
+            }
+
+            // step in
+            outerRadius -= layerRadiusDelta;
+            innerRadius = outerRadius / _starRatio;
+        }
+
+        // handle any left over nodes
+        for (int n = currentNode; n < (int)Nodes.size(); n++) {
+            int currentString = n / _nodesPerString;
+            int nodeInString = n % _nodesPerString;
+            if (nodeInString == 0) {
+                chan = stringStartChan[currentString];
+            }
+            Nodes[n]->ActChan = chan;
+
+            for (int c = 0; c < coordsPerNode; c++) {
+                Nodes[n]->Coords[c].bufX = 0;
+                Nodes[n]->Coords[c].bufY = 0;
+            }
+
+            if (!SingleNode) {
+                chan += channelsPerNode;
+            }
+        }
+    } else {
+        for (int l = startLayer; l != endLayer; l += layerIncr) {
+
+            xlPoint lastCoord; // we remember this so any excess coords are placed with the last coord
+
+            if (currentNode >= (int)Nodes.size()) break;
+
+            int layerNodes = 1;
+
+            // we need to use the min of layer size and string length
+            int coordsPerNode = std::min(GetLayerSize(l), (int)GetCoordCount(currentNode));
+            if (coordsPerNode == 0) continue;
+
+            chan = stringStartChan[currentNode];
+
+            bool startOuter = !Contains(_starStartLocation, "Bottom Ctr");
+
+            // segments are all the same length so i can calculate length once
+            xlRealPoint start = GetPointOnCircle(startOuter ? outerRadius : innerRadius, startAngle);
+            xlRealPoint end = GetPointOnCircle(startOuter ? innerRadius : outerRadius, startAngle + (pointAngleGap / 2.0));
+            double segmentLength = LineLength(start, end);
+            double totalSegmentLength = starSegments * segmentLength;
+            double coordGap = totalSegmentLength / (layerNodes * coordsPerNode);
+
+            int currentCoord = 0;
+            double curPos = 0; // This is our position along the stretched out lines of the star
+            double curAngle = startAngle; // This is the angle on the circle of the starting point for each segment
+            for (int s = 0; s < starSegments; s++) {
+
+                if (currentCoord >= coordsPerNode) break;
+
+                start = GetPointOnCircle(startOuter ? outerRadius : innerRadius, curAngle);
+                end = GetPointOnCircle(startOuter ? innerRadius : outerRadius, curAngle + (pointAngleGap * directionUnit) / 2.0);
+                double segStartLen = s * segmentLength;
+                double segEndLen = segStartLen + segmentLength;
+
+                while (curPos < segEndLen) {
+
+                    Nodes[currentNode]->ActChan = chan;
+
+                    xlRealPoint point = GetPositionOnLine(start, end, curPos - segStartLen);
+
+                    Nodes[currentNode]->Coords[currentCoord].bufX = point.x + BufferWi / 2;
+                    Nodes[currentNode]->Coords[currentCoord].bufY = point.y + BufferHt / 2 - 1;
+                    Nodes[currentNode]->Coords[currentCoord].screenX = point.x;
+                    Nodes[currentNode]->Coords[currentCoord].screenY = point.y;
+                    lastCoord = xlPoint(Nodes[currentNode]->Coords[currentCoord].bufX, Nodes[currentNode]->Coords[currentCoord].bufY);
+
+                    curPos += coordGap;
+
+                    currentCoord++;
+                    if (currentCoord >= coordsPerNode) break;
+                }
+
+                // move to the next arm
+                curAngle += (pointAngleGap * directionUnit) / 2.0;
+                startOuter = !startOuter;
+            }
+
+            coordsPerNode = GetCoordCount(currentNode);
+
+            // handle any left over nodes
+            for (int c = currentCoord; c < coordsPerNode; c++) {
+                Nodes[currentNode]->ActChan = chan;
+
+                Nodes[currentNode]->Coords[c].bufX = lastCoord.x;
+                Nodes[currentNode]->Coords[c].bufY = lastCoord.y;
+                Nodes[currentNode]->Coords[c].screenX = lastCoord.x - BufferWi / 2;
+                Nodes[currentNode]->Coords[c].screenY = lastCoord.y - BufferHt / 2;
+            }
+
+            currentNode++;
+
+            // step in
+            outerRadius -= layerRadiusDelta;
+            innerRadius = outerRadius / _starRatio;
+        }
+    }
+    GetModelScreenLocation().SetRenderSize(BufferWi, BufferHt, GetModelScreenLocation().GetRenderDp());
+    screenLocation.RenderDp = 10.0f;  // give the bounding box a little depth
+}
+
+
+void StarModel::OnLayerSizesChange(bool countChanged)
+{
+    // if string count is 1 then adjust nodes per string to match sum of nodes
+    if (_numStrings == 1) {
+        _nodesPerString = (int)GetLayerSizesTotalNodes();
+        IncrementChangeCount();
+        AddASAPWork(OutputModelManager::WORK_RELOAD_MODEL_CHANGE |
+                    OutputModelManager::WORK_RELOAD_MODELLIST |
+                    OutputModelManager::WORK_CALCULATE_START_CHANNELS |
+                    OutputModelManager::WORK_MODELS_REWORK_STARTCHANNELS |
+                    OutputModelManager::WORK_RELOAD_PROPERTYGRID, "StarModel::OnLayerSizesChange");
+    }
+}

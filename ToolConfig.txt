@@ -1,0 +1,8 @@
+xLights build instructions
+------------------------------------------------------------------------------
+
+xLights can be built and run on Linux, Mac OS/X, or Windows.
+
+See README.linux, README.osx, or README.windows for specific instructions
+for each Operating System.
+

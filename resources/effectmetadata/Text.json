@@ -1,0 +1,266 @@
+{
+    "effectName": "Text",
+    "properties": [
+        {
+            "id": "Text",
+            "label": "Text",
+            "description": "The text string to display. Supports multiple lines and special tokens for countdown modes. When non-empty, the file picker and lyric track are disabled.",
+            "type": "string",
+            "controlType": "text",
+            "default": ""
+        },
+        {
+            "id": "Text_File_Row",
+            "label": "From File",
+            "description": "Path to a text file whose contents are displayed instead of the text field. Each line in the file is treated as a separate text line. Disabled when the Text field above is non-empty.",
+            "type": "string",
+            "controlType": "custom",
+            "default": ""
+        },
+        {
+            "id": "Text_LyricTrack",
+            "label": "From Lyrics",
+            "description": "Selects a lyric timing track to use as the text source. The current lyric phrase or word is displayed at each point in time. Disabled when Text or From File is set.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "dynamicOptions": "lyricTimingTracks",
+            "default": ""
+        },
+        {
+            "id": "Text_Font",
+            "label": "Font",
+            "description": "The font face, size, and style used to render the text.",
+            "type": "font",
+            "controlType": "fontpicker",
+            "default": "",
+            "lockable": true
+        },
+        {
+            "id": "Text_Font_XL_Row",
+            "label": "XL Font",
+            "description": "Selects an xLights bitmap font (under fonts/) to use instead of the OS font. 'Use OS Fonts' falls back to the Font picker above.",
+            "type": "enum",
+            "controlType": "custom",
+            "default": "Use OS Fonts",
+            "options": [
+                "Use OS Fonts",
+                "5-5x5 Thin",
+                "5-5x5 Mono",
+                "6-5x6 Thin",
+                "6-5x6 Thin Vertical",
+                "6-6x6 Thin",
+                "6-6x6 Thin Vertical",
+                "7-7x9 Thin",
+                "7-7x9 Thin Narrow",
+                "7-7x9 Bold",
+                "8-8x8 Thin",
+                "8-8x8 Thin Vertical",
+                "10-12x12 Bold",
+                "10-12x12 Bold Vertical",
+                "10-12x12 Thin",
+                "10-12x12 Thin Vertical",
+                "12-15x15 Bold",
+                "12-15x15 Bold Vertical"
+            ]
+        },
+        {
+            "id": "Text_Dir",
+            "label": "Movement",
+            "description": "Direction the text moves across the model. Options include scrolling left/right/up/down, diagonal, wavey motion, word-flip, and vector-based movement between start and end positions.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "none",
+                "left",
+                "right",
+                "up",
+                "down",
+                "vector",
+                "up-left",
+                "down-left",
+                "up-right",
+                "down-right",
+                "wavey",
+                "word-flip",
+                "left-right",
+                "up-down"
+            ],
+            "default": "none",
+            "lockable": true
+        },
+        {
+            "id": "TextToCenter",
+            "label": "Move to center",
+            "description": "When enabled, the text movement stops when the text reaches the center of the model rather than continuing off screen. Only meaningful when Movement is not 'none'.",
+            "tooltip": "Move to center and stop",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "TextNoRepeat",
+            "label": "Do not repeat",
+            "description": "When enabled, the text scrolls through once and then stops instead of repeating in a loop. Only meaningful when Movement is not 'none'.",
+            "tooltip": "Do not cycle the text.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Text_Speed",
+            "label": "Speed",
+            "description": "How fast the text scrolls across the model. Higher values produce faster movement.",
+            "type": "int",
+            "controlType": "slider",
+            "settingPrefix": "TEXTCTRL",
+            "default": 10,
+            "min": 0,
+            "max": 100
+        },
+        {
+            "id": "Text_Effect",
+            "label": "Effect",
+            "description": "Text rendering style. Normal draws text horizontally; other options rotate or orient the text vertically.",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "normal",
+                "vert text up",
+                "vert text down",
+                "rotate up 45",
+                "rotate up 90",
+                "rotate down 45",
+                "rotate down 90"
+            ],
+            "default": "normal",
+            "lockable": true
+        },
+        {
+            "id": "Text_Count",
+            "label": "Count down",
+            "description": "Enables countdown mode. The text field value is used as the target, and the displayed text shows the remaining time in the selected format.",
+            "tooltip": "seconds: enter time in seconds\nminutes seconds: enter time as mm:ss. To prepend or append text to the counter, delimit the time with / (The next show begins in /15:30/! Stay Tuned.)\n\nto date 'd h m s'\nto date 'h:m:s'\nto date 'm' or 's'\nto date 's'\n\nThese options count down to given date based on system date and time. Enter Date in on of the following formats: \nFri, 25 Dec 2015 00:00:00 +0100\nFri, 25 Dec 2015 00:00:00 CST\nFri, 25 Dec 2015 00:00:00 MST\n\n\n!to date!%fmt\n\nThis option allows you to choose the output format. i.e. days only.\nEnter Date in the following format to display days only:\n/Fri, 25 Dec 2015 00:00:00 +0100/ %D",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "none",
+                "seconds",
+                "minutes seconds",
+                "to date 'd h m s'",
+                "to date 'h:m:s'",
+                "to date 'm' or 's'",
+                "to date 's'",
+                "!to date!%fmt"
+            ],
+            "default": "none",
+            "lockable": true
+        },
+        {
+            "id": "Text_PixelOffsets",
+            "label": "Offsets In Pixels",
+            "description": "When enabled, the X and Y position values are interpreted as pixel offsets rather than percentage-based positions.",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Text_Color_PerWord",
+            "label": "Color Per Word",
+            "description": "When enabled, each word in the text is drawn using a different color from the palette, cycling through the available colors.",
+            "tooltip": "Change color after each word if checked",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false
+        },
+        {
+            "id": "Text_XStart",
+            "label": "X-axis Start",
+            "description": "Horizontal starting position of the text. Used as the origin for vector movement or as a static offset when movement is none.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -200,
+            "max": 200
+        },
+        {
+            "id": "Text_YStart",
+            "label": "Y-axis Start",
+            "description": "Vertical starting position of the text. Used as the origin for vector movement or as a static offset when movement is none.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -200,
+            "max": 200
+        },
+        {
+            "id": "Text_XEnd",
+            "label": "X-axis End",
+            "description": "Horizontal ending position for vector movement mode. The text moves from the start position to this position over the effect duration.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -200,
+            "max": 200
+        },
+        {
+            "id": "Text_YEnd",
+            "label": "Y-axis End",
+            "description": "Vertical ending position for vector movement mode. The text moves from the start position to this position over the effect duration.",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -200,
+            "max": 200
+        }
+    ],
+    "groups": [
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Start Position",
+                    "properties": [
+                        "Text_XStart",
+                        "Text_YStart"
+                    ]
+                },
+                {
+                    "label": "End Position",
+                    "properties": [
+                        "Text_XEnd",
+                        "Text_YEnd"
+                    ]
+                }
+            ]
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "Text_XStart",
+            "yProperty": "Text_YStart"
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "Text_XEnd",
+            "yProperty": "Text_YEnd"
+        }
+    ],
+    "visibilityRules": [
+        {
+            "when": { "property": "Text_Dir", "notEquals": "none" },
+            "enable": [ "TextToCenter", "TextNoRepeat" ]
+        },
+        {
+            "when": { "property": "Text_Dir", "equals": "none" },
+            "disable": [ "TextToCenter", "TextNoRepeat" ]
+        },
+        {
+            "when": { "property": "Text", "notEquals": "" },
+            "disable": [ "Text_File_Row", "Text_LyricTrack" ]
+        },
+        {
+            "when": { "property": "Text_File_Row", "notEquals": "" },
+            "disable": [ "Text_LyricTrack" ]
+        }
+    ]
+}

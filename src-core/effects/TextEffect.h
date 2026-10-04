@@ -1,0 +1,72 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "RenderableEffect.h"
+
+#include <memory>
+#include <vector>
+
+class TextDrawingContext;
+class FontManager;
+
+struct CachedRGBAImage;
+
+class TextEffect : public RenderableEffect
+{
+public:
+    TextEffect(int id);
+    virtual ~TextEffect();
+    virtual void Render(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer) override;
+    virtual FrameParallelism GetFrameParallelism(const SettingsMap& settings) const override;
+    virtual bool CanBeRandom() override { return false; }
+    virtual bool SupportsRenderCache(const SettingsMap& settings) const override;
+
+    virtual bool needToAdjustSettings(const std::string& version) override { return RenderableEffect::needToAdjustSettings(version); }
+    virtual void adjustSettings(const std::string& version, Effect* effect, bool removeDefaults = true) override;
+    virtual bool needsLoadFiles() const override { return true; }
+    virtual void loadFiles(Effect* effect) override;
+    virtual std::list<std::string> CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache) override;
+    virtual bool AppropriateOnNodes() const override { return false; }
+    virtual std::list<std::string> GetFileReferences(RenderContext* ctx, Model* model, const SettingsMap& SettingsMap) const override;
+    virtual bool CleanupFileLocations(RenderContext* ctx, SettingsMap& SettingsMap) override;
+
+    // Cached from Text.json by OnMetadataLoaded().
+    static int sSpeedDefault;
+    static int sXStartDefault;
+    static int sYStartDefault;
+    static int sXEndDefault;
+    static int sYEndDefault;
+    static bool sPixelOffsetsDefault;
+    static bool sColorPerWordDefault;
+
+protected:
+    virtual void OnMetadataLoaded() override;
+private:
+    void FormatCountdown(int Countdown, int state, std::string& Line, RenderBuffer& buffer, std::string& msg, std::string Line_orig) const;
+    std::vector<std::string> WordSplit(const std::string& text) const;
+    std::string FlipWord(const SettingsMap& settings, const std::string& text, RenderBuffer& buffer) const;
+
+    void ReplaceVaribles(std::string& msg, RenderBuffer& buffer) const;
+
+    std::shared_ptr<const CachedRGBAImage> RenderTextLine(RenderBuffer& buffer,
+        TextDrawingContext* dc,
+        const std::string& Line_orig,
+        const std::string& fontString,
+        int dir,
+        bool center, bool norepeat, int Effect, int Countdown, int tspeed,
+        int startx, int starty, int endx, int endy,
+        bool isPixelBased, bool perWord) const;
+    void RenderXLText(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer);
+    void AddMotions(int& OffsetLeft, int& OffsetTop, const SettingsMap& settings, RenderBuffer& buffer,
+        int txtLen, int endx, int endy, bool pixelOffsets, int PreOffsetLeft, int PreOffsetTop, int text_len, int char_width, int char_height, bool vertical, bool rotate_90, int numLines = 1, int caps_height = -1) const;
+    FontManager& font_mgr;
+};

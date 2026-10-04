@@ -1,0 +1,598 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
+#include <ranges>
+#include <utility>
+
+#include "UtilFunctions.h"
+
+class EffectManager;
+
+class SettingValue : public std::string {
+    enum Type : uint64_t {
+        STRING = 0, // == no cached conversion
+        BOOLEAN = 1,
+        INT = 2,
+        FLOAT = 3,
+    };
+    // Packed lazy-parse cache: low 8 bits = Type tag, upper 32 bits = the
+    // value's bit pattern, in ONE atomic word.  The per-model parallel
+    // render shares a single SettingsMap across threads, so the previous
+    // separate curType + union could publish the tag before the value (or
+    // tear across a concurrent re-parse) and hand an effect a garbage
+    // parameter on the frame that first read it.  Doubles don't fit the
+    // packed word and are rare in render paths, so getDouble just parses
+    // every call.  Concurrent first-reads may both parse, but they store
+    // the identical packed word — benign.
+    mutable std::atomic<uint64_t> _cache{ 0 };
+
+    static constexpr uint64_t pack(Type t, uint32_t bits) {
+        return ((uint64_t)bits << 32) | (uint64_t)t;
+    }
+
+public:
+    SettingValue() :
+        std::string("") {}
+    SettingValue(const std::string& s) :
+        std::string(s) {}
+    SettingValue(const char* s) :
+        std::string(s) {}
+    SettingValue(const SettingValue& v) :
+        std::string(v) {
+        _cache.store(v._cache.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
+    // Invalidate the cached type-converted value whenever the string
+    // is reassigned via an inherited std::string op. Without this,
+    // `getBool()` / `getInt()` / etc. cache their result on first call
+    // and any subsequent in-place reassignment (e.g. desktop panels
+    // rebuild via `map.Parse`, but iPad's direct `map[key] = "0"`
+    // palette writes) returns the stale cached value. Desktop avoids
+    // this by Parse-ing a fresh map each save; iPad needs the fix
+    // at this layer so direct mutation stays correct.
+    SettingValue& operator=(const std::string& s) {
+        std::string::operator=(s);
+        _cache.store(0, std::memory_order_relaxed);
+        return *this;
+    }
+    SettingValue& operator=(const char* s) {
+        std::string::operator=(s);
+        _cache.store(0, std::memory_order_relaxed);
+        return *this;
+    }
+    SettingValue& operator=(const SettingValue& v) {
+        if (this != &v) {
+            std::string::operator=(v);
+            _cache.store(v._cache.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        return *this;
+    }
+
+    bool getBool() const {
+        uint64_t c = _cache.load(std::memory_order_relaxed);
+        if ((c & 0xFF) != BOOLEAN) {
+            // Accept both settings conventions: "1"/"0" (checkboxes) and
+            // "True"/"False" (e.g. X_Effect_Locked).  "False" starts with 'F'
+            // so it stays false.
+            bool b = length() >= 1 && (this->at(0) == '1' || this->at(0) == 'T');
+            c = pack(BOOLEAN, b ? 1 : 0);
+            _cache.store(c, std::memory_order_relaxed);
+        }
+        return (c >> 32) != 0;
+    }
+    int getInt(const int &def) const {
+        uint64_t c = _cache.load(std::memory_order_relaxed);
+        if ((c & 0xFF) != INT) {
+            const char* s = this->c_str();
+            char* end = nullptr;
+            errno = 0;
+            long v = std::strtol(s, &end, 10);
+            int result;
+            if (end == s || errno == ERANGE || v > INT_MAX || v < INT_MIN) {
+                result = def;
+            } else {
+                result = static_cast<int>(v);
+            }
+            c = pack(INT, static_cast<uint32_t>(result));
+            _cache.store(c, std::memory_order_relaxed);
+        }
+        return static_cast<int>(static_cast<uint32_t>(c >> 32));
+    }
+    float getFloat(const float &def) const {
+        uint64_t c = _cache.load(std::memory_order_relaxed);
+        if ((c & 0xFF) != FLOAT) {
+            const char* s = this->c_str();
+            char* end = nullptr;
+            errno = 0;
+            float v = std::strtof(s, &end);
+            if (end == s || errno == ERANGE) {
+                v = def;
+            }
+            uint32_t bits;
+            std::memcpy(&bits, &v, sizeof(bits));
+            c = pack(FLOAT, bits);
+            _cache.store(c, std::memory_order_relaxed);
+        }
+        uint32_t bits = static_cast<uint32_t>(c >> 32);
+        float f;
+        std::memcpy(&f, &bits, sizeof(f));
+        return f;
+    }
+    double getDouble(const double &def) const {
+        const char* s = this->c_str();
+        char* end = nullptr;
+        errno = 0;
+        double v = std::strtod(s, &end);
+        if (end == s || errno == ERANGE) {
+            return def;
+        }
+        return v;
+    }
+};
+
+// Opaque per-instance derived-data cache attachable to a SettingsMap by hot
+// render paths (see RenderableEffect's GetValueCurve* memoization).  Contract:
+// the cache is a pure function of the map's contents - ANY mutation of the map
+// destroys it, and copies/moves never carry it - so an implementation may hold
+// pointers into the map's own nodes.  Concurrent READERS of one map exist
+// (RenderEffectFromMap's per-model fan-out renders one effect across a group's
+// model buffers in parallel with a shared map), so the attach is a
+// compare-exchange and implementations must make their own internals
+// thread-safe; mutation-while-reading is as undefined as it always was for
+// the map itself.
+class SettingsMapRenderCache {
+public:
+    virtual ~SettingsMapRenderCache() = default;
+    // Identify the concrete type without dynamic_cast.  Every attached cache is
+    // fetched on a path that runs per setting per model per frame, where the
+    // RTTI walk is measurable; each implementation returns the address of its
+    // own static tag.
+    virtual const void* CacheKind() const = 0;
+};
+
+class SettingsMap {
+    // Transparent comparator: the const char* accessors below are the hot ones
+    // and several render-time keys are longer than the SSO buffer, so building
+    // a std::string just to probe the map was a malloc/free per lookup.
+    std::map<std::string, SettingValue, std::less<>> _internal;
+    // Derived data only (see SettingsMapRenderCache); logically not part of
+    // the map's value, so const accessors may attach it.
+    mutable std::atomic<SettingsMapRenderCache*> _renderCache{ nullptr };
+
+    void InvalidateRenderCache() {
+        delete _renderCache.exchange(nullptr, std::memory_order_acq_rel);
+    }
+public:
+    SettingsMap() {}
+    SettingsMap(const SettingsMap& o) : _internal(o._internal) {}
+    SettingsMap& operator=(const SettingsMap& o) {
+        if (this != &o) {
+            _internal = o._internal;
+            InvalidateRenderCache();
+        }
+        return *this;
+    }
+    SettingsMap(SettingsMap&& o) noexcept : _internal(std::move(o._internal)) {
+        o.InvalidateRenderCache();
+    }
+    SettingsMap& operator=(SettingsMap&& o) noexcept {
+        _internal = std::move(o._internal);
+        InvalidateRenderCache();
+        o.InvalidateRenderCache();
+        return *this;
+    }
+    virtual ~SettingsMap() {
+        InvalidateRenderCache();
+    }
+
+    SettingsMapRenderCache* GetRenderCache() const { return _renderCache.load(std::memory_order_acquire); }
+    // Attach-once: on a lost race the caller's candidate is discarded and the
+    // winner's cache returned.
+    SettingsMapRenderCache* AttachRenderCache(std::unique_ptr<SettingsMapRenderCache> c) const {
+        SettingsMapRenderCache* expected = nullptr;
+        SettingsMapRenderCache* raw = c.get();
+        if (_renderCache.compare_exchange_strong(expected, raw, std::memory_order_acq_rel)) {
+            c.release();
+            return raw;
+        }
+        return expected;
+    }
+    // The value node for `key`, or null.  The returned pointer is stable until
+    // the map is mutated (which also destroys any attached render cache).
+    const SettingValue* FindValue(const std::string& key) const {
+        auto i = _internal.find(key);
+        return i == _internal.end() ? nullptr : &i->second;
+    }
+
+    const std::string &operator[](const std::string &key) const {
+        return Get(key, xlEMPTY_STRING);
+    }
+    SettingValue &operator[](const std::string &key) {
+        InvalidateRenderCache();
+        return _internal[key];
+    }
+    int GetInt(const std::string &key, const int def = 0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getInt(def);
+    }
+    float GetFloat(const std::string& key, const float def = 0.0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getFloat(def);
+    }
+    double GetDouble(const std::string& key, const double def = 0.0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getDouble(def);
+    }
+    bool GetBool(const std::string& key, const bool def = false) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second.getBool();
+    }
+    const std::string& Get(const std::string& key, const std::string& def) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second;
+    }
+
+    std::string Get(const std::string& key, const char* def) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second;
+    }
+
+    bool Contains(const std::string& key) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return false;
+        }
+        return true;
+    }
+
+    const std::string& operator[](const char* key) const {
+        return Get(key, xlEMPTY_STRING);
+    }
+    SettingValue& operator[](const char* ckey) {
+        InvalidateRenderCache();
+        std::string key(ckey);
+        return _internal[key];
+    }
+    int GetInt(const char* ckey, const int def = 0) const {
+        return GetInt(std::string_view(ckey), def);
+    }
+    double GetDouble(const char* ckey, const double& def = 0.0) const {
+        return GetDouble(std::string_view(ckey), def);
+    }
+    float GetFloat(const char* ckey, const float& def = 0.0) const {
+        return GetFloat(std::string_view(ckey), def);
+    }
+    bool GetBool(const char* ckey, const bool def = false) const {
+        return GetBool(std::string_view(ckey), def);
+    }
+    const std::string& Get(const char* ckey, const std::string& def) const {
+        return Get(std::string_view(ckey), def);
+    }
+    bool Contains(const char* ckey) const {
+        return Contains(std::string_view(ckey));
+    }
+
+    // string_view overloads - these are what the const char* accessors above
+    // resolve to, so a literal key never builds a std::string.
+    int GetInt(std::string_view key, const int def = 0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getInt(def);
+    }
+    float GetFloat(std::string_view key, const float def = 0.0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getFloat(def);
+    }
+    double GetDouble(std::string_view key, const double def = 0.0) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end() || i->second.length() == 0 || i->second.at(0) == ' ') {
+            return def;
+        }
+        return i->second.getDouble(def);
+    }
+    bool GetBool(std::string_view key, const bool def = false) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second.getBool();
+    }
+    const std::string& Get(std::string_view key, const std::string& def) const {
+        auto i = _internal.find(key);
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second;
+    }
+    bool Contains(std::string_view key) const {
+        return _internal.find(key) != _internal.end();
+    }
+
+    bool empty() const { return _internal.empty(); }
+    void clear() {
+        InvalidateRenderCache();
+        _internal.clear();
+    }
+    size_t size() const { return _internal.size(); }
+    auto keys() const { return std::views::keys(_internal); }
+    auto begin() const { return _internal.begin(); }
+    auto end() const { return _internal.end(); }
+
+    std::string Get(const char* ckey, const char* def) const {
+        auto i = _internal.find(std::string_view(ckey));
+        if (i == _internal.end()) {
+            return def;
+        }
+        return i->second;
+    }
+    size_t erase(const char* ckey) {
+        InvalidateRenderCache();
+        std::string key(ckey);
+        return _internal.erase(key);
+    }
+    size_t erase(const std::string& key) {
+        InvalidateRenderCache();
+        return _internal.erase(key);
+    }
+
+    void ParseJson(EffectManager* effectManager, const std::string& str, const std::string& effectName);
+    void Parse(EffectManager* effectManager, const std::string& str, const std::string& effectName);
+    
+    std::string AsString() const {
+        std::string ret;
+        for (std::map<std::string, SettingValue>::const_iterator it=_internal.begin(); it!=_internal.end(); ++it) {
+            if (ret.length() != 0) {
+                ret += ",";
+            }
+            std::string value = it->second;
+            ReplaceAll(value, "&", "&amp;"); //need to escape the amps
+            ReplaceAll(value, ",", "&comma;"); //need to escape the commas
+            ret += it->first + "=" + value;
+        }
+        return ret;
+    }
+    [[nodiscard]]std::string AsJSON() const {
+        std::string ret ;
+        for (auto &it : _internal) {
+            if (ret.length() != 0) {
+                ret += ",";
+            }
+            std::string value = it.second;
+            ReplaceAll(value, "&", "&amp;");   // need to escape the amps
+            ReplaceAll(value, ",", "&comma;"); // need to escape the commas
+            ret += "\"" + it.first + "\":\"" + value + "\"";
+        }
+        ret.insert(0,"{");
+        ret.append("}");
+        return ret;
+    }
+
+    void RemapKey(std::string &n, std::string &value) {
+        RemapChangedSettingKey(n, value);
+    }
+private:
+    static void RemapChangedSettingKey(std::string &n,  std::string &value);
+
+    void ReplaceAll(std::string &str, const std::string& from, const std::string& to) const {
+        size_t start_pos = 0;
+        while((start_pos = str.find(from, start_pos)) != std::string::npos) {
+            str.replace(start_pos, from.length(), to);
+            start_pos += to.length();
+        }
+    }
+
+    static void Trim(std::string& s) {
+        s.erase(s.begin(), std::find_if_not(s.begin(), s.end(), [](char c) { return std::isspace(c); }));
+        s.erase(std::find_if_not(s.rbegin(), s.rend(), [](char c) { return std::isspace(c); }).base(), s.end());
+    }
+};
+
+
+class RangeAccumulator
+{
+    std::list<std::pair<int,int>> _ranges;
+    void ResolveOverlaps(int minSeparation);
+
+public:
+    RangeAccumulator() {}
+    virtual ~RangeAccumulator() {}
+    void Add(int low, int high);
+    std::list<std::pair<int, int>>::iterator begin() {
+        return _ranges.begin(); 
+    }
+    std::list<std::pair<int, int>>::iterator end() { return _ranges.end(); }
+    size_t size() const { return _ranges.size(); }
+    void clear() { _ranges.clear(); }
+    void Consolidate(int minSeparation = 0) { ResolveOverlaps(minSeparation); }
+    std::pair<int, int> front() const { return _ranges.front(); }
+    std::pair<int, int> back() const { return _ranges.back(); }
+};
+
+
+class LogarithmicScale {
+public:
+	static int GetLogSum(int to)
+	{
+		static std::vector<double> logarithmicX = {
+			18.17223207,
+			10.63007432,
+			7.542157755,
+			5.850152051,
+			4.779922266,
+			4.041366691,
+			3.500791064,
+			3.087916561,
+			2.76223549,
+			2.498745944,
+			2.281176321,
+			2.098478794,
+			1.942887898,
+			1.808785359,
+			1.692005705,
+			1.589395049,
+			1.498521512,
+			1.41747975,
+			1.344755739,
+			1.279131202,
+			1.219614742,
+			1.165391374,
+			1.115784947,
+			1.070229785,
+			1.028249009,
+			0.989437767,
+			0.95345013,
+			0.919988749,
+			0.88879661,
+			0.859650427,
+			0.832355277,
+			0.80674024,
+			0.782654809,
+			0.759965938,
+			0.738555574,
+			0.718318607,
+			0.699161143,
+			0.680999044,
+			0.663756696,
+			0.647365955,
+			0.631765247,
+			0.616898794,
+			0.602715949,
+			0.589170617,
+			0.576220758,
+			0.563827948,
+			0.551956999,
+			0.540575628,
+			0.529654157,
+			0.519165264,
+			0.509083745,
+			0.49938632,
+			0.490051447,
+			0.481059168,
+			0.472390962,
+			0.46402962,
+			0.455959129,
+			0.448164573,
+			0.440632038,
+			0.433348529,
+			0.426301898,
+			0.419480775,
+			0.412874503,
+			0.406473089,
+			0.40026715,
+			0.394247867,
+			0.388406942,
+			0.382736565,
+			0.377229373,
+			0.371878421,
+			0.366677153,
+			0.361619376,
+			0.356699232,
+			0.351911178,
+			0.347249965,
+			0.34271062,
+			0.338288424,
+			0.3339789,
+			0.329777796,
+			0.325681071,
+			0.321684884,
+			0.317785577,
+			0.31397967,
+			0.310263847,
+			0.306634947,
+			0.303089955,
+			0.299625994,
+			0.296240317,
+			0.2929303,
+			0.289693435,
+			0.286527323,
+			0.28342967,
+			0.280398278,
+			0.277431045,
+			0.274525954,
+			0.271681075,
+			0.268894553,
+			0.266164612,
+			0.263489545,
+			0.260867715,
+			0.258297548,
+			0.255777532,
+			0.253306213,
+			0.250882193,
+			0.248504127,
+			0.24617072,
+			0.243880727,
+			0.241632946,
+			0.239426222,
+			0.237259439,
+			0.235131523,
+			0.233041437,
+			0.230988182,
+			0.228970792,
+			0.226988336,
+			0.225039915,
+			0.223124658,
+			0.221241727,
+			0.21939031,
+			0.217569623,
+			0.215778906,
+			0.214017426,
+			0.212284472,
+			0.210579358,
+			0.208901417,
+			0.207250005,
+			0.0
+		};
+
+		double sum {0.0};
+		for (int i = 0; i < to && i < 127; i++)
+		{
+			sum += logarithmicX[i];
+		}
+
+		return static_cast<int>(sum);
+	}
+};
+

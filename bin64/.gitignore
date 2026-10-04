@@ -1,0 +1,7 @@
+*.map
+
+# Runtime DLLs are staged here by ci_scripts/fetch_dependencies.ps1 rather than
+# committed - from the dependency bundle, from KLightMapper, and from the ONNX
+# Runtime package. Nothing in here belongs in the repository.
+*.dll
+*.lib

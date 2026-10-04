@@ -1,0 +1,208 @@
+PREFIX          = /usr
+
+# When not installing to a custom location append that location
+# to PKG_CONFIG_PATH so that pkgconfig can find the libraries installed.
+# The "if" is to add : only when there's an existing PKG_CONFIG_PATH.
+export PKG_CONFIG_PATH := $(if $(PKG_CONFIG_PATH),$(PKG_CONFIG_PATH):$(PREFIX)/lib/pkgconfig/,$(PREFIX)/lib/pkgconfig)
+
+# Make sure wx-config will be found.
+export PATH := $(PATH):$(PREFIX)/bin
+
+# Ignore some warnings for now to make compile output cleaner
+# until the issues are cleaned up in the code.
+#IGNORE_WARNINGS = -Wno-reorder -Wno-sign-compare -Wno-unused-variable -Wno-switch -Wno-unused-but-set-variable -Wno-parentheses -Wno-return-type -Wno-uninitialized -Wno-unused-value -Wno-sequence-point -Wno-comment -Wno-unused-function
+IGNORE_WARNINGS = -Wno-reorder -Wno-sign-compare -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-unknown-pragmas
+
+MKDIR           = mkdir -p
+CHK_DIR_EXISTS  = test -d
+INSTALL_PROGRAM = install -m 755 -p
+DEL_FILE        = rm -f
+ICON_SIZES      = 16x16 32x32 64x64 128x128 256x256
+DICT_FILES      = phoneme_mapping extended_dictionary standard_dictionary user_dictionary
+# run with `SUDO= make` when installing to a location that doesn't require root
+SUDO		= `which sudo`
+
+SUBDIRS         = xLights
+
+WXWIDGETS_TAG=xlights_2026.17c
+ISPC_VERSION=1.31.0
+ISPC_ARCH=$(shell uname -m)
+
+ifeq '$(ISPC_ARCH)' 'aarch64'
+ISPC_URL=https://github.com/ispc/ispc/releases/download/v${ISPC_VERSION}/ispc-v${ISPC_VERSION}-linux.aarch64.tar.gz
+ISPC_DIR=ispc-v${ISPC_VERSION}-linux.aarch64
+WXWIDGETS_CANVAS_FLAGS=--enable-glcanvasegl
+else
+ISPC_URL=https://github.com/ispc/ispc/releases/download/v${ISPC_VERSION}/ispc-v${ISPC_VERSION}-linux.tar.gz
+ISPC_DIR=ispc-v${ISPC_VERSION}-linux
+WXWIDGETS_CANVAS_FLAGS=--enable-glcanvasegl
+endif
+
+
+
+.NOTPARALLEL:
+.SECONDEXPANSION:
+
+all: wxwidgets33 cbp2make linkliquid ispc klightmapper makefile vulkanshaders subdirs
+
+#############################################################################
+
+subdirs: makefile $(SUBDIRS) share/xLights
+
+# Compile the Vulkan GLSL compute kernels to the SPIR-V headers that
+# src-core/effects/vulkan/ #includes.  Generated (gitignored), not committed —
+# glslc is a build tool here, like ispc.  Runs before subdirs (.NOTPARALLEL
+# keeps it ordered) so the headers exist before the C++ compile.
+vulkanshaders: FORCE
+	@./build_scripts/compile_vulkan_shaders.sh
+
+# The generated .cbp.mak is a prerequisite, not just an ordering hint: building a
+# subdir directly (`make xLights`) otherwise reuses a .cbp.mak older than the .cbp
+# it came from, and since cbp2make emits no header dependencies that failure is
+# silent - sources added to the .cbp are simply absent from the build and surface
+# much later as undefined symbols at link.
+$(SUBDIRS): $$@/$$@.cbp.mak FORCE
+	@${MAKE} -C $@ -f `basename $@`.cbp.mak OBJDIR_LINUX_DEBUG=".objs_debug" linux_release
+
+share/xLights:
+	@mkdir -p share
+	@ln -s ../resources share/xLights
+	@printf "Created share/xLights -> ../resources symlink\n"
+
+
+#############################################################################
+
+linkliquid:
+	@printf "Linking libliquid\n"
+	@if test ! -e lib/linux/libliquidfun.a; \
+		then if test "${DEB_HOST_ARCH}" = "i386"; \
+    		then ln -s libliquidfun.a.i686 lib/linux/libliquidfun.a; \
+			elif test "${DEB_HOST_ARCH}" = "amd64"; \
+			then ln -s libliquidfun.a.x86_64 lib/linux/libliquidfun.a; \
+			else ln -s libliquidfun.a.`uname -m` lib/linux/libliquidfun.a; \
+		fi; \
+	fi
+
+wxwidgets33: FORCE
+	@printf "Checking wxwidgets\n"
+	@if test -f /etc/wxwidgets_tag && test "$$(cat /etc/wxwidgets_tag)" = "$(WXWIDGETS_TAG)"; \
+		then echo "wxWidgets $(WXWIDGETS_TAG) already installed in container"; \
+		elif test ! -d wxWidgets-$(WXWIDGETS_TAG); \
+		then echo Downloading wxwidgets; git clone --depth=1 --shallow-submodules  --recurse-submodules -b $(WXWIDGETS_TAG) https://github.com/xLightsSequencer/wxWidgets wxWidgets-$(WXWIDGETS_TAG); \
+		cd wxWidgets-$(WXWIDGETS_TAG); \
+		./configure --enable-cxx11 --with-cxx=17 --enable-std_containers --enable-std_string_conv_in_wxstring --enable-backtrace --enable-exceptions --enable-mediactrl --enable-graphics_ctx --enable-monolithic --disable-sdltest --with-gtk=3 $(WXWIDGETS_CANVAS_FLAGS) --disable-pcx --disable-iff --without-libtiff --enable-utf8 --enable-utf8only --prefix=$(PREFIX); \
+		echo Building wxwidgets; \
+		${MAKE} -j 4 -s; \
+		echo Installing wxwidgets; \
+		$(SUDO) ${MAKE} install DESTDIR=$(DESTDIR); \
+		echo Completed build/install of wxwidgets; \
+		fi
+
+# Called unconditionally: the script itself compares the staged copy's version
+# stamp against ci_scripts/klightmapper_version.txt and exits immediately when
+# they match. Guarding on the .so's presence here instead would pin every
+# existing tree to whatever version it first fetched.
+klightmapper: FORCE
+	@printf "Checking KLightMapper desktop scan library\n"
+	@bash ci_scripts/fetch_klightmapper.sh
+
+ispc: FORCE
+	@printf "Checking ispc\n"
+	@if test -f /etc/ispc_version && test "$$(cat /etc/ispc_version)" = "$(ISPC_VERSION)"; \
+		then echo "ISPC $(ISPC_VERSION) already installed in container"; \
+		ln -s -f $$(which ispc) ispc; \
+		elif test "`./ispc --version`" != "$(ISPC_VERSION)"; \
+		then if test ! -f ispc-$(ISPC_VERSION).tar.gz; \
+			then echo Downloading iscp $(ISPC_URL); curl -L -o ispc-$(ISPC_VERSION).tar.gz $(ISPC_URL) ; \
+		fi; \
+		tar -xzf ispc-$(ISPC_VERSION).tar.gz; \
+		ln -s -f $(ISPC_DIR)/bin/ispc ispc; \
+		fi
+
+
+#############################################################################
+
+debug: makefile $(addsuffix _debug,$(SUBDIRS))
+
+$(addsuffix _debug,$(SUBDIRS)): $$(subst _debug,,$$@)/$$(subst _debug,,$$@).cbp.mak
+	@${MAKE} -C $(subst _debug,,$@) -f $(subst _debug,,`basename $@`).cbp.mak OBJDIR_LINUX_DEBUG=".objs_debug" linux_debug
+
+#############################################################################
+
+clean: $(addsuffix _clean,$(SUBDIRS))
+
+$(addsuffix _clean,$(SUBDIRS)):
+	@if test -f $(subst _clean,,$@)/$(subst _clean,,`basename $@`).cbp.mak; then \
+		${MAKE} -C $(subst _clean,,$@) -f $(subst _clean,,`basename $@`).cbp.mak OBJDIR_LINUX_DEBUG=".objs_debug" clean; \
+		$(DEL_FILE) $(subst _clean,,$@)/$(subst _clean,,`basename $@`).cbp.mak $(subst _clean,,$@)/$(subst _clean,,`basename $@`).cbp.mak.orig; \
+	fi
+
+
+#############################################################################
+
+install:
+	@$(CHK_DIR_EXISTS) $(DESTDIR)/${PREFIX}/bin || $(MKDIR) $(DESTDIR)/${PREFIX}/bin
+	-$(INSTALL_PROGRAM) -D bin/xLights $(DESTDIR)/${PREFIX}/bin/xLights
+	-$(INSTALL_PROGRAM) -D bin/xlights.desktop $(DESTDIR)/${PREFIX}/share/applications/xlights.desktop
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/dictionaries
+	$(foreach dict, $(DICT_FILES), install -D -m 644 resources/dictionaries/$(dict) $(DESTDIR)/${PREFIX}/share/xLights/dictionaries/$(dict) ;)
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/colorcurves
+	cp -r resources/colorcurves/* $(DESTDIR)/${PREFIX}/share/xLights/colorcurves
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/controllers
+	cp -r resources/controllers/* $(DESTDIR)/${PREFIX}/share/xLights/controllers
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/meshobjects
+	cp -r resources/meshobjects/* $(DESTDIR)/${PREFIX}/share/xLights/meshobjects
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/valuecurves
+	cp -r resources/valuecurves/* $(DESTDIR)/${PREFIX}/share/xLights/valuecurves
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/effectmetadata
+	cp -r resources/effectmetadata/* $(DESTDIR)/${PREFIX}/share/xLights/effectmetadata
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/mhpresets
+	cp -r resources/mhpresets/* $(DESTDIR)/${PREFIX}/share/xLights/mhpresets
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/palettes
+	cp -r resources/palettes/* $(DESTDIR)/${PREFIX}/share/xLights/palettes
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/scripts
+	cp -r resources/scripts/* $(DESTDIR)/${PREFIX}/share/xLights/scripts
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/prompts
+	cp -r resources/prompts/* $(DESTDIR)/${PREFIX}/share/xLights/prompts
+	install -d -m 755 $(DESTDIR)/${PREFIX}/share/xLights/html
+	cp -r resources/html/* $(DESTDIR)/${PREFIX}/share/xLights/html
+	$(foreach size, $(ICON_SIZES), install -D -m 644 resources/images/xLightsIcons/$(size).png $(DESTDIR)/${PREFIX}/share/icons/hicolor/$(size)/apps/xlights.png ; )
+	@if test -e lib/linux/libklightmapper.so; then \
+		install -d -m 755 $(DESTDIR)/${PREFIX}/lib; \
+		install -m 755 -p lib/linux/libklightmapper.so $(DESTDIR)/${PREFIX}/lib/libklightmapper.so; \
+		for shim in lib/linux/libklightmapper_av*.so; do \
+			test -e "$$shim" || continue; \
+			install -m 755 -p "$$shim" $(DESTDIR)/${PREFIX}/lib/; \
+		done; \
+	fi
+
+uninstall:
+	-$(DEL_FILE) $(DESTDIR)/${PREFIX}/bin/xLights
+	-$(DEL_FILE) $(DESTDIR)/${PREFIX}/share/applications/xlights.desktop
+	-$(DEL_FILE) $(DESTDIR)/${PREFIX}/lib/libklightmapper.so
+	-$(DEL_FILE) $(DESTDIR)/${PREFIX}/lib/libklightmapper_av*.so
+
+#############################################################################
+
+cbp2make:
+	@if test -n "`cbp2make --version`"; \
+		then $(DEL_FILE) xLights/xLights.cbp.mak; \
+	fi
+
+makefile: xLights/xLights.cbp.mak
+
+xLights/xLights.cbp.mak: xLights/xLights.cbp
+	@cbp2make -in xLights/xLights.cbp -cfg cbp2make.cfg -out xLights/xLights.cbp.mak \
+			--with-deps --keep-outdir --keep-objdir
+	@cp xLights/xLights.cbp.mak xLights/xLights.cbp.mak.orig
+	@cat xLights/xLights.cbp.mak.orig \
+		| sed \
+			-e "s/CFLAGS_LINUX_RELEASE = \(.*\)/CFLAGS_LINUX_RELEASE = \1 $(IGNORE_WARNINGS)/" \
+			-e "s/OBJDIR_LINUX_DEBUG = \(.*\)/OBJDIR_LINUX_DEBUG = .objs_debug/" \
+			-e "s/^INC_LINUX_\(.*\)/INC_LINUX_\1 -I ..\/wxWidgets-$(WXWIDGETS_TAG)\/3rdparty/" \
+			-e "s#all: linux_debug linux_release#include ../build_scripts/linux/*.mak\n\nall: linux_debug linux_release#" \
+		> xLights/xLights.cbp.mak
+
+#############################################################################
+
+FORCE:

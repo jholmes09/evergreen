@@ -1,0 +1,232 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "SpiralsEffect.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+
+#include "../../include/spirals-16.xpm"
+#include "../../include/spirals-24.xpm"
+#include "../../include/spirals-32.xpm"
+#include "../../include/spirals-48.xpm"
+#include "../../include/spirals-64.xpm"
+
+#include "ispc/SpiralsFunctions.ispc.h"
+#include "Parallel.h"
+
+#define MAX_ISPC_SPIRALS_COLORS 8
+
+// Fallback defaults (used until OnMetadataLoaded replaces them with Spirals.json values).
+int SpiralsEffect::sCountDefault = 1;
+int SpiralsEffect::sCountMin = 1;
+int SpiralsEffect::sCountMax = 5;
+double SpiralsEffect::sMovementDefault = 1.0;
+double SpiralsEffect::sMovementMin = -200;
+double SpiralsEffect::sMovementMax = 200;
+int SpiralsEffect::sMovementDivisor = 10;
+double SpiralsEffect::sRotationDefault = 2.0;
+double SpiralsEffect::sRotationMin = -300;
+double SpiralsEffect::sRotationMax = 300;
+int SpiralsEffect::sRotationDivisor = 10;
+int SpiralsEffect::sThicknessDefault = 50;
+int SpiralsEffect::sThicknessMin = 0;
+int SpiralsEffect::sThicknessMax = 100;
+bool SpiralsEffect::sBlendDefault = false;
+bool SpiralsEffect::s3DDefault = false;
+bool SpiralsEffect::sGrowDefault = false;
+bool SpiralsEffect::sShrinkDefault = false;
+
+SpiralsEffect::SpiralsEffect(int id) : RenderableEffect(id, "Spirals", spirals_16, spirals_24, spirals_32, spirals_48, spirals_64)
+{
+    //ctor
+}
+
+SpiralsEffect::~SpiralsEffect()
+{
+    //dtor
+}
+
+void SpiralsEffect::OnMetadataLoaded()
+{
+    sCountDefault = GetIntDefault("Spirals_Count", sCountDefault);
+    sCountMin = (int)GetMinFromMetadata("Spirals_Count", sCountMin);
+    sCountMax = (int)GetMaxFromMetadata("Spirals_Count", sCountMax);
+    sMovementDefault = GetDoubleDefault("Spirals_Movement", sMovementDefault);
+    sMovementMin = GetMinFromMetadata("Spirals_Movement", sMovementMin);
+    sMovementMax = GetMaxFromMetadata("Spirals_Movement", sMovementMax);
+    sMovementDivisor = GetDivisorFromMetadata("Spirals_Movement", sMovementDivisor);
+    sRotationDefault = GetDoubleDefault("Spirals_Rotation", sRotationDefault);
+    sRotationMin = GetMinFromMetadata("Spirals_Rotation", sRotationMin);
+    sRotationMax = GetMaxFromMetadata("Spirals_Rotation", sRotationMax);
+    sRotationDivisor = GetDivisorFromMetadata("Spirals_Rotation", sRotationDivisor);
+    sThicknessDefault = GetIntDefault("Spirals_Thickness", sThicknessDefault);
+    sThicknessMin = (int)GetMinFromMetadata("Spirals_Thickness", sThicknessMin);
+    sThicknessMax = (int)GetMaxFromMetadata("Spirals_Thickness", sThicknessMax);
+    sBlendDefault = GetBoolDefault("Spirals_Blend", sBlendDefault);
+    s3DDefault = GetBoolDefault("Spirals_3D", s3DDefault);
+    sGrowDefault = GetBoolDefault("Spirals_Grow", sGrowDefault);
+    sShrinkDefault = GetBoolDefault("Spirals_Shrink", sShrinkDefault);
+}
+
+bool SpiralsEffect::SupportsLinearColorCurves(const SettingsMap &SettingsMap) const
+{
+    // The blend setting is incompatible with linear colour curves
+    return !SettingsMap.GetBool("E_CHECKBOX_Spirals_Blend");
+}
+
+void SpiralsEffect::Render(Effect *effect, const SettingsMap &SettingsMap, RenderBuffer &buffer) {
+    float offset = buffer.GetEffectTimeIntervalPosition();
+    int PaletteRepeat = GetValueCurveInt("Spirals_Count", sCountDefault, SettingsMap, offset, sCountMin, sCountMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    float Movement = GetValueCurveDouble("Spirals_Movement", sMovementDefault, SettingsMap, offset, sMovementMin, sMovementMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), sMovementDivisor);
+    float Rotation = GetValueCurveDouble("Spirals_Rotation", sRotationDefault, SettingsMap, offset, sRotationMin, sRotationMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS(), sRotationDivisor);
+    // This is because spirals uses the slider while most others use the TextCtrl
+    if (SettingsMap.Contains("VALUECURVE_Spirals_Rotation") && Contains(SettingsMap["VALUECURVE_Spirals_Rotation"], "Active=TRUE")) {
+        Rotation *= 10;
+    }
+    int Thickness = GetValueCurveInt("Spirals_Thickness", sThicknessDefault, SettingsMap, offset, sThicknessMin, sThicknessMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    bool Blend = SettingsMap.GetBool("CHECKBOX_Spirals_Blend", sBlendDefault);
+    bool Show3D = SettingsMap.GetBool("CHECKBOX_Spirals_3D", s3DDefault);
+    bool grow = SettingsMap.GetBool("CHECKBOX_Spirals_Grow", sGrowDefault);
+    bool shrink = SettingsMap.GetBool("CHECKBOX_Spirals_Shrink", sShrinkDefault);
+
+    if (PaletteRepeat == 0) {
+        PaletteRepeat = 1;
+    }
+    size_t colorcnt = buffer.GetColorCount();
+    int SpiralCount = colorcnt * PaletteRepeat;
+    double deltaStrands = buffer.BufferWi / SpiralCount;
+    double SpiralThickness = (deltaStrands * Thickness / 100) + 1;
+    double spiralGap = deltaStrands - SpiralThickness;
+
+    int Direction = Movement > 0.001 ? 1 : (Movement < -0.001 ? -1 : 0);
+    double position = buffer.GetEffectTimeIntervalPosition(std::abs(Movement));
+    long ThicknessState = 0;
+    if (grow && shrink) {
+        ThicknessState = position <= 0.5 ? spiralGap * (position * 2) : spiralGap * ((1 - position) * 2);
+    } else if (grow) {
+        ThicknessState = spiralGap * position;
+    } else if (shrink) {
+        ThicknessState = spiralGap * (1.0 - position);
+    }
+    long SpiralState = position * buffer.BufferWi * 10 * Direction;
+
+    SpiralThickness += ThicknessState;
+
+    bool hasSpatial = false;
+    for (size_t i = 0; i < colorcnt; i++) {
+        if (buffer.palette.IsSpatial(i)) { hasSpatial = true; break; }
+    }
+    bool canUseISPC = !Blend && (colorcnt <= MAX_ISPC_SPIRALS_COLORS) && !hasSpatial;
+    
+    if (canUseISPC) {
+        ispc::SpiralsData sdata;
+        sdata.width          = buffer.BufferWi;
+        sdata.height         = buffer.BufferHt;
+        sdata.spiralCount    = SpiralCount;
+        sdata.colorCount     = (int)colorcnt;
+        sdata.spiralState    = (float)SpiralState;
+        sdata.rotation       = Rotation;
+        sdata.rotation_sign  = Direction < 0 ? -1.0f : 1.0f;
+        sdata.deltaStrands   = (float)deltaStrands;
+        sdata.spiralThickness = (float)SpiralThickness;
+        sdata.show3D         = Show3D ? 1 : 0;
+        sdata.allowAlpha     = buffer.allowAlpha ? 1 : 0;
+        for (size_t i = 0; i < colorcnt; i++) {
+            xlColor c;
+            buffer.palette.GetColor(i, c);
+            sdata.colorsAsRGBA[i].v[0] = c.red;
+            sdata.colorsAsRGBA[i].v[1] = c.green;
+            sdata.colorsAsRGBA[i].v[2] = c.blue;
+            sdata.colorsAsRGBA[i].v[3] = c.alpha;
+            HSVValue hsv = c.asHSV();
+            sdata.colorsH[i] = (float)hsv.hue;
+            sdata.colorsS[i] = (float)hsv.saturation;
+            sdata.colorsV[i] = (float)hsv.value;
+        }
+
+        if (buffer.dmx_buffer) {
+            // DMX fixtures need the colour routed through SetPixel()
+            ispc::uint8_t4 single{ { 0, 0, 0, 255 } };
+            ispc::SpiralsEffectISPC(&sdata, 0, 1, &single);
+            buffer.SetPixel(0, 0, xlColor(single.v[0], single.v[1], single.v[2], single.v[3]));
+            return;
+        }
+
+        // Clamp to the real allocation: GetPixelCount() can be < BufferWi*BufferHt
+        // for a variable sub-buffer, and the ISPC kernel writes unguarded.
+        int max = std::min<int>(buffer.GetPixelCount(), buffer.BufferWi * buffer.BufferHt);
+        constexpr int bfBlockSize = 4096;
+        int blocks = max / bfBlockSize + 1;
+        parallel_for(0, blocks, [&sdata, &buffer, max](int blk) {
+            int start = blk * bfBlockSize;
+            int end = start + bfBlockSize;
+            if (end > max) end = max;
+            ispc::SpiralsEffectISPC(&sdata, start, end, (ispc::uint8_t4*)buffer.GetPixels());
+        });
+        return;
+    }
+
+    for (int ns = 0; ns < SpiralCount; ns++) {
+        int strand_base = ns * deltaStrands;
+        int ColorIdx = ns % colorcnt;
+        xlColor color;
+        buffer.palette.GetColor(ColorIdx, color);
+        bool isSpacial = buffer.palette.IsSpatial(ColorIdx);
+
+        std::function<void(int)> spiralF = [&](int thick) {
+            int strand = (strand_base + thick) % buffer.BufferWi;
+            for (int y = 0; y < buffer.BufferHt; y++) {
+                double xd = strand + SpiralState / 10.0 + y * Rotation / buffer.BufferHt;
+                double wrappedX = fmod(xd, buffer.BufferWi);
+                if (wrappedX < 0) wrappedX += buffer.BufferWi;
+                int x = (int)wrappedX;
+
+                if (isSpacial) {
+                    buffer.palette.GetSpatialColor(ColorIdx, (float)thick / (float)SpiralThickness, (float)y / (float)buffer.BufferHt, color);
+                }
+
+                if (Blend) {
+                    buffer.GetMultiColorBlend(double(buffer.BufferHt - y - 1) / double(buffer.BufferHt), false, color);
+                }
+                if (Show3D) {
+                    double f = 1.0;
+
+                    if (Direction < 0) {
+                        f = double(thick + 1) / SpiralThickness;
+                    } else {
+                        f = double(SpiralThickness - thick) / SpiralThickness;
+                    }
+                    if (buffer.allowAlpha) {
+                        xlColor c(color);
+                        c.alpha = 255.0 * f;
+                        buffer.SetPixel(x, y, c);
+                    } else {
+                        HSVValue hsv;
+                        buffer.Color2HSV(color, hsv);
+                        hsv.value *= f;
+                        buffer.SetPixel(x, y, hsv);
+                    }
+                } else {
+                    buffer.SetPixel(x, y, color);
+                }
+            }
+        };
+        
+        if ((!isSpacial && !Blend && !Show3D) && SpiralThickness > 2) {
+            // if we aren't blending, dealing with spacial or rendering 3D, we can use parallel
+            parallel_for(0, SpiralThickness, [&spiralF](int i) { spiralF(i); }, 1);
+        } else {
+            for (int i = 0; i < SpiralThickness; i++) {
+                spiralF(i);
+            }
+        }
+    }
+}

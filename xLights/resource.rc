@@ -1,0 +1,9 @@
+APP_ICON ICON "../include/xlights.ico"
+MAINICON ICON "../include/xlights.ico"
+XSQZ ICON "../include/xsqz.ico"
+
+
+#define wxUSE_NO_MANIFEST 1
+#include "wx/msw/wx.rc"
+
+

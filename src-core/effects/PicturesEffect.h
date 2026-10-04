@@ -1,0 +1,75 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "RenderableEffect.h"
+
+#include <string>
+
+class PicturesEffect : public RenderableEffect
+{
+    public:
+        PicturesEffect(int id);
+        virtual ~PicturesEffect();
+        virtual bool CanBeRandom() override {return false;}
+        virtual void Render(Effect *effect, const SettingsMap &settings, RenderBuffer &buffer) override;
+        // Pure: buffer.randInt()/rand01() reseed per frame from a stable hash of
+        // (model, layer, effect-start, period), so the serial RNG reproduces in
+        // strided/parallel render order - a pure function of the frame.
+        virtual FrameParallelism GetFrameParallelism(const SettingsMap& settings) const override { return FrameParallelism::Pure; }
+        static void Render(RenderBuffer &buffer,
+                           const std::string & dirstr, const std::string &NewPictureName2,
+                           float movementSpeed, float frameRateAdj,
+                           int xc_adj, int yc_adj,
+                           int xce_adj, int yce_adj,
+                           int start_scale, int end_scale, const std::string& scale_to_fit,
+                           bool pixelOffsets, bool wrap_x, bool shimmer, bool loopGIF, bool suppressGIFBackground, bool transparentBlack, int transparentBlackLevel);
+
+        virtual bool needToAdjustSettings(const std::string &version) override;
+        virtual void adjustSettings(const std::string &version, Effect *effect, bool removeDefaults = true) override;
+        virtual bool needsLoadFiles() const override { return true; }
+        virtual void loadFiles(Effect* effect) override;
+        virtual std::list<std::string> CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache) override;
+        virtual std::list<std::string> GetFileReferences(RenderContext* ctx, Model* model, const SettingsMap &SettingsMap) const override;
+        virtual bool CleanupFileLocations(RenderContext* ctx, SettingsMap &SettingsMap) override;
+        static bool IsPictureFile(std::string filename);
+        virtual bool SupportsRenderCache(const SettingsMap& settings) const override { return true; }
+
+        // Cached from Pictures.json by OnMetadataLoaded(). The TransparentBlack
+        // row and filename are controlType "custom" in the JSON so they are not
+        // migrated here — Render() still reads literal defaults for those.
+        static std::string sDirectionDefault;
+        static double sSpeedDefault;
+        static double sFrameRateAdjDefault;
+        static bool sPixelOffsetsDefault;
+        static std::string sScalingDefault;
+        static bool sShimmerDefault;
+        static bool sLoopGIFDefault;
+        static bool sSuppressGIFBackgroundDefault;
+        static int sXCDefault;
+        static int sXCMin;
+        static int sXCMax;
+        static bool sWrapXDefault;
+        static int sYCDefault;
+        static int sYCMin;
+        static int sYCMax;
+        static int sEndXCDefault;
+        static int sEndYCDefault;
+        static int sStartScaleDefault;
+        static int sEndScaleDefault;
+
+    protected:
+        virtual void OnMetadataLoaded() override;
+
+    private:
+        static void SetTransparentBlackPixel(RenderBuffer &buffer, int x, int y, xlColor c, bool transparentBlack, int transparentBlackLevel);
+        static void SetTransparentBlackPixel(RenderBuffer &buffer, int x, int y, xlColor c, bool wrap, bool transparentBlack, int transparentBlackLevel);
+};

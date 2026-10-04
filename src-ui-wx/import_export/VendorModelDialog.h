@@ -1,0 +1,207 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+ 
+//(*Headers(VendorModelDialog)
+#include <wx/animate.h>
+#include <wx/button.h>
+#include <wx/checkbox.h>
+#include <wx/dialog.h>
+#include <wx/hyperlink.h>
+#include <wx/notebook.h>
+#include <wx/panel.h>
+#include <wx/sizer.h>
+#include <wx/splitter.h>
+#include <wx/srchctrl.h>
+#include <wx/statbmp.h>
+#include <wx/stattext.h>
+#include <wx/textctrl.h>
+#include <wx/treectrl.h>
+//*)
+
+#include <pugixml.hpp>
+#include <wx/filename.h>
+#include <list>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include <wx/timer.h>
+#include <wx/uri.h>
+#include "CachedFileDownloader.h"
+
+class wxProgressDialog;
+
+// R-VendorCatalog (2026-05-13): data classes moved to
+// `src-core/import_export/VendorCatalog.h`. Alias the legacy
+// `M*` names so the dialog's existing call sites compile
+// unchanged; both clients (this dialog + iPad sheet) parse the
+// same XML through that shared core.
+#include "import_export/VendorCatalog.h"
+using MVendor = vendor_catalog::Vendor;
+using MModel = vendor_catalog::Model;
+using MModelWiring = vendor_catalog::ModelWiring;
+using MVendorCategory = vendor_catalog::Category;
+
+struct DownloadedModelInfo {
+    std::string modelFile;
+    int widthMM = -1;
+    int heightMM = -1;
+    int depthMM = -1;
+};
+
+class VendorModelDialog: public wxDialog
+{
+    std::list<MVendor*> _vendors;
+    std::string _modelFile;
+	std::string _showFolder;
+    int _currImage = -1;
+    wxImage _vendorImage;
+    wxImage _modelImage;
+	int _modelWidthMM = -1;
+	int _modelHeightMM = -1;
+	int _modelDepthMM = -1;
+    std::vector<DownloadedModelInfo> _downloadedModels;
+    wxTreeItemId _lastSearchItem;
+    std::vector<wxString> _filterTokens;                          // lower-cased
+    // Search index, built once after load: lower-cased text per model
+    // (name + wiring names), per category (vendor + category path), and
+    // per-category / uncategorised model lists.
+    std::unordered_map<const MModel*, wxString> _modelSearchText;
+    std::unordered_map<const MVendorCategory*, wxString> _categorySearchText;
+    std::unordered_map<const MVendorCategory*, std::vector<MModel*>> _categoryModels;
+    std::unordered_map<const MVendor*, std::vector<MModel*>> _uncategorizedModels;
+    wxTimer _filterTimer;
+    bool _initialBuild = true;
+    bool _treeRebuilding = false;
+    static constexpr int kFilterDebounceMs = 200;
+
+    [[nodiscard]] pugi::xml_document* GetXMLFromURL(wxURI url, std::string& filename, wxProgressDialog* prog, int low, int high, bool keepProgress) const;
+    [[nodiscard]] bool LoadTree(wxProgressDialog* prog, int low = 0, int high = 100);
+    void BuildModelSearchIndex();
+    void RebuildTreeUI();
+    int AddHierarchy(wxTreeItemId parent, MVendor* vendor, const std::list<MVendorCategory*>& categories);
+    int AddModels(wxTreeItemId parent, const std::vector<MModel*>& models, const wxString& pathTextLower);
+    void AppendModelNodes(wxTreeItemId parent, MModel* model);
+    [[nodiscard]] bool FilterMatches(const wxString& hayLowerA, const wxString& hayLowerB = wxEmptyString) const;
+    void ApplyFilterNow();
+    void OnFilterTimer(wxTimerEvent& event);
+    void ValidateWindow();
+    void PopulateVendorPanel(MVendor* vendor);
+    void PopulateModelPanel(MModel* vendor);
+    void PopulateModelPanel(MModelWiring* vendor);
+    void LoadModelImage(const std::list<std::string>& imageFiles, int image);
+    void LoadImage(wxStaticBitmap* sb, wxImage* img) const;
+    [[nodiscard]] bool IsVendorSuppressed(const std::string& vendor);
+    void SuppressVendor(const std::string& vendor, bool suppress);
+	[[nodiscard]] bool DownloadModel(MModelWiring* wiring);
+    [[nodiscard]] std::vector<MModelWiring*> GetSelectedWirings();
+    void DownloadSelectedModels();
+    [[nodiscard]] wxTreeItemId GetFocusedItem() const;
+    void UpdatePanelForItem(wxTreeItemId item);
+
+	public:
+
+		VendorModelDialog(wxWindow* parent, const std::string& showFolder, wxWindowID id=wxID_ANY, const wxPoint& pos=wxDefaultPosition,const wxSize& size=wxDefaultSize);
+		virtual ~VendorModelDialog();
+        [[nodiscard]] std::string GetModelFile() const { return _modelFile; }
+        [[nodiscard]] int GetModelWidthMM() const { return _modelWidthMM; }
+		[[nodiscard]] int GetModelHeightMM() const { return _modelHeightMM; }
+		[[nodiscard]] int GetModelDepthMM() const { return _modelDepthMM; }
+        [[nodiscard]] const std::vector<DownloadedModelInfo>& GetDownloadedModels() const { return _downloadedModels; }
+        [[nodiscard]] bool DlgInit(wxProgressDialog* prog, int low, int high);
+        [[nodiscard]] bool FindModelFile(const std::string &vendor, const std::string &model);
+        [[nodiscard]] static CachedFileDownloader& GetCache() {
+            return CachedFileDownloader::GetDefaultCache();
+        }
+
+		//(*Declarations(VendorModelDialog)
+		wxAnimationCtrl* AnimationCtrl1;
+		wxButton* Button_InsertModel;
+		wxButton* Button_Next;
+		wxButton* Button_Prior;
+		wxCheckBox* CheckBox_DontDownload;
+		wxHyperlinkCtrl* HyperlinkCtrl_Facebook;
+		wxHyperlinkCtrl* HyperlinkCtrl_ModelWebLink;
+		wxHyperlinkCtrl* HyperlinkCtrl_Website;
+		wxNotebook* NotebookPanels;
+		wxPanel* ItemImagePanel;
+		wxPanel* Panel1;
+		wxPanel* Panel3;
+		wxPanel* PanelVendor;
+		wxPanel* Panel_Item;
+		wxSearchCtrl* TextCtrl_Search;
+		wxSplitterWindow* SplitterWindow1;
+		wxStaticBitmap* StaticBitmap_ModelImage;
+		wxStaticBitmap* StaticBitmap_VendorImage;
+		wxStaticText* StaticText2;
+		wxStaticText* StaticText5;
+		wxStaticText* StaticText6;
+		wxStaticText* StaticText_Disclaimer;
+		wxTextCtrl* TextCtrl_ModelDetails;
+		wxTextCtrl* TextCtrl_VendorDetails;
+		wxTreeCtrl* TreeCtrl_Navigator;
+		//*)
+
+	protected:
+
+		//(*Identifiers(VendorModelDialog)
+		static const wxWindowID ID_TREECTRL1;
+		static const wxWindowID ID_TEXTCTRL3;
+		static const wxWindowID ID_PANEL3;
+		static const wxWindowID ID_CHECKBOX1;
+		static const wxWindowID ID_STATICBITMAP1;
+		static const wxWindowID ID_TEXTCTRL1;
+		static const wxWindowID ID_STATICTEXT8;
+		static const wxWindowID ID_HYPERLINKCTRL4;
+		static const wxWindowID ID_STATICTEXT4;
+		static const wxWindowID ID_HYPERLINKCTRL2;
+		static const wxWindowID ID_PANEL2;
+		static const wxWindowID ID_BUTTON2;
+		static const wxWindowID ID_STATICBITMAP2;
+		static const wxWindowID ID_ANIMATIONCTRL1;
+		static const wxWindowID ID_BUTTON3;
+		static const wxWindowID ID_PANEL5;
+		static const wxWindowID ID_TEXTCTRL2;
+		static const wxWindowID ID_STATICTEXT7;
+		static const wxWindowID ID_HYPERLINKCTRL3;
+		static const wxWindowID ID_BUTTON1;
+		static const wxWindowID ID_PANEL4;
+		static const wxWindowID ID_NOTEBOOK1;
+		static const wxWindowID ID_PANEL1;
+		static const wxWindowID ID_SPLITTERWINDOW1;
+		//*)
+
+		static const long ID_FILTERTIMER;
+
+	private:
+
+		//(*Handlers(VendorModelDialog)
+		void OnHyperlinkCtrl_ModelWebLinkClick(wxCommandEvent& event);
+		void OnButton_NextClick(wxCommandEvent& event);
+		void OnButton_PriorClick(wxCommandEvent& event);
+		void OnButton_InsertModelClick(wxCommandEvent& event);
+		void OnNotebookPanelsPageChanged(wxNotebookEvent& event);
+		void OnTreeCtrl_NavigatorItemActivated(wxTreeEvent& event);
+		void OnTreeCtrl_NavigatorSelectionChanged(wxTreeEvent& event);
+		void OnHyperlinkCtrl_eMailClick(wxCommandEvent& event);
+		void OnHyperlinkCtrl_WebsiteClick(wxCommandEvent& event);
+		void OnHyperlinkCtrl_FacebookClick(wxCommandEvent& event);
+		void OnClose(wxCloseEvent& event);
+		void OnResize(wxSizeEvent& event);
+		void OnCheckBox_DontDownloadClick(wxCommandEvent& event);
+		void OnTextCtrl_SearchText(wxCommandEvent& event);
+		void OnTextCtrl_SearchTextEnter(wxCommandEvent& event);
+		void OnButton_SearchClick(wxCommandEvent& event);
+		void OnSearchCancelClick(wxCommandEvent& event);
+		//*)
+
+		DECLARE_EVENT_TABLE()
+};

@@ -1,0 +1,92 @@
+{
+    "effectName": "Fill",
+    "properties": [
+        {
+            "id": "Fill_Position",
+            "label": "Position",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "How far the fill extends across the buffer as a percentage. Typically animated with a value curve to create a filling or emptying motion."
+        },
+        {
+            "id": "Fill_Band_Size",
+            "label": "Band Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 250,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Width of each colored band in pixels. When zero, colors blend smoothly across the fill area."
+        },
+        {
+            "id": "Fill_Skip_Size",
+            "label": "Skip Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 250,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Number of blank (black) pixels between each colored band. Only applies when Band Size is greater than zero."
+        },
+        {
+            "id": "Fill_Offset",
+            "label": "Offset",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Shifts the starting position of the fill. Interpretation depends on the Offset in Pixels setting."
+        },
+        {
+            "id": "Fill_Offset_In_Pixels",
+            "label": "Offset in Pixels",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, the offset value is in pixels. When disabled, it is a percentage of the buffer dimension."
+        },
+        {
+            "id": "Fill_Color_Time",
+            "label": "Change Color based on Time",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, color is determined by the effect time position. When disabled, color is based on spatial position within the fill."
+        },
+        {
+            "id": "Fill_Wrap",
+            "label": "Wrap",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, the fill wraps around to the beginning of the buffer after reaching the end."
+        },
+        {
+            "id": "Fill_Direction",
+            "label": "Direction",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Up",
+                "Down",
+                "Left",
+                "Right"
+            ],
+            "default": "Up",
+            "lockable": true,
+            "description": "Direction the fill progresses across the buffer."
+        }
+    ]
+}

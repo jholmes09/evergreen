@@ -1,0 +1,785 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <cassert>
+#include <spdlog/fmt/fmt.h>
+
+#include "../../include/kaleidoscope-64.xpm"
+#include "../../include/kaleidoscope-48.xpm"
+#include "../../include/kaleidoscope-32.xpm"
+#include "../../include/kaleidoscope-24.xpm"
+#include "../../include/kaleidoscope-16.xpm"
+
+#include "KaleidoscopeEffect.h"
+#include "../models/Model.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+#include "UtilFunctions.h"
+
+#include "Parallel.h"
+#include "ispc/KaleidoscopeFunctions.ispc.h"
+#include <log.h>
+#include <cstring>
+#include <numeric>
+
+#define KALE_ISPC_STYLE_SQUARE2  0
+#define KALE_ISPC_STYLE_6FOLD    1
+#define KALE_ISPC_STYLE_8FOLD    2
+#define KALE_ISPC_STYLE_12FOLD   3
+#define KALE_ISPC_STYLE_RADIAL   4
+
+// Fallback defaults (used until OnMetadataLoaded replaces them with Kaleidoscope.json values).
+std::string KaleidoscopeEffect::sTypeDefault = "Triangle";
+int KaleidoscopeEffect::sXDefault = 50;
+int KaleidoscopeEffect::sXMin = 0;
+int KaleidoscopeEffect::sXMax = 100;
+int KaleidoscopeEffect::sYDefault = 50;
+int KaleidoscopeEffect::sYMin = 0;
+int KaleidoscopeEffect::sYMax = 100;
+int KaleidoscopeEffect::sSizeDefault = 5;
+int KaleidoscopeEffect::sSizeMin = 2;
+int KaleidoscopeEffect::sSizeMax = 100;
+int KaleidoscopeEffect::sRotationDefault = 0;
+int KaleidoscopeEffect::sRotationMin = 0;
+int KaleidoscopeEffect::sRotationMax = 359;
+
+KaleidoscopeEffect::KaleidoscopeEffect(int i) : RenderableEffect(i, "Kaleidoscope", kaleidoscope_16, kaleidoscope_24, kaleidoscope_32, kaleidoscope_48, kaleidoscope_64)
+{
+}
+
+KaleidoscopeEffect::~KaleidoscopeEffect()
+{
+}
+
+void KaleidoscopeEffect::OnMetadataLoaded()
+{
+    sTypeDefault = GetStringDefault("Kaleidoscope_Type", sTypeDefault);
+    sXDefault = GetIntDefault("Kaleidoscope_X", sXDefault);
+    sXMin = (int)GetMinFromMetadata("Kaleidoscope_X", sXMin);
+    sXMax = (int)GetMaxFromMetadata("Kaleidoscope_X", sXMax);
+    sYDefault = GetIntDefault("Kaleidoscope_Y", sYDefault);
+    sYMin = (int)GetMinFromMetadata("Kaleidoscope_Y", sYMin);
+    sYMax = (int)GetMaxFromMetadata("Kaleidoscope_Y", sYMax);
+    sSizeDefault = GetIntDefault("Kaleidoscope_Size", sSizeDefault);
+    sSizeMin = (int)GetMinFromMetadata("Kaleidoscope_Size", sSizeMin);
+    sSizeMax = (int)GetMaxFromMetadata("Kaleidoscope_Size", sSizeMax);
+    sRotationDefault = GetIntDefault("Kaleidoscope_Rotation", sRotationDefault);
+    sRotationMin = (int)GetMinFromMetadata("Kaleidoscope_Rotation", sRotationMin);
+    sRotationMax = (int)GetMaxFromMetadata("Kaleidoscope_Rotation", sRotationMax);
+}
+
+std::list<std::string> KaleidoscopeEffect::CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache)
+{
+    std::list<std::string> res = RenderableEffect::CheckEffectSettings(settings, media, model, eff, renderCache);
+
+    if (settings.Get("T_CHECKBOX_Canvas", "0") == "0")
+    {
+        res.push_back(fmt::format("    WARN: Canvas mode not enabled on a Kaleidoscope effect. Without canvas mode Kaleidoscope won't do anything. Effect: Kaleidoscope, Model: {}, Start {}", model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+    }
+
+    return res;
+}
+
+class KaleidoscopeRenderCache : public EffectRenderCache {
+public:
+    KaleidoscopeRenderCache()
+    {
+        _size = -1;
+        _rotation = -1;
+        _x = -1;
+        _y = -1;
+        _width = -1;
+        _height = -1;
+    };
+    virtual ~KaleidoscopeRenderCache() {};
+    int _size;
+    int _rotation;
+    int _x;
+    int _y;
+    int _width;
+    int _height;
+    // Returns true when the geometry was (re)built - the caller's pixel map is
+    // stale and must be rebuilt too.
+    bool Initialise(int size, int rotation, int x, int y, int width, int height, const std::string& type, bool force)
+    {
+        if (force || size != _size || rotation != _rotation || x != _x || y != _y || width != _width || height != _height)
+        {
+            _size = size;
+            _rotation = rotation;
+            _x = x;
+            _y = y;
+            _width = width;
+            _height = height;
+
+            // clear the used arrary
+            _startUsed.resize(width);
+            for (auto& xx : _startUsed)
+            {
+                xx.resize(height);
+                for (auto yy = xx.begin(); yy != xx.end(); ++yy)
+                {
+                    *yy = false;
+                }
+            }
+            _edges.clear();
+
+            // now repopulate
+            if (type == "Square")
+            {
+                InitialiseSquare(size, rotation, x, y, width, height);
+            }
+            else if (type == "Triangle")
+            {
+                InitialiseTriangle(size, rotation, x, y, width, height);
+            }
+            else
+            {
+                assert(false);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool CreateEdge(int x1, int y1, int x2, int y2)
+    {
+        if (x1 < 0 && x2 < 0) return false;
+        if (x1 > _width && x2 > _width) return false;
+        if (y1 < 0 && y2 < 0) return false;
+        if (y1 > _height && y2 > _height) return false;
+
+        if (x1 != x2 && y1 != y2)
+        {
+            bool bl = IsPointAboveLineThroughPoints(0, 0, x1, y1, x2, y2);
+            bool tl = IsPointAboveLineThroughPoints(0, _height - 1, x1, y1, x2, y2);
+            bool tr = IsPointAboveLineThroughPoints(_width - 1, _height - 1, x1, y1, x2, y2);
+            bool br = IsPointAboveLineThroughPoints(_width - 1, 0, x1, y1, x2, y2);
+
+            // if all corners are on the same side of the line then this line isnt interesting
+            if (bl == tl && bl == tr && bl == br) return false;
+        }
+
+        _edges.push_back(KaleidoscopeEdge(xlPoint(x1, y1), xlPoint(x2, y2)));
+        return true;
+    }
+
+    bool IsPointAboveLineThroughPoints(int x, int y, int x1, int y1, int x2, int y2)
+    {
+        double slope = (double)(y2 - y1) / (double)(x2 - x1);
+        double yintercept = slope * -1.0 * (double)x1 + (double)y1;
+        double ytest = slope * x + yintercept;
+        return (double)y > ytest;
+    }
+
+    std::pair<int,int> GetPointAfterMove(int x, int y, int degrees, double d)
+    {
+        double a = toRadians(degrees);
+        double dx = d * cos(a);
+
+        int f = 1;
+        if (dx < 0) f = -1;
+
+        double aa = std::abs(std::abs(dx) - (int)std::abs(dx) - 0.5);
+        if (aa < 0.0000001)
+        {
+            dx = f * ((int)std::abs(dx) + 0.5);
+        }
+        double dy = d * sin(a);
+        f = 1;
+        if (dy < 0) f = -1;
+        double bb = std::abs(std::abs(dy) - (int)std::abs(dy) - 0.5);
+        if (bb < 0.0000001)
+        {
+            dy = f * ((int)std::abs(dy) + 0.5);
+        }
+        return { x + std::round(dx), y + std::round(dy) };
+    }
+
+    void InitialiseSquare(int size, int rotation, int x, int y, int width, int height)
+    {
+        for (int xx = std::max(0, x - size / 2); xx <= std::min(x + size / 2, width -1); xx++)
+        {
+            for (int yy = std::max(0, y - size / 2); yy <= std::min(y + size / 2, height -1); yy++)
+            {
+                if (xx >= 0 && xx < width && yy >= 0 && yy < height)
+                {
+                    _startUsed[xx][yy] = true;
+                }
+            }
+        }
+
+        double cornerdistance = sqrt(2.0 * size * size ) / 2.0;
+        int iterations = 0;
+        int added;
+        do
+        {
+            added = 0;
+            auto p1 = GetPointAfterMove(x, y, rotation + 45, (2 * iterations + 1) * cornerdistance);
+            auto p2 = GetPointAfterMove(x, y, rotation + 45 + 90, (2 * iterations + 1) * cornerdistance);
+            auto p3 = GetPointAfterMove(x, y, rotation + 45 + 180, (2 * iterations + 1) * cornerdistance);
+            auto p4 = GetPointAfterMove(x, y, rotation + 45 + 270, (2 * iterations + 1) * cornerdistance);
+
+            if (CreateEdge(p1.first, p1.second, p2.first, p2.second)) added++;
+            if (CreateEdge(p2.first, p2.second, p3.first, p3.second)) added++;
+            if (CreateEdge(p3.first, p3.second, p4.first, p4.second)) added++;
+            if (CreateEdge(p4.first, p4.second, p1.first, p1.second)) added++;
+
+            iterations++;
+        } while (added > 0);
+    }
+
+    void InitialiseTriangle(int size, int rotation, int x, int y, int width, int height)
+    {
+        const double radiusFactor = tan(toRadians(30)) / 2.0;
+        double radius = size * radiusFactor;
+
+        int minx = GetPointAfterMove(x, y, 240, radius).first;
+        int miny = GetPointAfterMove(x, y, 240, radius).second;
+        int maxx = GetPointAfterMove(x, y, 300, radius).first;
+        int maxy = GetPointAfterMove(x, y, 90, radius).second;
+        int midx = (maxx + minx) / 2;
+
+        for (int xx = std::max(0,minx); xx < std::min(midx, width -1); xx++)
+        {
+            for (int yy = std::max(0, miny); yy <= std::min(maxy, height - 1); yy++)
+            {
+                if (!IsPointAboveLineThroughPoints(xx, yy, minx, miny, midx, maxy))
+                {
+                    _startUsed[xx][yy] = true;
+                }
+            }
+        }
+        for (int xx = std::max(0,midx); xx <= std::min(maxx, width -1); xx++)
+        {
+            for (int yy = std::max(0,miny); yy <= std::min(maxy, height -1); yy++)
+            {
+                if (!IsPointAboveLineThroughPoints(xx, yy, midx, maxy, maxx, miny))
+                {
+                    _startUsed[xx][yy] = true;
+                }
+            }
+        }
+
+        // bring the edges inside the shape area
+        if (radius > 10)
+        {
+            radius -= 1;
+        }
+        else if (radius > 5)
+        {
+            radius -= 0.5;
+        }
+        else
+        {
+            radius -= 0.1;
+        }
+
+        double s = size;
+        double gap = sqrt(s * s - s / 2.0 * s / 2.0);
+        int iterations = 0;
+        int added;
+        do
+        {
+            added = 0;
+            if (iterations == 0)
+            {
+                auto p1 = GetPointAfterMove(x, y, rotation + 90, radius);
+                auto p2 = GetPointAfterMove(x, y, rotation + 240, radius);
+                auto p3 = GetPointAfterMove(x, y, rotation + 300, radius);
+
+                if (CreateEdge(p1.first, p1.second, p2.first, p2.second)) added++;
+                if (CreateEdge(p2.first, p2.second, p3.first, p3.second)) added++;
+                if (CreateEdge(p3.first, p3.second, p1.first, p1.second)) added++;
+                if (rotation == 0)
+                {
+                    assert(p2.second == p3.second);
+                }
+            }
+            else
+            {
+                auto p1 = GetPointAfterMove(x, y, rotation + 90, iterations * gap + radius);
+                auto p2 = GetPointAfterMove(x, y, rotation + 240, iterations * gap + radius);
+                auto p3 = GetPointAfterMove(x, y, rotation + 300, iterations * gap + radius);
+
+                if (CreateEdge(p1.first, p1.second, p2.first, p2.second)) added++;
+                if (CreateEdge(p2.first, p2.second, p3.first, p3.second)) added++;
+                if (CreateEdge(p3.first, p3.second, p1.first, p1.second)) added++;
+            }
+
+            iterations++;
+        } while (added > 0);
+    }
+
+    // uint8_t, not bool: vector<bool> packs bits, so the flood-fill's
+    // parallel row writes would race on shared bytes and drop marks.
+    std::vector<std::vector<uint8_t>> _startUsed;
+    std::list<KaleidoscopeEdge> _edges;
+    // Per-pixel source index (y*width+x layout), identity for start-region and
+    // never-reached pixels.  The legacy flood fill only ever copies colors that
+    // originate in the start region, so the whole iteration collapses to this
+    // geometry-only map; per frame the effect is then a single snapshot+gather.
+    // Rebuilt whenever Initialise() reports a geometry change.
+    std::vector<int32_t> _map;
+};
+
+// Replays the legacy iterative reflection fill on PIXEL INDICES instead of
+// colors: identical pass structure, edge cycling and termination as the old
+// per-frame loop, so composing map[idx] = map[srcIdx] lands every pixel on the
+// same start-region source the color chain would have - byte-identical output.
+// Flat arrays + a remaining-count replace the per-pass vector-of-vectors deep
+// copies and full-grid KaleidoscopeDone rescans the old loop paid.
+void KaleidoscopeEffect::BuildLegacyMap(KaleidoscopeRenderCache* cache, int width, int height)
+{
+    const int pixelCount = width * height;
+    std::vector<int32_t>& map = cache->_map;
+    map.resize(pixelCount);
+    std::iota(map.begin(), map.end(), 0);
+
+    std::vector<uint8_t> used(pixelCount, 0);
+    int unfilled = pixelCount;
+    for (int x = 0; x < width; ++x) {
+        for (int y = 0; y < height; ++y) {
+            if (cache->_startUsed[x][y]) {
+                used[y * width + x] = 1;
+                --unfilled;
+            }
+        }
+    }
+
+    auto& edges = cache->_edges;
+    if (edges.empty()) {
+        return;
+    }
+    auto edge = edges.begin();
+    std::atomic_int setSinceBegin{ 0 };
+    std::vector<uint8_t> usedSnap;
+    while (unfilled > 0) {
+        usedSnap = used;
+        std::atomic_int setThisPass{ 0 };
+        parallel_for(0, height, [&](int y) {
+            for (int x = 0; x < width; ++x) {
+                const int idx = y * width + x;
+                if (!usedSnap[idx]) {
+                    auto source = GetSourceLocation(x, y, *edge, width, height);
+                    if (source.first >= 0 && source.first < width && source.second >= 0 && source.second < height) {
+                        const int sidx = source.second * width + source.first;
+                        if (usedSnap[sidx]) {
+                            map[idx] = map[sidx];
+                            used[idx] = 1;
+                            ++setThisPass;
+                            ++setSinceBegin;
+                        }
+                    }
+                }
+            }
+        });
+        unfilled -= setThisPass;
+        ++edge;
+        if (edge == edges.end()) {
+            if (setSinceBegin == 0) {
+                break;
+            }
+            setSinceBegin = 0;
+            edge = edges.begin();
+        }
+    }
+}
+
+bool KaleidoscopeEffect::KaleidoscopeDone(const std::vector<std::vector<uint8_t>>& current)
+{
+    for (const auto& xx : current)
+    {
+        for (const auto yy : xx)
+        {
+            if (!yy) return false;
+        }
+    }
+    return true;
+}
+
+std::pair<int, int> KaleidoscopeEffect::GetSourceLocation(int x, int y, const KaleidoscopeEdge& edge, int width, int height)
+{
+    double x1 = edge._p1.x;
+    double x2 = edge._p2.x;
+    double y1 = edge._p1.y;
+    double y2 = edge._p2.y;
+
+    double dx = x2 - x1;
+    double dy = y2 - y1;
+
+    double a = (dx * dx - dy * dy) / (dx * dx + dy * dy);
+    double b = 2.0 * dx * dy / (dx*dx + dy * dy);
+
+    return { std::round(a * (x - x1) + b * (y - y1) + x1),
+            std::round(b * (x - x1) - a * (y - y1) + y1) };
+}
+
+void DumpUsed(const std::vector<std::vector<uint8_t>>& current, int width, int height)
+{
+    
+
+    for (int y = height - 1; y >= 0; y--)
+    {
+        std::string row;
+        for (int x = 0; x < width; x++)
+        {
+            bool b = current[x][y];
+            row += fmt::format(" {}", (int)b);
+        }
+        spdlog::debug(row);
+    }
+}
+
+
+double KaleidoscopeEffect::SignedDist(double px, double py, double lx1, double ly1, double lx2, double ly2) {
+    return (lx2 - lx1) * (py - ly1) - (ly2 - ly1) * (px - lx1);
+}
+
+void KaleidoscopeEffect::ReflectPointAcrossLine(double& px, double& py, double lx1, double ly1, double lx2, double ly2) {
+    double dx = lx2 - lx1;
+    double dy = ly2 - ly1;
+    double denom = dx * dx + dy * dy;
+    double a = (dx * dx - dy * dy) / denom;
+    double b = 2.0 * dx * dy / denom;
+    double rx = px - lx1;
+    double ry = py - ly1;
+    px = a * rx + b * ry + lx1;
+    py = b * rx - a * ry + ly1;
+}
+
+double KaleidoscopeEffect::ReflectCoord(double v, double halfSize) {
+    double period = 4.0 * halfSize;
+    v = std::fmod(v + halfSize, period);
+    if (v < 0.0)
+        v += period;
+    if (v <= 2.0 * halfSize) {
+        return v - halfSize;
+    } else {
+        return 3.0 * halfSize - v;
+    }
+}
+
+// Compute triangle vertices for a given type, centered at (cx,cy) with given
+// size and rotation. Vertices are ensured to be in counter-clockwise order.
+KaleidoscopeTriangle KaleidoscopeEffect::ComputeTriangle(const std::string& type, double cx, double cy, double size, double rotRad) {
+    KaleidoscopeTriangle tri;
+
+    if (type == "6-Fold") {
+        // Equilateral triangle (60-60-60) - classic 6-fold kaleidoscope
+        // Circumradius = size / sqrt(3), using size as side length
+        double R = size / std::sqrt(3.0);
+
+        // Three vertices at 120 degree intervals
+        for (int i = 0; i < 3; i++) {
+            double angle = rotRad + toRadians(90.0 + 120.0 * i);
+            tri.v[i].x = cx + R * std::cos(angle);
+            tri.v[i].y = cy + R * std::sin(angle);
+        }
+    } else if (type == "8-Fold") {
+        // Right isosceles triangle (45-45-90) - 8-fold kaleidoscope
+        // Legs of length = size, centroid at center
+        double leg = size;
+
+        // Unrotated vertices relative to centroid:
+        // Right angle at (-leg/3, -leg/3)
+        // Other two at (2*leg/3, -leg/3) and (-leg/3, 2*leg/3)
+        double v0x = -leg / 3.0, v0y = -leg / 3.0;
+        double v1x = 2.0 * leg / 3.0, v1y = -leg / 3.0;
+        double v2x = -leg / 3.0, v2y = 2.0 * leg / 3.0;
+
+        double cosR = std::cos(rotRad);
+        double sinR = std::sin(rotRad);
+
+        tri.v[0].x = cx + v0x * cosR - v0y * sinR;
+        tri.v[0].y = cy + v0x * sinR + v0y * cosR;
+        tri.v[1].x = cx + v1x * cosR - v1y * sinR;
+        tri.v[1].y = cy + v1x * sinR + v1y * cosR;
+        tri.v[2].x = cx + v2x * cosR - v2y * sinR;
+        tri.v[2].y = cy + v2x * sinR + v2y * cosR;
+    } else if (type == "12-Fold") {
+        // 30-60-90 triangle - 12-fold kaleidoscope
+        // Hypotenuse = size, short leg = size/2, long leg = size * sqrt(3)/2
+        double hyp = size;
+        double shortLeg = hyp / 2.0;
+        double longLeg = hyp * std::sqrt(3.0) / 2.0;
+
+        // Unrotated vertices relative to centroid:
+        // Right angle at origin, short leg along x, long leg along y
+        // Centroid of right triangle = (shortLeg/3, longLeg/3)
+        double centX = shortLeg / 3.0;
+        double centY = longLeg / 3.0;
+
+        double v0x = -centX;
+        double v0y = -centY; // right angle
+        double v1x = shortLeg - centX;
+        double v1y = -centY; // end of short leg
+        double v2x = -centX;
+        double v2y = longLeg - centY; // end of long leg
+
+        double cosR = std::cos(rotRad);
+        double sinR = std::sin(rotRad);
+
+        tri.v[0].x = cx + v0x * cosR - v0y * sinR;
+        tri.v[0].y = cy + v0x * sinR + v0y * cosR;
+        tri.v[1].x = cx + v1x * cosR - v1y * sinR;
+        tri.v[1].y = cy + v1x * sinR + v1y * cosR;
+        tri.v[2].x = cx + v2x * cosR - v2y * sinR;
+        tri.v[2].y = cy + v2x * sinR + v2y * cosR;
+    }
+
+    // Ensure counter-clockwise vertex order (required for SignedDist to work)
+    double signedArea = (tri.v[1].x - tri.v[0].x) * (tri.v[2].y - tri.v[0].y) -
+                        (tri.v[2].x - tri.v[0].x) * (tri.v[1].y - tri.v[0].y);
+    if (signedArea < 0.0) {
+        std::swap(tri.v[1], tri.v[2]);
+    }
+
+    return tri;
+}
+
+// Map a pixel back to the source triangle by iterative reflection.
+// Each reflection mirrors the point across the triangle edge it is outside of.
+
+std::pair<int, int> KaleidoscopeEffect::MapToSourceTriangle(double px, double py, const KaleidoscopeTriangle& tri, int maxIter) {
+    double x = px;
+    double y = py;
+
+    for (int i = 0; i < maxIter; i++) {
+        double d0 = SignedDist(x, y, tri.v[0].x, tri.v[0].y, tri.v[1].x, tri.v[1].y);
+        double d1 = SignedDist(x, y, tri.v[1].x, tri.v[1].y, tri.v[2].x, tri.v[2].y);
+        double d2 = SignedDist(x, y, tri.v[2].x, tri.v[2].y, tri.v[0].x, tri.v[0].y);
+
+        // Inside the triangle (small tolerance for rounding)
+        if (d0 >= -0.5 && d1 >= -0.5 && d2 >= -0.5) {
+            return { (int)std::round(x), (int)std::round(y) };
+        }
+
+        // Reflect across the edge we are most outside of
+        if (d0 < d1 && d0 < d2) {
+            ReflectPointAcrossLine(x, y, tri.v[0].x, tri.v[0].y, tri.v[1].x, tri.v[1].y);
+        } else if (d1 < d2) {
+            ReflectPointAcrossLine(x, y, tri.v[1].x, tri.v[1].y, tri.v[2].x, tri.v[2].y);
+        } else {
+            ReflectPointAcrossLine(x, y, tri.v[2].x, tri.v[2].y, tri.v[0].x, tri.v[0].y);
+        }
+    }
+
+    // Didn't converge - return invalid
+    return { -1, -1 };
+}
+
+// Map a pixel back to the source square using coordinate folding.
+// Works by rotating into the square's local frame, folding both axes
+// via triangle-wave reflection, then rotating back to world space.
+// This is mathematically exact - no iteration needed.
+std::pair<int, int> KaleidoscopeEffect::MapToSourceNewSquare(double px, double py, double cx, double cy, double halfSize, double rotRad) {
+    // Transform to local coordinate frame (centered, unrotated)
+    double dx = px - cx;
+    double dy = py - cy;
+    double cosR = std::cos(-rotRad);
+    double sinR = std::sin(-rotRad);
+    double lx = dx * cosR - dy * sinR;
+    double ly = dx * sinR + dy * cosR;
+
+    // Fold both coordinates into [-halfSize, +halfSize]
+    lx = ReflectCoord(lx, halfSize);
+    ly = ReflectCoord(ly, halfSize);
+
+    // Transform back to world coordinates
+    cosR = std::cos(rotRad);
+    sinR = std::sin(rotRad);
+    double wx = lx * cosR - ly * sinR + cx;
+    double wy = lx * sinR + ly * cosR + cy;
+
+    return { (int)std::round(wx), (int)std::round(wy) };
+}
+
+// ============================================================================
+// For Square 2, 6-Fold, 8-Fold, 12-Fold, Radial
+// ============================================================================
+
+void KaleidoscopeEffect::RenderNew(const std::string& type, int xCentre, int yCentre, int size, int rotation, RenderBuffer& buffer) {
+    int width = buffer.BufferWi;
+    int height = buffer.BufferHt;
+    double cx = (double)xCentre;
+    double cy = (double)yCentre;
+    double rotRad = toRadians((double)rotation);
+
+    ispc::KaleidoscopeData kdata;
+    kdata.width  = width;
+    kdata.height = height;
+    kdata.cx     = (float)cx;
+    kdata.cy     = (float)cy;
+    kdata.rotRad = (float)rotRad;
+    kdata.v0x = kdata.v0y = kdata.v1x = kdata.v1y = kdata.v2x = kdata.v2y = 0.0f;
+    kdata.maxIter = 0;
+
+    if (type == "Square 2") {
+        kdata.style = KALE_ISPC_STYLE_SQUARE2;
+        kdata.size  = (float)(size / 2.0);
+    } else if (type == "Radial") {
+        kdata.style = KALE_ISPC_STYLE_RADIAL;
+        kdata.size  = (float)std::max(2, size);
+    } else {
+        // 6-Fold, 8-Fold, 12-Fold
+        if      (type == "6-Fold")  kdata.style = KALE_ISPC_STYLE_6FOLD;
+        else if (type == "8-Fold")  kdata.style = KALE_ISPC_STYLE_8FOLD;
+        else                        kdata.style = KALE_ISPC_STYLE_12FOLD;
+        kdata.size = (float)size;
+
+        KaleidoscopeTriangle tri = ComputeTriangle(type, cx, cy, (double)size, rotRad);
+        kdata.v0x = (float)tri.v[0].x;  kdata.v0y = (float)tri.v[0].y;
+        kdata.v1x = (float)tri.v[1].x;  kdata.v1y = (float)tri.v[1].y;
+        kdata.v2x = (float)tri.v[2].x;  kdata.v2y = (float)tri.v[2].y;
+
+        int maxDim = std::max(width, height);
+        int maxIter = std::max(50, (maxDim * 3) / std::max(size, 1));
+        if (maxIter > 500) maxIter = 500;
+        kdata.maxIter = maxIter;
+    }
+
+    // Snapshot source pixels so reads are not affected by in-progress writes
+    int pixelCount = width * height;
+    std::vector<uint8_t> srcSnap(pixelCount * 4);
+    memcpy(srcSnap.data(), buffer.GetPixels(), pixelCount * 4);
+
+    if (buffer.dmx_buffer) {
+        // DMX fixtures need the colour routed through SetPixel()
+        ispc::uint8_t4 single = {};
+        ispc::KaleidoscopeEffectISPC(&kdata, (const ispc::uint8_t4*)srcSnap.data(), &single, 0, 1);
+        buffer.SetPixel(0, 0, xlColor(single.v[0], single.v[1], single.v[2], single.v[3]));
+        return;
+    }
+
+    constexpr int bfBlockSize = 4096;
+    int blocks = pixelCount / bfBlockSize + 1;
+    parallel_for(0, blocks, [&kdata, &srcSnap, &buffer, pixelCount](int blk) {
+        int start = blk * bfBlockSize;
+        int end = start + bfBlockSize;
+        if (end > pixelCount) end = pixelCount;
+        ispc::KaleidoscopeEffectISPC(&kdata,
+                                     (const ispc::uint8_t4*)srcSnap.data(),
+                                     (ispc::uint8_t4*)buffer.GetPixels(),
+                                     start, end);
+    });
+}
+
+
+void KaleidoscopeEffect::Render(Effect *eff, const SettingsMap &SettingsMap, RenderBuffer &buffer)
+{
+    //
+    float progress = buffer.GetEffectTimeIntervalPosition(1.f);
+
+    std::string type = SettingsMap.Get("CHOICE_Kaleidoscope_Type", sTypeDefault);
+    int xCentre = GetValueCurveInt("Kaleidoscope_X", sXDefault, SettingsMap, progress, sXMin, sXMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS()) * buffer.BufferWi / 100;
+    int yCentre = GetValueCurveInt("Kaleidoscope_Y", sYDefault, SettingsMap, progress, sYMin, sYMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS()) * buffer.BufferHt / 100;
+    int size = GetValueCurveInt("Kaleidoscope_Size", sSizeDefault, SettingsMap, progress, sSizeMin, sSizeMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int rotation = GetValueCurveInt("Kaleidoscope_Rotation", sRotationDefault, SettingsMap, progress, sRotationMin, sRotationMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+
+
+    if (type == "Square 2" || type == "6-Fold" || type == "8-Fold" || type == "12-Fold" || type == "Radial") {
+        RenderNew(type, xCentre, yCentre, size, rotation, buffer);
+        return;
+    }
+
+
+    KaleidoscopeRenderCache *cache = static_cast<KaleidoscopeRenderCache*>(buffer.infoCache[id]);
+    if (cache == nullptr) {
+        cache = new KaleidoscopeRenderCache();
+        buffer.infoCache[id] = cache;
+    }
+
+    bool changed;
+    if (buffer.needToInit)
+    {
+        buffer.needToInit = false;
+        changed = cache->Initialise(size, rotation, xCentre, yCentre, buffer.BufferWi, buffer.BufferHt, type, true);
+    }
+    else
+    {
+        // reinitialise ... but only if something has changed
+        changed = cache->Initialise(size, rotation, xCentre, yCentre, buffer.BufferWi, buffer.BufferHt, type, false);
+    }
+
+    if (!buffer.dmx_buffer) {
+        // The fill's result is a pure geometric map (see BuildLegacyMap), so a
+        // static-geometry effect pays the fill once and every frame is just a
+        // snapshot + gather.
+        const int pixelCount = buffer.BufferWi * buffer.BufferHt;
+        if (changed || (int)cache->_map.size() != pixelCount) {
+            BuildLegacyMap(cache, buffer.BufferWi, buffer.BufferHt);
+        }
+        std::vector<xlColor> srcSnap(pixelCount);
+        memcpy(srcSnap.data(), buffer.GetPixels(), pixelCount * 4);
+        const int32_t* map = cache->_map.data();
+        const xlColor* src = srcSnap.data();
+        xlColor* dst = buffer.GetPixels();
+        parallel_for(0, buffer.BufferHt, [&](int y) {
+            const int base = y * buffer.BufferWi;
+            for (int x = 0; x < buffer.BufferWi; ++x) {
+                dst[base + x] = src[map[base + x]];
+            }
+        });
+        return;
+    }
+
+    // DMX-model buffers: SetPixel routes through SetPixelDMXModel, so the raw
+    // gather above doesn't apply - keep the original iterative fill.
+    auto currentUsed = cache->_startUsed;
+    auto &edges = cache->_edges;
+
+    auto edge = edges.begin();
+    //spdlog::debug("frame. Edges {}", (int)edges.size());
+    std::atomic_int setSinceBegin;
+    setSinceBegin = 0;
+    while (!KaleidoscopeDone(currentUsed) && edges.size() > 0)
+    {
+        //spdlog::debug("   iterate");
+        //int set = 0;
+
+        //DumpUsed(currentUsed, buffer.BufferWi, buffer.BufferHt);
+        // Read the fill state as it was at the start of this pass. Reading the
+        // live currentUsed grid (and the pixels it points at) while other
+        // threads were writing them made the fill order - and thus the colors -
+        // depend on thread timing, so the effect rendered differently every
+        // time. Sources are always pixels filled in a PRIOR pass (usedSnap ==
+        // true), so their pixels are stable this pass; writes only touch pixels
+        // that were unfilled at pass start, disjoint from any source. Race-free
+        // and reproducible.
+        auto usedSnap = currentUsed;
+        parallel_for(0, buffer.BufferHt, [&usedSnap, &currentUsed, this, &buffer, &edge, &setSinceBegin] (int y) {
+            for (int x = 0; x < buffer.BufferWi; x++) {
+                if (!usedSnap[x][y]) {
+                    // this pixel needs to be set
+                    auto source = GetSourceLocation(x, y, *edge, buffer.BufferWi, buffer.BufferHt);
+                    if (source.first >= 0 && source.first < buffer.BufferWi && source.second >= 0 && source.second < buffer.BufferHt) {
+                        if (usedSnap[source.first][source.second]) {
+                            buffer.SetPixel(x, y, buffer.GetPixel(source.first, source.second));
+                            currentUsed[x][y] = true;
+                            //set++;
+                            setSinceBegin++;
+                        }
+                    }
+                }
+            }
+        });
+        //spdlog::debug("   set this iteration {}", set);
+        ++edge;
+        if (edge == edges.end()) {
+            if (setSinceBegin == 0)
+            {
+                break;
+            }
+            setSinceBegin = 0;
+            edge = edges.begin();
+        }
+    }
+}

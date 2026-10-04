@@ -1,0 +1,51 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "Model.h"
+
+class IciclesModel : public ModelWithScreenLocation<ThreePointScreenLocation>
+{
+public:
+    IciclesModel(const ModelManager &manager);
+    virtual ~IciclesModel();
+    
+    [[nodiscard]] virtual bool SupportsExportAsCustom() const override { return true; }
+    [[nodiscard]] virtual bool SupportsWiringView() const override { return true; }
+    [[nodiscard]] virtual std::string GetDimension() const override;
+    virtual int GetNumStrings() const override { return _numStrings; }
+    virtual int NodesPerString() const override;
+
+    [[nodiscard]] int GetNumIcicleStrings() const { return _numStrings; }
+    [[nodiscard]] int GetLightsPerString() const { return _lightsPerString; }
+    void SetNumIcicleStrings(int val) { _numStrings = val; }
+    void SetLightsPerString(int val) { _lightsPerString = val; }
+
+    [[nodiscard]] bool HasAlternateNodes() const { return _alternateNodes; }
+    [[nodiscard]] std::string GetDropPattern() const { return _dropPatternString; }
+    void SetDropPattern(const std::string & pattern);
+    void SetAlternateNodes(bool val) { _alternateNodes = val; }
+
+    void Accept(BaseObjectVisitor& visitor) const override { return visitor.Visit(*this); }
+
+protected:
+    virtual void InitModel() override;
+
+private:
+    void SetIciclesCoord();
+    void ParseDropSizes();
+    int _numStrings = 1;
+    int _lightsPerString = 1;
+    bool _alternateNodes = false;
+    std::string _dropPatternString = "3,4,5,4";
+    std::vector<size_t> _dropSizes;
+    size_t _maxH = 0;
+};

@@ -1,0 +1,84 @@
+build
+.clangd
+bin/xCapture
+bin/xFade
+bin/xLights
+bin/xScanner
+bin/xSchedule
+bin/xSMSDaemon
+bin/RemoteFalcon
+bin/*.dll
+bin/*.exe
+bin/*.map
+bin/*.so
+bin64/xLights
+bin64/xSchedule
+bin64/*.dll
+bin64/*.exe
+bin64/*.map
+*.bak
+thumbs.db
+*.save
+*cscope*
+xcuserdata
+xcshareddata
+.DS_Store
+*.tlog
+*.idb
+*.sdf
+*.opendb
+*.exp
+xLights/Debug/
+xLights/Release/
+xLights/xLights_l4cpp.log
+.objs_wr
+.objs_wd
+.objs_ld
+.objs_lr
+.objs_debug
+.objs
+wxWidgets*
+ispc-*
+ispc
+xLights/xLights.VC.db
+lib/linux/libliquidfun.a
+# KLightMapper desktop scan library — fetched, not committed (ci_scripts/fetch_klightmapper.*).
+# bin64/klightmapper.dll is already covered by bin64/*.dll above.
+lib/linux/libklightmapper.so
+lib/linux/libklightmapper_av*.so
+lib/linux/.klightmapper_version
+lib/windows64/.klightmapper_version
+lib/windows64/klightmapper.lib
+include/klightmapper/
+*.opensdf
+*.cbp.mak.orig
+._*
+xLights/xlights_build_version.h
+*.obj
+*.ipch
+*.pdb
+*.log
+*.db
+xScanner/x64
+/xLights/enc_temp_folder
+*~
+/.vs/xLights/v17
+*.cbp.mak
+.claude
+.mcp.json
+share
+**/cmake_vs/
+plans/private-**
+# Generated Vulkan SPIR-V headers (built by build_scripts/compile_vulkan_shaders.sh)
+src-core/effects/vulkan/shaders/compiled/*.spv.h
+src-core/graphics/vulkan/shaders/compiled/*.spv.h
+
+# Shared dependency bundle for Windows - fetched by ci_scripts/fetch_dependencies.ps1,
+# never committed. This is what replaces the binaries that used to live in
+# lib/windows64 and bin64.
+/dependencies-bundle/
+
+# ONNX Runtime (DirectML) — fetched from its NuGet package, not committed
+# (ci_scripts/fetch_dependencies.ps1). The DLL under bin64 and the import
+# library under lib/windows64 are already covered by the rules above.
+include/onnxruntime/

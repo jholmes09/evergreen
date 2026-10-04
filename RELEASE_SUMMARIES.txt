@@ -1,0 +1,87 @@
+=== macOS App Store (limit 4000) ===
+xLights 2026.17 - September 8, 2026
+
+New
+- Matrix faces gain the movement, positioning and scaling controls the Pictures effect has: direction, X/Y offset, start/end scale, wrap, pixel offsets and vector mode.
+- ML stem separation (Drums, Bass, Other, Vocals) now saves each stem as an alternate audio track in Sequence Settings, so the stems survive closing the sequence and never need reprocessing.
+- Picking media from outside the show folder can now file it under ImportedMedia/<sequence name>/ instead of the show folder root.
+- The Custom Model Wiring view adds a text size slider and a 3D drag-to-rotate mode that uses each node's real depth. Cube models now support the Wiring view too, and the dialog remembers its size and position.
+- The House Preview's "Keep on Top" setting is remembered across restarts.
+- A new MCP server runs alongside the REST automation API, so MCP-aware AI tools can drive xLights.
+- Apple Intelligence image generation now opens the system Image Playground, seeded with your prompt and style, and brings the image you accept back into the usual crop and save flow.
+
+Improved
+- Renders on large shows start noticeably sooner. Render setup runs across cores and off the interface thread, so kicking off a render no longer freezes the window while it is prepared.
+- Big speedup rendering the Faces effect on large matrix models.
+- Playback no longer stalls on a render it triggered; a model needing a re-render is picked up on a later frame.
+- SubModel, Face and State names can contain the "@" character again.
+- The startup check for a new release no longer pauses the interface while it waits on the network.
+- The log is flushed every few seconds, so a crash loses far fewer recent log lines.
+- macOS 12.0 is now the minimum supported version.
+
+Fixed
+- Uncompressed .mov files no longer stop rendering after a few renders on macOS 26.7, and videos with B-frames no longer start two frames late.
+- Fixed crashes rendering a video effect when the decoder changed mid-file, and when generating a video effect's preview.
+- Fixed the Ripple effect drawing garbage with very short timing triggers, the Bars effect wrapping the wrong color, corrupted Text glyphs on small buffers, the Text effect ignoring Color Per Word, and crashes in Butterfly and Plasma with large palettes.
+- A Pictures effect with a missing image recovers on the next render once the file is put back.
+- Fixed Off effects on moving heads snapping the head out of position, Moving Head effect tabs staying disabled, and a crash rendering a Moving Head effect with a partial color.
+- Fixed a number of crashes and hangs on the Layout tab: rendering a model group while the layout is edited, the Faces editor on a node-less custom model, choosing a background image on very large custom models, and Output to Lights on SuperString models.
+- Fixed deleting a model leaving stale submodels in groups, groups showing submodels of inactive models, the model list losing its sort order, and the Background Properties pane collapsing to nothing.
+- Fixed Poly Line and Multi Point models with too few points failing to load, and the "model perhaps flipped" warning firing on almost every two-point model.
+- Kulp K16A-B is now split into 1.x and 2.x/3.x variants so uploads write a configuration the board can actually run. Also fixed an FPP Connect crash, a hang cancelling an upload, and duplicate loopback entries during discovery.
+- Fixed crashes toggling docked panes, loading a perspective, and opening the File menu when the show folder is on an external or network drive.
+- Fixed several automation commands mishandling settings, dropdown properties and relative file names.
+- xLights no longer hangs after sending a crash report, and crash reports now include the machine configuration.
+
+=== iPad App Store (limit 4000) ===
+xLights 2026.17 - September 8, 2026
+
+New
+- Matrix faces gain the movement, positioning and scaling controls the Pictures effect has: direction, X/Y offset, start/end scale, wrap, pixel offsets and vector mode.
+
+Improved
+- Renders on large sequences start noticeably sooner; render setup now runs across cores.
+- Big speedup rendering the Faces effect on large matrix models.
+- Playback no longer stalls on a render it triggered; a model needing a re-render is picked up on a later frame.
+- SubModel, Face and State names can contain the "@" character again.
+
+Fixed
+- Sequences opened from a writable location were all treated as read-only, which disabled Save.
+- Fixed a crash closing or re-rendering a sequence while the render progress sheet is open.
+- An effect edited while the layout is reloading is now rendered when the reload finishes instead of being dropped.
+- Batch Render no longer overwrites a good .fseq with an empty one when the render could not start; it retries and then skips that sequence.
+- Changing the frame interval of a packaged (.xsqz) sequence now reopens it correctly.
+- A media file dropped onto the grid is copied into the show folder, so the effect still finds it later.
+- Fixed a crash undoing a lyric breakdown after a phoneme was broken down again or deleted.
+- A renamed or deleted preview no longer lingers in the preview menus.
+- "Move All Models To Port" no longer chains a multi-string model after itself and rejects ports the controller does not have.
+- Restoring a show folder backup now replaces each file only after its copy succeeds, and stops if the safety backup fails.
+- "Cleanup File Locations" no longer blanks a face image, image or mesh path when the copy into the show folder fails.
+- Tip of the Day is now readable in dark mode.
+- Fixed the Ripple effect drawing garbage with very short timing triggers, the Bars effect wrapping the wrong color, the Text effect ignoring Color Per Word, and crashes in Butterfly and Plasma with large palettes.
+- A Pictures effect with a missing image recovers on the next render once the file is put back.
+- Fixed Off effects on moving heads snapping the head out of position, and a crash rendering a Moving Head effect with a partial color.
+- Fixed crashes rendering a model group while the layout is being edited or after a base show folder sync.
+- Fixed Poly Line and Multi Point models with too few points failing to load.
+
+=== Windows Store (limit 1500) ===
+xLights 2026.17 - September 8, 2026
+
+New
+- Matrix faces gain the Pictures effect's movement, positioning and scaling controls.
+- ML stem separation saves each stem as an alternate audio track that survives closing the sequence.
+- Custom Model Wiring adds a 3D drag-to-rotate mode, a text size slider and Cube model support.
+- A new MCP server lets MCP-aware AI tools drive xLights.
+
+Improved
+- Renders on large shows start much sooner; render setup runs across cores and off the interface thread.
+- Big speedup rendering the Faces effect on large matrix models.
+- Graphics "Auto" now falls back to Vulkan on machines with no vendor display driver or over Remote Desktop.
+
+Fixed
+- Fixed a hang when a sequence frame takes longer than the frame interval.
+- Fixed corrupted Text glyphs on small buffers and the Text effect ignoring Color Per Word.
+- Fixed crashes in Butterfly, Plasma, Moving Head, Video and Faces rendering.
+- Fixed a number of Layout tab crashes, stale submodels in groups, and lost model list sorting.
+- Hardware video decode no longer drops to software when an effect starts mid-file.
+- Kulp K16A-B is split into 1.x and 2.x/3.x variants so uploads match the board; several FPP Connect fixes.

@@ -1,0 +1,281 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "SnowstormEffect.h"
+
+#include "../utils/xlPoint.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "UtilClasses.h"
+
+#include "../../include/snowstorm-16.xpm"
+#include "../../include/snowstorm-24.xpm"
+#include "../../include/snowstorm-32.xpm"
+#include "../../include/snowstorm-48.xpm"
+#include "../../include/snowstorm-64.xpm"
+
+// Fallback defaults (replaced from Snowstorm.json in OnMetadataLoaded).
+int SnowstormEffect::sCountDefault = 50;
+int SnowstormEffect::sLengthDefault = 50;
+int SnowstormEffect::sSpeedDefault = 10;
+
+SnowstormEffect::SnowstormEffect(int id) : RenderableEffect(id, "Snowstorm", snowstorm_16, snowstorm_24, snowstorm_32, snowstorm_48, snowstorm_64)
+{
+    tooltip = "Snow Storm";
+}
+
+SnowstormEffect::~SnowstormEffect() {}
+
+void SnowstormEffect::OnMetadataLoaded()
+{
+    sCountDefault = GetIntDefault("Snowstorm_Count", sCountDefault);
+    sLengthDefault = GetIntDefault("Snowstorm_Length", sLengthDefault);
+    sSpeedDefault = GetIntDefault("Snowstorm_Speed", sSpeedDefault);
+}
+
+class SnowstormClass
+{
+public:
+    std::vector<xlPoint> points;
+    HSVValue hsv;
+    int idx,ssDecay;
+    ~SnowstormClass()
+    {
+        points.clear();
+    }
+};
+
+// 0 <= idx <= 7
+static xlPoint SnowstormVector(int idx)
+{
+    xlPoint xy;
+    switch (idx) {
+    case 0:
+        xy.x = -1;
+        xy.y = 0;
+        break;
+    case 1:
+        xy.x = -1;
+        xy.y = -1;
+        break;
+    case 2:
+        xy.x = 0;
+        xy.y = -1;
+        break;
+    case 3:
+        xy.x = 1;
+        xy.y = -1;
+        break;
+    case 4:
+        xy.x = 1;
+        xy.y = 0;
+        break;
+    case 5:
+        xy.x = 1;
+        xy.y = 1;
+        break;
+    case 6:
+        xy.x = 0;
+        xy.y = 1;
+        break;
+    default:
+        xy.x = -1;
+        xy.y = 1;
+        break;
+    }
+    return xy;
+}
+
+static void SnowstormAdvance(RenderBuffer& buffer, SnowstormClass& ssItem)
+{
+    const int cnt = 8;  // # of integers in each set in arr[]
+    const int arr[] = { 30,20,10,5,0,5,10,20,20,15,10,10,10,10,10,15 }; // 2 sets of 8 numbers, each of which add up to 100
+    xlPoint adv = SnowstormVector(7);
+    int i0 = ssItem.idx % 7 <= 4 ? 0 : cnt;
+    int r = buffer.randInt(0, 99);
+    for (int i = 0, val = 0; i < cnt; i++)
+    {
+        val += arr[i0 + i];
+        if (r < val)
+        {
+            adv = SnowstormVector(i);
+            break;
+        }
+    }
+
+    if (ssItem.idx % 3 == 0) {
+        adv.x *= 2;
+        adv.y *= 2;
+    }
+
+    xlPoint xy = ssItem.points.back() + adv;
+    xy.x %= buffer.BufferWi;
+    xy.y %= buffer.BufferHt;
+    if (xy.x < 0) xy.x += buffer.BufferWi;
+    if (xy.y < 0) xy.y += buffer.BufferHt;
+    ssItem.points.push_back(xy);
+}
+
+class SnowstormRenderCache : public EffectRenderCache {
+public:
+    SnowstormRenderCache() {};
+    virtual ~SnowstormRenderCache() {};
+
+    int LastSnowstormCount;
+    std::list<SnowstormClass> SnowstormItems;
+};
+
+// Tier-2 immutable per-frame draw state: a copy of the advanced items + the
+// tail length the fade uses.  The draw is a pure function of these + the
+// buffer's geometry/allowAlpha.
+struct SnowstormFrameState : public EffectFrameState {
+    std::vector<SnowstormClass> items;
+    int tailLength = 1;
+};
+
+// Pure draw of the advanced items.  Templated so it draws the live cache list
+// and a captured snapshot vector with identical code.  Uses no RNG (all RNG is
+// in the advance), so advance-all-then-draw-all is byte-identical to the old
+// interleaved per-item loop.
+template <typename Container>
+static void DrawSnowstormItems(RenderBuffer& buffer, const Container& items, int TailLength) {
+    for (const auto& it : items) {
+        int sz = it.points.size();
+        for (int pt = 0; pt < sz; pt++) {
+            HSVValue hsv = it.hsv;
+            if (buffer.allowAlpha) {
+                xlColor c(hsv);
+                c.alpha = 255.8 * (1.0 - double(sz - pt + it.ssDecay) / TailLength);
+                buffer.SetPixel(it.points[pt].x, it.points[pt].y, c);
+            }
+            else {
+                hsv.value = 1.0 - double(sz - pt + it.ssDecay) / TailLength;
+                if (hsv.value < 0.0) hsv.value = 0.0;
+                buffer.SetPixel(it.points[pt].x, it.points[pt].y, hsv);
+            }
+        }
+    }
+}
+
+void SnowstormEffect::Render(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+    // Draw pass: rasterise the snapshot AdvanceState produced.  Under the tier-2
+    // engine this is the ONLY path reached (AdvanceState runs first and sets
+    // pendingSnapshot in both serial and frame-parallel rendering).
+    if (buffer.pendingSnapshot != nullptr) {
+        const SnowstormFrameState& fs = static_cast<const SnowstormFrameState&>(*buffer.pendingSnapshot);
+        DrawSnowstormItems(buffer, fs.items, fs.tailLength);
+        return;
+    }
+    // Defensive fall-through for any caller that invokes Render without first
+    // going through AdvanceState: advance then draw, exactly the legacy body.
+    // The draw is a pure function of the snapshot, so this stays byte-identical.
+    auto fs = AdvanceState(effect, SettingsMap, buffer);
+    const SnowstormFrameState& sfs = static_cast<const SnowstormFrameState&>(*fs);
+    DrawSnowstormItems(buffer, sfs.items, sfs.tailLength);
+}
+
+std::unique_ptr<EffectFrameState> SnowstormEffect::AdvanceState(Effect* effect, const SettingsMap& SettingsMap, RenderBuffer& buffer) {
+    int Count = SettingsMap.GetInt("SLIDER_Snowstorm_Count", sCountDefault);
+    int TailLength = SettingsMap.GetInt("SLIDER_Snowstorm_Length", sLengthDefault);
+    int sSpeed = SettingsMap.GetInt("SLIDER_Snowstorm_Speed", sSpeedDefault);
+
+    float progress = buffer.GetEffectTimeIntervalPosition();
+    HSVValue hsv0;
+    HSVValue hsv1;
+    buffer.palette.GetHSV(0, hsv0, progress);
+    buffer.palette.GetHSV(1, hsv1, progress);
+
+    if (TailLength == 0) TailLength = 1;
+
+    SnowstormRenderCache* cache = (SnowstormRenderCache*)buffer.infoCache[id];
+    if (cache == nullptr) {
+        cache = new SnowstormRenderCache();
+        buffer.infoCache[id] = cache;
+    }
+    std::list<SnowstormClass>& SnowstormItems = cache->SnowstormItems;
+
+    if (buffer.needToInit || Count != cache->LastSnowstormCount) {
+        buffer.needToInit = false;
+        // create snowstorm elements
+        cache->LastSnowstormCount = Count;
+        SnowstormItems.clear();
+        for (int i = 0; i < Count; i++)
+        {
+            SnowstormClass ssItem;
+            ssItem.idx = i;
+            ssItem.ssDecay = 0;
+            ssItem.points.clear();
+            buffer.SetRangeColor(hsv0, hsv1, ssItem.hsv);
+
+            // start in a random state
+            int r = buffer.randInt(0, 2 * TailLength - 1);
+            if (r > 0) {
+                xlPoint xy;
+                xy.x = buffer.randInt(0, buffer.BufferWi - 1);
+                xy.y = buffer.randInt(0, buffer.BufferHt - 1);
+                ssItem.points.push_back(xy);
+            }
+            if (r >= TailLength) {
+                ssItem.ssDecay = r - TailLength;
+                r = TailLength;
+            }
+            for (int j = 1; j < r; j++) {
+                SnowstormAdvance(buffer, ssItem);
+            }
+            SnowstormItems.push_back(ssItem);
+        }
+    }
+    else
+    {
+        // This updates the colours where using colour curves
+        for (auto& it : SnowstormItems) {
+            int val = it.hsv.value;
+            buffer.SetRangeColor(hsv0, hsv1, it.hsv);
+            it.hsv.value = val;
+        }
+    }
+
+    // advance Snowstorm Items (all the per-frame RNG lives here)
+    for (auto& it : SnowstormItems) {
+
+        if ((int)it.points.size() > TailLength) {
+            if (it.ssDecay > TailLength) {
+                it.points.clear();  // start over
+                it.ssDecay = 0;
+            }
+            else if (buffer.randInt(0, 19) < sSpeed) {
+                it.ssDecay++;
+            }
+        }
+
+        if (it.points.empty()) {
+            xlPoint xy;
+            xy.x = buffer.randInt(0, buffer.BufferWi - 1);
+            xy.y = buffer.randInt(0, buffer.BufferHt - 1);
+            it.points.push_back(xy);
+        }
+        else if (buffer.randInt(0, 19) < sSpeed) {
+            SnowstormAdvance(buffer, it);
+        }
+    }
+
+    // Capture the advanced items into this frame's immutable draw snapshot.  The
+    // engine hands it back to Render (via pendingSnapshot) for the actual draw,
+    // in both serial and frame-parallel rendering.
+    auto fs = std::make_unique<SnowstormFrameState>();
+    fs->items.assign(SnowstormItems.begin(), SnowstormItems.end());
+    fs->tailLength = TailLength;
+    return fs;
+}
+
+RenderableEffect::FrameParallelism SnowstormEffect::GetFrameParallelism(const SettingsMap& settings) const {
+    return FrameParallelism::Snapshottable;
+}
+

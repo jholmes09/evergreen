@@ -1,0 +1,195 @@
+{
+    "effectName": "Marquee",
+    "properties": [
+        {
+            "id": "Marquee_Band_Size",
+            "label": "Band Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 3,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Number of consecutive lit pixels in each color band of the marquee pattern."
+        },
+        {
+            "id": "Marquee_Skip_Size",
+            "label": "Skip Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Number of unlit (dark) pixels between each color band. Zero means bands are placed back-to-back with no gap."
+        },
+        {
+            "id": "Marquee_Thickness",
+            "label": "Thickness",
+            "type": "int",
+            "controlType": "slider",
+            "default": 1,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Number of concentric marquee rings drawn inward from the outer edge. Each ring is offset by one pixel toward the center."
+        },
+        {
+            "id": "Marquee_Stagger",
+            "label": "Stagger",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 50,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Offsets the starting position of each concentric ring so inner rings appear shifted relative to outer rings, creating a spiral-like look."
+        },
+        {
+            "id": "Marquee_Speed",
+            "label": "Speed",
+            "type": "int",
+            "controlType": "slider",
+            "default": 3,
+            "min": 0,
+            "max": 50,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "How fast the marquee pattern moves around the perimeter. Zero freezes the animation."
+        },
+        {
+            "id": "Marquee_Start",
+            "label": "Start Pos",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Initial offset position for the marquee pattern along the perimeter, allowing the starting point to be adjusted."
+        },
+        {
+            "id": "Marquee_Reverse",
+            "label": "Reverse",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the marquee pattern moves in the opposite direction around the perimeter."
+        },
+        {
+            "id": "Marquee_ScaleX",
+            "label": "Scale X",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Scales the marquee rectangle width as a percentage. Values below 100 shrink the marquee horizontally."
+        },
+        {
+            "id": "Marquee_ScaleY",
+            "label": "Scale Y",
+            "type": "int",
+            "controlType": "slider",
+            "default": 100,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Scales the marquee rectangle height as a percentage. Values below 100 shrink the marquee vertically."
+        },
+        {
+            "id": "Marquee_PixelOffsets",
+            "label": "Offsets In Pixels",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "separator": true,
+            "description": "When enabled, the X and Y center offset values are interpreted as absolute pixel counts instead of percentages of the buffer size."
+        },
+        {
+            "id": "MarqueeXC",
+            "label": "X-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Horizontal offset of the marquee center. Shifts the entire marquee rectangle left or right."
+        },
+        {
+            "id": "Marquee_WrapX",
+            "label": "Wrap X",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, pixels that move past the left or right edge wrap around to the opposite side instead of being clipped."
+        },
+        {
+            "id": "MarqueeYC",
+            "label": "Y-axis Center",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": -100,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Vertical offset of the marquee center. Shifts the entire marquee rectangle up or down."
+        },
+        {
+            "id": "Marquee_WrapY",
+            "label": "Wrap Y",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, pixels that move past the top or bottom edge wrap around to the opposite side instead of being clipped."
+        }
+    ],
+    "groups": [
+        {
+            "type": "tabs",
+            "tabs": [
+                {
+                    "label": "Settings",
+                    "properties": [
+                        "Marquee_Band_Size",
+                        "Marquee_Skip_Size",
+                        "Marquee_Thickness",
+                        "Marquee_Stagger",
+                        "Marquee_Speed",
+                        "Marquee_Start",
+                        "Marquee_Reverse"
+                    ]
+                },
+                {
+                    "label": "Position",
+                    "properties": [
+                        "Marquee_ScaleX",
+                        "Marquee_ScaleY",
+                        "Marquee_PixelOffsets",
+                        "MarqueeXC",
+                        "Marquee_WrapX",
+                        "MarqueeYC",
+                        "Marquee_WrapY"
+                    ]
+                }
+            ],
+            "settingKey": "E_NOTEBOOK_Marquee"
+        },
+        {
+            "type": "xyCenter",
+            "xProperty": "MarqueeXC",
+            "yProperty": "MarqueeYC",
+            "wrapX": "Marquee_WrapX",
+            "wrapY": "Marquee_WrapY"
+        }
+    ]
+}

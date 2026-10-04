@@ -1,0 +1,83 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "RenderableEffect.h"
+
+class SingleStrandRenderCache;
+
+class SingleStrandEffect : public RenderableEffect
+{
+public:
+    SingleStrandEffect(int id);
+    virtual ~SingleStrandEffect();
+    virtual bool needToAdjustSettings(const std::string& version) override;
+    virtual void adjustSettings(const std::string& version, Effect* effect, bool removeDefaults = true) override;
+    virtual void Render(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer) override;
+    // Only the "FX" (WS2812/WLED) sub-mode carries animation state across frames;
+    // Chase and Skips are pure functions of the frame.
+    virtual FrameParallelism GetFrameParallelism(const SettingsMap& settings) const override;
+    virtual void RenameTimingTrack(std::string oldname, std::string newname, Effect* effect) override;
+    virtual bool SupportsLinearColorCurves(const SettingsMap& SettingsMap) const override
+    {
+        return true;
+    }
+    virtual bool CanRenderPartialTimeInterval() const override
+    {
+        return true;
+    }
+
+    std::vector<std::string> GetSettingOptions(const std::string& setting) const override;
+
+    static double sRotationsDefault;
+    static double sRotationsMin;
+    static double sRotationsMax;
+    static int sRotationsDivisor;
+    static int sChasesDefault;
+    static int sChasesMin;
+    static int sChasesMax;
+    static int sColourMixDefault;
+    static int sColourMixMin;
+    static int sColourMixMax;
+    static double sOffsetDefault;
+    static double sOffsetMin;
+    static double sOffsetMax;
+    static int sOffsetDivisor;
+    static int sFXIntensityDefault;
+    static int sFXIntensityMin;
+    static int sFXIntensityMax;
+    static int sFXSpeedDefault;
+    static int sFXSpeedMin;
+    static int sFXSpeedMax;
+    static std::string sColorsDefault;
+    static std::string sChaseTypeDefault;
+    static std::string sFadeTypeDefault;
+    static bool sGroupAllDefault;
+    static int sSkipsBandSizeDefault;
+    static int sSkipsSkipSizeDefault;
+    static int sSkipsStartPosDefault;
+    static int sSkipsAdvanceDefault;
+    static std::string sTimingTrackDefault;
+
+protected:
+    virtual void OnMetadataLoaded() override;
+
+private:
+    void RenderSingleStrandChase(RenderBuffer& buffer, Effect* eff,
+                                 const SingleStrandRenderCache& cache, int Number_Chases, int chaseSize,
+                                 float chaseSpeed, float offset);
+    Effect* GetTimingEvent(RenderBuffer& buffer, const std::string& timingTrack, uint32_t ms);
+    void RenderSingleStrandSkips(RenderBuffer& buffer, Effect* eff, const SingleStrandRenderCache& cache);
+    void RenderSingleStrandFX(RenderBuffer& buffer, Effect* eff, SingleStrandRenderCache& cache, int intensity, int speed);
+    void draw_chase(RenderBuffer& buffer,
+                    int x, bool group, int ColorScheme, int Number_Chases, bool autoReverse, int width,
+                    int Color_Mix1, int fadeType, int ChaseDirection, bool mirror);
+};

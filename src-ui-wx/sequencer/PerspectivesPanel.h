@@ -1,0 +1,74 @@
+#pragma once
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+//(*Headers(PerspectivesPanel)
+#include <wx/button.h>
+#include <wx/listbox.h>
+#include <wx/panel.h>
+#include <wx/sizer.h>
+#include <wx/stattext.h>
+//)
+
+#include <vector>
+
+wxDECLARE_EVENT(EVT_FORCE_SEQUENCER_REFRESH, wxCommandEvent);
+wxDECLARE_EVENT(EVT_LOAD_PERSPECTIVE, wxCommandEvent);
+wxDECLARE_EVENT(EVT_PERSPECTIVES_CHANGED, wxCommandEvent);
+wxDECLARE_EVENT(EVT_SAVE_PERSPECTIVES, wxCommandEvent);
+
+class xLightsFrame;
+
+class PerspectivesPanel: public wxPanel
+{
+	public:
+
+		PerspectivesPanel(wxWindow* parent,wxWindowID id=wxID_ANY,const wxPoint& pos=wxDefaultPosition,const wxSize& size=wxDefaultSize);
+		void SetPerspectives(xLightsFrame* frame);
+		virtual ~PerspectivesPanel();
+
+		//(*Declarations(PerspectivesPanel)
+		wxButton* ButtonAddPerspective;
+		wxButton* ButtonDeletePerspective;
+		wxButton* ButtonRenamePerspective;
+		wxButton* ButtonSavePerspective;
+		wxListBox* ListBoxPerspectives;
+		wxStaticText* StaticText1;
+		//)
+
+	protected:
+
+		//(*Identifiers(PerspectivesPanel)
+		static const long ID_BUTTON_ADD_PERSPECTIVE;
+		static const long D_BUTTON_DELETE_PERSPECTIVE;
+		static const long ID_BUTTON_RENAME_PERSPECTIVE;
+		static const long ID_BUTTON_SAVE_PERSPECTIVE;
+		static const long ID_LISTBOX_PERSPECTIVES;
+		static const long ID_STATICTEXT1;
+		//)
+
+	private:
+
+		//(*Handlers(PerspectivesPanel)
+		void OnButtonAddPerspectiveClick(wxCommandEvent& event);
+		void OnPaint(wxPaintEvent& event);
+		void OnListBoxPerspectivesDClick(wxCommandEvent& event);
+		void OnButtonRenamePerspectiveClick(wxCommandEvent& event);
+		void OnButtonDeletePerspectiveClick(wxCommandEvent& event);
+		void OnButtonSavePerspectiveClick(wxCommandEvent& event);
+		//)
+
+		bool CheckForDuplicates(const wxString& perspective_name);
+
+		DECLARE_EVENT_TABLE()
+
+		xLightsFrame* _frame = nullptr;
+};

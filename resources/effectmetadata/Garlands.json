@@ -1,0 +1,58 @@
+{
+    "effectName": "Garlands",
+    "properties": [
+        {
+            "id": "Garlands_Type",
+            "label": "Garland Type",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 4,
+            "lockable": true,
+            "description": "Selects the garland droop pattern. Type 0 is flat, types 1-4 create increasingly deep U-shaped sags between attachment points."
+        },
+        {
+            "id": "Garlands_Spacing",
+            "label": "Spacing",
+            "type": "int",
+            "controlType": "slider",
+            "default": 10,
+            "min": 1,
+            "max": 100,
+            "valueCurve": true,
+            "lockable": true,
+            "description": "Distance between garland rows as a percentage of the buffer size. Higher values spread the rows further apart."
+        },
+        {
+            "id": "Garlands_Cycles",
+            "label": "Cycles",
+            "type": "float",
+            "controlType": "slider",
+            "default": 1.0,
+            "divisor": 10,
+            "valueCurve": true,
+            "min": 0,
+            "max": 200,
+            "description": "Number of times the garland animation cycles over the effect duration. Controls the speed of garland movement."
+        },
+        {
+            "id": "Garlands_Direction",
+            "label": "Stack Direction",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Up",
+                "Down",
+                "Left",
+                "Right",
+                "Up then Down",
+                "Down then Up",
+                "Left then Right",
+                "Right then Left"
+            ],
+            "default": "Up",
+            "description": "Direction the garlands stack and move. The 'then' options reverse direction at the midpoint of the effect."
+        }
+    ]
+}

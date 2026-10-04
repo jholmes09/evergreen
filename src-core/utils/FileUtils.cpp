@@ -1,0 +1,507 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "FileUtils.h"
+
+#include "ExternalHooks.h"
+
+#include <log.h>
+
+#include <map>
+#include <mutex>
+
+#include <filesystem>
+#include <chrono>
+#include <ctime>
+#include <cstdlib>
+namespace FileUtils
+{
+
+std::optional<long long> GetFileModTimeTicks(const std::string& path)
+{
+    std::error_code ec;
+    auto ftime = std::filesystem::last_write_time(path, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+
+    // Portable file_time_type -> time_t conversion
+    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+    return static_cast<long long>(std::chrono::system_clock::to_time_t(sctp));
+}
+
+bool NeedsBaseFileUpdate(const std::string& path, const std::string& syncedTicks, const std::string& mergeDescription)
+{
+    auto baseTicks = GetFileModTimeTicks(path);
+    if (!baseTicks) {
+        return true;
+    }
+
+    if (syncedTicks.empty()) {
+        return true;
+    }
+
+    char* end = nullptr;
+    long long synced = std::strtoll(syncedTicks.c_str(), &end, 10);
+    if (end == syncedTicks.c_str() || *end != '\0') {
+        return true;
+    }
+
+    if (*baseTicks > synced) {
+        return true;
+    }
+
+    spdlog::info("Base folder file '{}' unchanged since last sync (base mtime epoch={}, synced checkpoint epoch={}) -- skipping {}.", path, *baseTicks, synced, mergeDescription);
+    return false;
+}
+
+// ---- FileUtils::FixFile and related functions ----
+
+static std::list<std::string> _fixFileSearchDirs;
+static std::string _fixFileShowDir;
+static std::recursive_mutex _fixFileMutex;
+static std::vector<std::string> _fixFileNonExistent;
+static std::map<std::string, std::string> _fixFileMap;
+static std::map<std::string, bool> _fileExistsMap;
+
+// The resolved-path cache is keyed on the path as stored, and stored paths are
+// relative wherever possible, so entries are only meaningful for the directories
+// they were resolved against.
+static void ClearFixFileCaches() {
+    _fixFileMap.clear();
+    _fixFileNonExistent.clear();
+    _fileExistsMap.clear();
+}
+
+void SetFixFileShowDir(const std::string& showDir) {
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    if (_fixFileShowDir != showDir) {
+        ClearFixFileCaches();
+    }
+    _fixFileShowDir = showDir;
+}
+
+void SetFixFileDirectories(const std::list<std::string>& dirs) {
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    if (_fixFileSearchDirs != dirs) {
+        ClearFixFileCaches();
+    }
+    _fixFileSearchDirs = dirs;
+}
+
+void ClearNonExistentFiles() {
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    _fixFileNonExistent.clear();
+    _fileExistsMap.clear();
+}
+
+std::string GetFilenameFromPath(const std::string& path) {
+    auto pos = path.find_last_of("/\\");
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
+}
+
+bool IsAbsoluteOrRootedPath(const std::string& path) {
+    if (path.empty()) return false;
+    if (path[0] == '/' || path[0] == '\\') return true;
+    // "H:\...", "H:/..." and drive-relative "H:..." are all anchored to a drive
+    if (path.size() >= 2 && path[1] == ':' &&
+        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))) return true;
+    return std::filesystem::path(path).is_absolute();
+}
+
+// Get directory components from a path, splitting on both / and backslash
+static std::vector<std::string> GetPathComponents(const std::string& path) {
+    std::vector<std::string> components;
+    std::string current;
+    for (char c : path) {
+        if (c == '/' || c == '\\') {
+            if (!current.empty()) {
+                components.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+    // Don't include the filename — only directory components
+    return components;
+}
+
+// Check if a file exists in a directory with the given filename
+static bool doesFileExist(const std::string& dir, const std::string& filename, std::string& resultPath) {
+    if (filename.empty()) return false;
+    std::filesystem::path p = std::filesystem::path(dir) / filename;
+    std::string candidate = p.string();
+    if (FileExists(candidate, false)) {
+        spdlog::debug("File location fixed: {} -> {}", filename, candidate);
+        resultPath = candidate;
+        return true;
+    }
+    return false;
+}
+
+// The search-dir list is replaced wholesale by SetFixFileDirectories() while
+// parallel model loads are resolving paths, so callers that walk it outside
+// _fixFileMutex must walk a private copy - iterating the shared list is a UAF.
+static std::list<std::string> SnapshotSearchDirs() {
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    return _fixFileSearchDirs;
+}
+
+static std::string SnapshotShowDir() {
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    return _fixFileShowDir;
+}
+
+// Search dir + append, then all search directories
+static bool doesFileExistInDirs(const std::list<std::string>& searchDirs,
+                                const std::string& baseDir, const std::string& append,
+                                const std::string& filename, std::string& resultPath) {
+    std::string searchDir = baseDir;
+    if (!append.empty()) {
+        searchDir = (std::filesystem::path(baseDir) / append).string();
+    }
+    if (doesFileExist(searchDir, filename, resultPath)) return true;
+    for (const auto& fd : searchDirs) {
+        std::string sd = fd;
+        if (!append.empty()) {
+            sd = (std::filesystem::path(fd) / append).string();
+        }
+        if (doesFileExist(sd, filename, resultPath)) return true;
+    }
+    return false;
+}
+
+// Searches the installation's bundled resources/meshobjects tree
+static std::string FindBundledMeshObjectFile(const std::string& filename) {
+    std::string resDir = GetResourcesDir();
+    if (resDir.empty()) return {};
+    std::error_code ec;
+    std::string meshRoot = (std::filesystem::path(resDir) / "meshobjects").string();
+    std::filesystem::recursive_directory_iterator dirIt(meshRoot, ec);
+    for (; !ec && dirIt != std::filesystem::recursive_directory_iterator(); dirIt.increment(ec)) {
+        if (dirIt->is_regular_file(ec) && dirIt->path().filename() == filename) {
+            return dirIt->path().string();
+        }
+    }
+    return {};
+}
+
+std::string FixFile(const std::string& showDir, const std::string& file) {
+    if (file.empty()) return file;
+
+    // A bare relative path is show/media relative by construction, so it must be
+    // resolved against those directories rather than the process CWD, which is
+    // arbitrary and could bind to an unrelated same-named file.
+    const bool rooted = IsAbsoluteOrRootedPath(file);
+    if (rooted && FileExists(file, false)) return file;
+    auto meshPos = file.find("/meshobjects/");
+    if (meshPos != std::string::npos) {
+        return GetResourcesDir() + file.substr(meshPos);
+    }
+
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    if (showDir != _fixFileShowDir && !showDir.empty() && _fixFileShowDir.empty()) {
+        _fixFileShowDir = showDir;
+    }
+
+    // Check cache
+    auto it = _fixFileMap.find(file);
+    if (it != _fixFileMap.end()) return it->second;
+
+    if (std::find(_fixFileNonExistent.begin(), _fixFileNonExistent.end(), file) != _fixFileNonExistent.end()) {
+        return file;
+    }
+
+    std::string sd = showDir.empty() ? _fixFileShowDir : showDir;
+    const std::list<std::string> searchDirs = _fixFileSearchDirs;
+    lock.unlock();
+
+    spdlog::debug("File not found ... attempting to fix location ({}) : {}", sd, file);
+
+    // Extract filename using both Unix and Windows separators
+    std::string filename = GetFilenameFromPath(file);
+    std::string resultPath;
+
+    // Relative paths (saved for portability) resolve against the show dir and
+    // media dirs before any filename-based searching
+    if (!rooted && !sd.empty()) {
+        std::string append;
+        for (const auto& comp : GetPathComponents(file)) {
+            if (!append.empty()) append += std::filesystem::path::preferred_separator;
+            append += comp;
+        }
+        if (doesFileExistInDirs(searchDirs, sd, append, filename, resultPath)) {
+            lock.lock();
+            _fixFileMap[file] = resultPath;
+            return resultPath;
+        }
+    }
+
+    // Nothing under the show or media dirs matched, so fall back to the CWD the
+    // early-out above skipped for relative paths
+    if (!rooted && FileExists(file, false)) return file;
+
+    // Search show dir and search dirs for the file directly
+    if (doesFileExistInDirs(searchDirs, sd, "", filename, resultPath)) {
+        lock.lock();
+        _fixFileMap[file] = resultPath;
+        return resultPath;
+    }
+
+    // Search subdirectories of the show dir
+    {
+        std::error_code ec;
+        if (std::filesystem::is_directory(sd, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(sd, ec)) {
+                if (entry.is_directory()) {
+                    std::string folderName = entry.path().filename().string();
+                    std::string folderLower = folderName;
+                    std::transform(folderLower.begin(), folderLower.end(), folderLower.begin(), ::tolower);
+                    if (folderLower != "backup") {
+                        if (doesFileExist(entry.path().string(), filename, resultPath)) {
+                            lock.lock();
+                            _fixFileMap[file] = resultPath;
+                            return resultPath;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Try to match directory structure from the file path
+    std::string sdLower = std::filesystem::path(sd).filename().string();
+    std::transform(sdLower.begin(), sdLower.end(), sdLower.begin(), ::tolower);
+
+    auto components = GetPathComponents(file);
+
+    // Forward search: find the show folder name in the path components and use everything after it
+    std::string appendPath;
+    bool appending = false;
+    for (const auto& comp : components) {
+        std::string compLower = comp;
+        std::transform(compLower.begin(), compLower.end(), compLower.begin(), ::tolower);
+        if (compLower == sdLower) {
+            appending = true;
+        } else if (appending) {
+            if (!appendPath.empty()) appendPath += std::filesystem::path::preferred_separator;
+            appendPath += comp;
+        }
+    }
+    if (!appendPath.empty()) {
+        if (doesFileExistInDirs(searchDirs, sd, appendPath, filename, resultPath)) {
+            lock.lock();
+            _fixFileMap[file] = resultPath;
+            return resultPath;
+        }
+    }
+
+    // Check if file contains the show folder name and try the relative portion
+    std::string fileLower = file;
+    std::transform(fileLower.begin(), fileLower.end(), fileLower.begin(), ::tolower);
+    auto sdPos = fileLower.find(sdLower);
+    if (sdPos != std::string::npos) {
+        size_t offset = sdPos + sdLower.length();
+        std::string relative = file.substr(offset);
+        if (FileExists(relative, false)) {
+            lock.lock();
+            _fixFileMap[file] = relative;
+            return relative;
+        }
+    }
+
+    // Reverse search: traverse up from the end of the file's directory components
+    for (int x = (int)components.size() - 1; x >= 0; x--) {
+        std::string revPath;
+        for (int y = x; y < (int)components.size(); y++) {
+            if (!revPath.empty()) revPath += std::filesystem::path::preferred_separator;
+            revPath += components[y];
+        }
+        if (doesFileExistInDirs(searchDirs, sd, revPath, filename, resultPath)) {
+            lock.lock();
+            _fixFileMap[file] = resultPath;
+            return resultPath;
+        }
+    }
+
+    // Last resort: try with the last directory component of the file path as a subdirectory
+    if (showDir.empty() && !components.empty()) {
+        std::string lastDir = sd + std::string(1, std::filesystem::path::preferred_separator) + components.back();
+        return FileUtils::FixFile(lastDir, file);
+    }
+
+    {
+        std::string ext = std::filesystem::path(filename).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        if (ext == ".obj" || ext == ".mtl") {
+            std::string resolved = FindBundledMeshObjectFile(filename);
+            if (!resolved.empty()) {
+                lock.lock();
+                _fixFileMap[file] = resolved;
+                return resolved;
+            }
+        }
+    }
+
+    spdlog::debug("   could not find a fixed file location for : {}", file);
+    spdlog::debug("   We will not look for this file again until a new sequence is loaded.");
+    lock.lock();
+    _fixFileNonExistent.push_back(file);
+    return file;
+}
+
+bool CachedFileExists(const std::string& file) {
+    if (file.empty()) {
+        return false;
+    }
+    {
+        std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+        auto it = _fileExistsMap.find(file);
+        if (it != _fileExistsMap.end()) {
+            return it->second;
+        }
+    }
+    // Probe outside the lock — on macOS this can be a slow FileProvider XPC.
+    bool exists = ::FileExists(file, false);
+    std::unique_lock<std::recursive_mutex> lock(_fixFileMutex);
+    _fileExistsMap.emplace(file, exists);
+    return exists;
+}
+
+std::string MakeRelativeFile(const std::string& file) {
+    if (file.empty()) return {};
+    if (!std::filesystem::path(file).is_absolute()) return {};
+
+    // Normalize separators to /
+    std::string f = file;
+    std::replace(f.begin(), f.end(), '\\', '/');
+
+    auto stripPrefix = [&](std::string base) -> std::string {
+        std::replace(base.begin(), base.end(), '\\', '/');
+        std::string baseCmp = base;
+        std::string fCmp = f;
+#ifdef _WIN32
+        std::transform(baseCmp.begin(), baseCmp.end(), baseCmp.begin(), ::tolower);
+        std::transform(fCmp.begin(), fCmp.end(), fCmp.begin(), ::tolower);
+#endif
+        if (!baseCmp.empty() && baseCmp.back() != '/') baseCmp += '/';
+        if (fCmp.substr(0, baseCmp.size()) == baseCmp)
+            return f.substr(baseCmp.size());
+        return {};
+    };
+
+    std::string rel = stripPrefix(SnapshotShowDir());
+    if (!rel.empty()) return rel;
+
+    for (const auto& dir : SnapshotSearchDirs()) {
+        rel = stripPrefix(dir);
+        if (!rel.empty()) return rel;
+    }
+
+    return {};
+}
+
+std::string MakeRelativeFileOrOriginal(const std::string& file) {
+    std::string rel = MakeRelativeFile(file);
+    return rel.empty() ? file : rel;
+}
+
+bool IsFileInShowDir(const std::string& showDir, const std::string& filename) {
+    std::string sd = showDir.empty() ? SnapshotShowDir() : showDir;
+    if (sd.empty()) return false;
+    std::string fixedFile = FileUtils::FixFile(sd, filename);
+    const std::list<std::string> searchDirs = SnapshotSearchDirs();
+
+#ifdef _WIN32
+    std::string fixedLower = fixedFile;
+    std::transform(fixedLower.begin(), fixedLower.end(), fixedLower.begin(), ::tolower);
+    std::string sdLower = sd;
+    std::transform(sdLower.begin(), sdLower.end(), sdLower.begin(), ::tolower);
+    if (fixedLower.substr(0, sdLower.size()) == sdLower) return true;
+    for (auto d : searchDirs) {
+        std::transform(d.begin(), d.end(), d.begin(), ::tolower);
+        if (fixedLower.substr(0, d.size()) == d) return true;
+    }
+#else
+    if (fixedFile.substr(0, sd.size()) == sd) return true;
+    for (const auto& d : searchDirs) {
+        if (fixedFile.substr(0, d.size()) == d) return true;
+    }
+#endif
+    return false;
+}
+
+std::string FixEffectFileParameter(const std::string& paramname, const std::string& parametervalue, const std::string& showDir) {
+    auto startparamname = parametervalue.find(paramname);
+    if (startparamname == std::string::npos) return parametervalue;
+    auto endparamname = parametervalue.find("=", startparamname);
+    if (endparamname == std::string::npos) return parametervalue;
+    auto startvalue = endparamname + 1;
+    auto endvalue = parametervalue.find(",", startvalue);
+    if (endvalue == std::string::npos) endvalue = parametervalue.size();
+    std::string file = parametervalue.substr(startvalue, endvalue - startvalue);
+    std::string newfile = FileUtils::FixFile(showDir, file);
+    return parametervalue.substr(0, startvalue) + newfile + parametervalue.substr(endvalue);
+}
+
+bool DeleteDirectory(std::string directory) {
+    spdlog::debug("  Processing directory: {}.", directory);
+    std::error_code ec;
+    if (!std::filesystem::exists(directory, ec)) {
+        spdlog::error("  Thats odd ... the directory cannot be found: {}.", directory);
+        return false;
+    }
+    std::filesystem::remove_all(directory, ec);
+    if (ec) {
+        spdlog::error("  Could not delete folder {}: {}.", directory, ec.message());
+        return false;
+    }
+    return true;
+}
+
+static std::string _resourcesDir;
+std::string GetResourcesDir() {
+    return _resourcesDir;
+}
+void SetResourcesDir(const std::string& dir) {
+    _resourcesDir = dir;
+}
+
+std::string GetEffectMetadataDirectory() {
+    static std::string cachedDir;
+    if (!cachedDir.empty()) return cachedDir;
+
+    std::string resDir = GetResourcesDir();
+    if (resDir.empty()) return "";
+
+    std::error_code ec;
+    auto tryDir = [&](const std::string& dir) -> bool {
+        if (std::filesystem::is_directory(std::filesystem::path(dir), ec)) {
+            cachedDir = dir;
+            return true;
+        }
+        return false;
+    };
+
+    // The fallbacks let dev builds find resources/effectmetadata in the source
+    // tree without a post-build copy step.
+    if (tryDir(resDir + "/effectmetadata")) return cachedDir;
+#ifdef _WIN32
+    if (tryDir(resDir + "/../../../resources/effectmetadata")) return cachedDir;
+#endif
+#ifdef __linux__
+    if (tryDir(resDir + "/../resources/effectmetadata")) return cachedDir;
+#endif
+    return "";
+}
+
+};

@@ -1,0 +1,144 @@
+
+#include "MetalComputeUtilities.hpp"
+#include "MetalEffects.hpp"
+#include "MetalEffectDataTypes.h"
+
+#include "../../render/RenderBuffer.h"
+#include "UtilClasses.h"
+
+#include <algorithm>
+#include <array>
+
+class MetalButterflyEffectData {
+public:
+    MetalButterflyEffectData() {
+        for (auto &f : functions) {
+            f = nil;
+        }
+        functions[1] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectStyle1");
+        functions[2] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectStyle2");
+        functions[3] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectStyle3");
+        functions[4] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectStyle4");
+        functions[5] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectStyle5");
+        functions[6] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectPlasmaStyles");
+        functions[7] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectPlasmaStyles");
+        functions[8] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectPlasmaStyles");
+        functions[9] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectPlasmaStyles");
+        functions[10] = MetalComputeUtilities::INSTANCE.FindComputeFunction("ButterflyEffectPlasmaStyles");
+    }
+    bool canRenderStyle(int style) {
+        return style < functions.size() && functions[style] != nil;
+    }
+
+    bool Render(int style, ButterflyData &data, RenderBuffer &buffer) {
+        @autoreleasepool {
+            MetalRenderBufferComputeData * rbcd = MetalRenderBufferComputeData::getMetalRenderBufferComputeData(&buffer);
+
+            id<MTLCommandBuffer> commandBuffer = rbcd->getCommandBuffer();
+            if (commandBuffer == nil) {
+                return false;
+            }
+            id<MTLBuffer> bufferResult = rbcd->getPixelBuffer();
+            if (bufferResult == nil) {
+                rbcd->abortCommandBuffer();
+                return false;
+            }
+            id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
+            if (computeEncoder == nil) {
+                rbcd->abortCommandBuffer();
+                return false;
+            }
+            [computeEncoder setLabel:@"ButterflyEffect"];
+            [computeEncoder setComputePipelineState:functions[style]];
+
+            NSInteger dataSize = sizeof(data);
+            [computeEncoder setBytes:&data length:dataSize atIndex:0];
+            [computeEncoder setBuffer:bufferResult offset:0 atIndex:1];
+
+            NSInteger maxThreads = functions[style].maxTotalThreadsPerThreadgroup;
+            dataSize = data.width * data.height;
+            NSInteger threads = std::min(dataSize, maxThreads);
+            MTLSize gridSize = MTLSizeMake(dataSize, 1, 1);
+            MTLSize threadsPerThreadgroup = MTLSizeMake(threads, 1, 1);
+
+            [computeEncoder dispatchThreads:gridSize
+                      threadsPerThreadgroup:threadsPerThreadgroup];
+
+            [computeEncoder endEncoding];
+        }
+        return true;
+    }
+    std::array<id<MTLComputePipelineState>, 11> functions;
+};
+
+MetalButterflyEffect::MetalButterflyEffect(int i) : ButterflyEffect(i) {
+    data = new MetalButterflyEffectData();
+}
+MetalButterflyEffect::~MetalButterflyEffect() {
+    if (data) {
+        delete data;
+    }
+}
+
+
+void MetalButterflyEffect::Render(Effect *effect, const SettingsMap &SettingsMap, RenderBuffer &buffer) {
+    MetalRenderBufferComputeData * rbcd = MetalRenderBufferComputeData::getMetalRenderBufferComputeData(&buffer);
+    int Style = SettingsMap.GetInt("SLIDER_Butterfly_Style", sStyleDefault);
+
+    // if smaller buffer, overhead of prep for GPU will be higher than benefit
+    if (rbcd == nullptr || !data->canRenderStyle(Style)
+        || ((buffer.BufferWi * buffer.BufferHt) < MetalComputeUtilities::INSTANCE.metalBufferSizeThreshold)) {
+        ButterflyEffect::Render(effect, SettingsMap, buffer);
+        return;
+    }
+
+    float oset = buffer.GetEffectTimeIntervalPosition();
+    const int Chunks = GetValueCurveInt("Butterfly_Chunks", sChunksDefault, SettingsMap, oset, sChunksMin, sChunksMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int Skip = GetValueCurveInt("Butterfly_Skip", sSkipDefault, SettingsMap, oset, sSkipMin, sSkipMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+    int butterFlySpeed = GetValueCurveInt("Butterfly_Speed", sSpeedDefault, SettingsMap, oset, sSpeedMin, sSpeedMax, buffer.GetStartTimeMS(), buffer.GetEndTimeMS());
+
+    std::string colors = SettingsMap.Get("CHOICE_Butterfly_Colors", sColorsDefault);
+    int ColorScheme = (colors == "Palette") ? 1 : 0;
+
+    int ButterflyDirection = SettingsMap.Get("CHOICE_Butterfly_Direction", sDirectionDefault) == "Reverse" ? 1 : 0;
+
+    //const int maxframe=buffer.BufferHt*2;
+    const int curState = (buffer.curPeriod - buffer.curEffStartPer) * butterFlySpeed * buffer.frameTimeInMs / 50;
+    //const int frame=(buffer.BufferHt * curState / 200)%maxframe;
+    //const size_t colorcnt=buffer.GetColorCount();
+    const float offset = (ButterflyDirection==1 ? -1.0 : 1.0) * float(curState)/200.0f;
+    //const int xc=buffer.BufferWi/2;
+    //const int yc=buffer.BufferHt/2;
+    //int block = buffer.BufferHt * buffer.BufferWi > 100 ? 1 : -1;
+
+    ButterflyData rdata;
+    rdata.width = buffer.BufferWi;
+    rdata.height = buffer.BufferHt;
+    rdata.curState = curState;
+    // rdata.colors is a fixed uchar4[8] (MetalEffectDataTypes.h) matching the
+    // 8-button palette UI; clamp defensively (mirrors VulkanButterflyEffect's guard).
+    rdata.numColors = (unsigned int)std::min<size_t>(buffer.palette.Size(), 8);
+    rdata.offset = offset;
+    rdata.chunks = Chunks;
+    rdata.skip = Skip;
+    rdata.colorScheme = ColorScheme;
+    rdata.plasmaStyle = Style;
+    if (Style > 5) {
+        // slightly different setup for "plasmas"
+        int state = (buffer.curPeriod - buffer.curEffStartPer); // frames 0 to N
+        double Speed_plasma = (Style == 10) ? (101-butterFlySpeed)*3 : (101-butterFlySpeed)*5;
+        double time = (state+1.0)/Speed_plasma;
+        rdata.plasmaTime = time;
+    } else {
+        rdata.plasmaTime = 0.0;
+    }
+    
+    for (int x = 0; x < rdata.numColors; x++) {
+        rdata.colors[x] = buffer.palette.GetColor(x).asChar4();
+    }
+
+    if (data->Render(Style, rdata, buffer)) {
+        return;
+    }
+    ButterflyEffect::Render(effect, SettingsMap, buffer);
+}

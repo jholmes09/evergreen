@@ -1,0 +1,1622 @@
+
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <pugixml.hpp>
+
+#include "IPOutput.h"
+#include "OutputManager.h"
+#include "ControllerEthernet.h"
+#include "ControllerNull.h"
+#include "ControllerSerial.h"
+#include "SerialOutput.h"
+#include "E131Output.h"
+#include "ZCPPOutput.h"
+#include "ArtNetOutput.h"
+#include "DDPOutput.h"
+#include "xxxEthernetOutput.h"
+#include "OPCOutput.h"
+#include "TestPreset.h"
+#include "Parallel.h"
+#include "UtilFunctions.h"
+#include "utils/ExternalHooks.h"
+#include "utils/FileUtils.h"
+#include "utils/ip_utils.h"
+#include "render/UICallbacks.h"
+#include <cassert>
+#include <cstdlib>
+#include <spdlog/fmt/fmt.h>
+#include <numeric>
+#include <chrono>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#if !defined(XLIGHTS_CMAKE_BUILD)
+#pragma comment(lib, "ws2_32.lib")
+#endif
+#else
+#include <unistd.h>
+#endif
+
+#include <log.h>
+
+namespace {
+    std::string GetHostName() {
+        char buf[256];
+        if (gethostname(buf, sizeof(buf)) == 0) {
+            buf[sizeof(buf) - 1] = '\0';
+            return std::string(buf);
+        }
+        return {};
+    }
+}
+
+#pragma region Static Variables
+int OutputManager::_lastSecond = -10;
+int OutputManager::_currentSecond = -10;
+int OutputManager::_lastSecondCount = 0;
+int OutputManager::_currentSecondCount = 0;
+bool OutputManager::__isSync = false;
+bool OutputManager::_isRetryOpen = false;
+bool OutputManager::_isInteractive = true;
+std::function<bool(const std::string&, const std::string&)> OutputManager::_confirmCallback;
+#pragma endregion
+
+#pragma region Private Functions
+
+bool OutputManager::ConvertStartChannel(const std::string sc, std::string& newsc) const {
+
+    bool changed = false;
+
+    // if it is of form <number>:<number> then we need to fix it
+    auto parts = Split(sc, ':');
+    if (parts.size() == 2 && parts[0].size() > 0) {
+        if (isdigit(parts[0][0])) {
+            int const on = (int)std::strtol(parts[0].c_str(), nullptr, 10);
+            int scc = (int)std::strtol(parts[1].c_str(), nullptr, 10);
+
+            if (on > 0) {
+                auto it = _conversionOutputs.begin();
+                std::advance(it, on - 1);
+                if (it != _conversionOutputs.end()) {
+                    if (it->first->GetType() == OUTPUT_E131 || (it->first->GetType() == OUTPUT_ARTNET)) {
+                        // convert to #ip:univ:sc or just #univ:sc if multicast
+                        auto ipo = dynamic_cast<IPOutput*>(it->first);
+
+                        if (ipo->GetIP() == "MULTICAST") {
+                            newsc = fmt::format("#{}:{}", it->first->GetUniverse(), scc);
+                            changed = true;
+                            spdlog::debug("Networks conversion MULTICAST {} converted start channel '{}' to '{}'.", it->first->GetType(), sc, newsc);
+                        }
+                        else {
+                            newsc = fmt::format("#{}:{}:{}", it->first->GetIP(), it->first->GetUniverse(), scc);
+                            changed = true;
+                            spdlog::debug("Networks conversion {} converted start channel '{}' to '{}'.", it->first->GetType(), sc, newsc);
+                        }
+                    }
+                    else {
+                        // these convert to a controller 1:1 so just use the referenced controller
+
+                        // convert to !name:sc if description isnt blank
+                        newsc = fmt::format("!{}:{}", it->second->GetName(), scc);
+                        changed = true;
+                        spdlog::debug("Networks conversion {} converted start channel '{}' to '{}'.", it->first->GetType(), sc, newsc);
+                    }
+                }
+            }
+        }
+        else if (parts[0][0] == '!') {
+            // output name may need to be updated
+            auto const on = parts[0].substr(1);
+            int const scc = (int)std::strtol(parts[1].c_str(), nullptr, 10);
+
+            for (const auto& it : _conversionOutputs) {
+                if (it.first->GetDescription_CONVERT() == on) {
+
+                    // find the first channel offset within this controller of this output
+                    int nsc = 0;
+                    for (const auto& it2 : it.second->GetOutputs()) {
+                        if (it2->GetDescription_CONVERT() == on) break;
+                        nsc += it2->GetChannels();
+                    }
+
+                    newsc = fmt::format("!{}:{}", it.second->GetName(), nsc + scc);
+                    changed = true;
+                    spdlog::debug("Networks conversion {} converted start channel '{}' to '{}'.", it.first->GetType(), sc, newsc);
+                    break;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
+void OutputManager::AsyncPingAll() {
+
+    std::for_each(begin(_controllers), end(_controllers), [](Controller* c) { c->AsyncPing(); });
+}
+#pragma endregion
+
+#pragma region Constructors and Destructors
+OutputManager::OutputManager() {
+
+    _dirty = false;
+}
+
+OutputManager::~OutputManager()
+{
+    if (_outputting) {
+        StopOutput();
+    }
+
+    // destroy all out output objects
+    DeleteAllControllers();
+
+    DeleteTestPreset();
+}
+#pragma endregion 
+
+#pragma region Save and Load
+bool OutputManager::Load(const std::string& showdir, bool syncEnabled) {
+
+    // Remove any existing outputs
+    DeleteAllControllers();
+
+    DeleteTestPreset();
+
+    // OutputManager is a single long-lived instance reused across show-folder
+    // switches within a session (unlike Controller/Output, which get freshly
+    // constructed per load). Without this reset, a stale _dirty=true left over
+    // from a prior show (e.g. from SetSyncEnabled, SetGlobalFPPProxy, the
+    // BaseShowDir fallback-resolve below, etc.) would incorrectly carry over
+    // and mark every subsequently loaded show dirty, even one loaded fresh
+    // from the command line at startup (where this constructor-default reset
+    // is still untouched).
+    _dirty = false;
+
+    // Same reasoning as _dirty above: DidConvert() drives SetDir()'s decision
+    // to mark UnsavedNetworkChanges true (see xLightsFrame::SetDir). Without
+    // resetting it here, converting one legacy-format show earlier in the
+    // session would leave every later show in that session permanently
+    // flagged as "converted" too, even ones that never went through the
+    // legacy conversion path.
+    _didConvert = false;
+
+    _showDir = showdir;
+    _filename = (std::filesystem::path(showdir) / GetNetworksFileName()).string();
+    ObtainAccessToURL(_filename);
+    FileExists(_filename, true);
+
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(_filename.c_str());
+
+    Controller* cu = nullptr;
+    std::string lasttype = "";
+    std::string lastport = "";
+    int lastuniv = -1;
+
+    if (result) {
+        pugi::xml_node root = doc.document_element();
+        _globalFPPProxy = root.attribute("GlobalFPPProxy").as_string("");
+        _globalForceLocalIP = root.attribute("GlobalForceLocalIP").as_string("");
+
+        _autoUpdateFromBaseShowDir = std::string_view(root.attribute("AutoUpdateFromBase").as_string("0")) == "1";
+        _baseShowDir = root.attribute("BaseShowDir").as_string("");
+
+        // Fall back to the relative path when the stored absolute
+        // doesn't resolve — lets the base-folder link survive
+        // moving the show between machines (e.g. desktop ↔ iPad).
+        std::string baseRel = root.attribute("BaseShowDirRelative").as_string("");
+        std::error_code ec;
+        if (!baseRel.empty() && !showdir.empty() &&
+            (_baseShowDir.empty() || !std::filesystem::exists(_baseShowDir, ec))) {
+            std::error_code ec2;
+            std::filesystem::path resolved =
+                std::filesystem::weakly_canonical(
+                    std::filesystem::path(showdir) / baseRel, ec2);
+            std::error_code ec3;
+            if (!ec2 && std::filesystem::exists(resolved, ec3)) {
+                _baseShowDir = resolved.string();
+                _dirty = true;
+            }
+        }
+
+        _baseControllersSyncedTime = root.attribute("BaseControllersSyncedTime").as_string("");
+
+        std::map<std::string, bool> multiip;
+        for (pugi::xml_node e = root.first_child(); e; e = e.next_sibling()) {
+            if (std::string_view(e.name()) == "network")
+            {
+                std::string port = e.attribute("ComPort").as_string("");
+                int univ = e.attribute("BaudRate").as_int(-1);
+
+                if (multiip.find(port) == multiip.end()) {
+                    multiip[port] = false;
+                }
+                else {
+                    if (port != lastport || univ != lastuniv + 1) {
+                        multiip[port] = true;
+                    }
+                }
+                lastport = port;
+                lastuniv = univ;
+            }
+        }
+
+        lastuniv = -1;
+        lastport = "";
+        for (pugi::xml_node e = root.first_child(); e; e = e.next_sibling()) {
+            if (std::string_view(e.name()) == "network") {
+                Output* conversionOutput = Output::Create(nullptr, e, showdir);
+
+                std::string type = e.attribute("NetworkType").as_string("");
+                std::string port = e.attribute("ComPort").as_string("");
+                int univ = e.attribute("BaudRate").as_int(-1);
+                int univcount = e.attribute("NumUniverses").as_int(1);
+                if (type.ends_with(" Ethernet") && type[0] == 'S' && type[1] == 'y') { type = OUTPUT_xxxETHERNET; }
+                if (type == OUTPUT_xxxETHERNET) {
+                    univ = e.attribute("Port").as_int(1);
+                }
+                bool dups = multiip[port];
+
+                if (type != lasttype ||
+                    lastport != port ||
+                    (lastuniv != -1 && univ != -1 && univ != lastuniv + 1)) {
+                    // trigger the creation of a new controller
+                    cu = nullptr;
+                }
+
+                if (cu == nullptr) {
+                    if (type == OUTPUT_NULL) {
+                        cu = new ControllerNull(this);
+                    }
+                    else if (type == OUTPUT_ZCPP) {
+                        cu = new ControllerEthernet(this);
+                    }
+                    else if (type == OUTPUT_DDP) {
+                        cu = new ControllerEthernet(this);
+                    }
+                    else if (type == OUTPUT_E131) {
+                        cu = new ControllerEthernet(this, dups);
+                    }
+                    else if (type == OUTPUT_ARTNET) {
+                        cu = new ControllerEthernet(this, dups);
+                    }
+                    else if (type == OUTPUT_KINET) {
+                        cu = new ControllerEthernet(this, dups);
+                    }
+                    else if (type == OUTPUT_xxxETHERNET) {
+                        cu = new ControllerEthernet(this, dups);
+                    }
+                    else if (type == OUTPUT_DMX ||
+                        type == OUTPUT_xxxSERIAL ||
+                        type == OUTPUT_PIXELNET ||
+                        type == OUTPUT_LOR ||
+                        type == OUTPUT_LOR_OPT ||
+                        type == OUTPUT_DLIGHT ||
+                        type == OUTPUT_RENARD ||
+                        type == OUTPUT_OPENDMX ||
+                        type == OUTPUT_OPENPIXELNET ||
+                        type == OUTPUT_GENERICSERIAL) {
+                        cu = new ControllerSerial(this);
+                    }
+                    else {
+                        assert(false);
+                    }
+                    AddController(cu, -1);
+                    cu->DeleteAllOutputs();
+                    cu->SetActive(conversionOutput->IsEnabled() ? "Active" : "Inactive");
+                }
+                cu->Convert(e, showdir);
+
+                // keep the converted output connected to the controller
+                _conversionOutputs.push_back({ conversionOutput, cu });
+
+                lasttype = type;
+                lastport = port;
+                lastuniv = univ + univcount - 1;
+                _didConvert = true;
+            }
+            else if (std::string_view(e.name()) == "e131sync") {
+                _syncUniverse = e.attribute("universe").as_int(0);
+            }
+            else if (std::string_view(e.name()) == "suppressframes") {
+                _suppressFrames = e.attribute("frames").as_int(0);
+            }
+            else if (std::string_view(e.name()) == "testpreset") {
+                spdlog::debug("Loading test presets.");
+                TestPreset* tp = new TestPreset(e);
+
+                bool exists = false;
+                for (const auto& it : _testPresets) {
+                    if (it->GetName() == tp->GetName()) {
+                        exists = true;
+                        break;
+                    }
+                }
+
+                if (exists) {
+                    // dont load this preset ... it is a duplicate
+                    delete tp;
+                }
+                else {
+                    _testPresets.push_back(tp);
+                }
+            }
+            else if (std::string_view(e.name()) == "Controller") {
+                _controllers.push_back(Controller::Create(this, e, showdir));
+                // remove any that were not created ... usually as this version does not have that controller supported
+                if (_controllers.back() == nullptr) _controllers.pop_back();
+            }
+        }
+    }
+    else {
+        spdlog::warn("Error loading networks file: {}.", _filename);
+        return false;
+    }
+
+    for (const auto& it : _controllers) {
+        it->SetGlobalFPPProxy(_globalFPPProxy);
+        if (dynamic_cast<ControllerEthernet*>(it) != nullptr)
+            dynamic_cast<ControllerEthernet*>(it)->SetGlobalForceLocalIP(_globalForceLocalIP);
+    }
+
+    spdlog::debug("Networks loaded.");
+
+    AsyncPingAll();
+    UpdateUnmanaged();
+
+    SomethingChanged();
+
+    return true;
+}
+
+bool OutputManager::MergeFromBase(bool prompt, bool& acceptAll, bool& rejectAll, UICallbacks* ui, bool* changedOut)
+{
+    bool changed = false;
+
+    OutputManager baseOM;
+
+    if (baseOM.Load(_baseShowDir)) {
+
+        if (_globalFPPProxy == "" && baseOM.GetGlobalFPPProxy() != "") {
+            SetGlobalFPPProxy(baseOM.GetGlobalFPPProxy());
+            spdlog::debug("Updating global FPP Proxy from base show folder.");
+        }
+
+        if (_globalForceLocalIP == "" && baseOM.GetGlobalForceLocalIP() != "") {
+            SetGlobalForceLocalIP(baseOM.GetGlobalForceLocalIP());
+            spdlog::debug("Updating global Force Local IP from base show folder.");
+        }
+
+        for (const auto& baseit : baseOM.GetControllers())
+        {
+            bool found = false;
+
+            // check if the controller already exists
+            for (const auto& it : GetControllers())
+            {
+                // if controller name is unique allow it to be added 
+                if (it->GetName() == baseit->GetName()) {
+                    // this is a match
+                    found = true;
+
+                    // UpdateFrom is only defined between controllers of the same
+                    // kind - the overrides downcast their argument. A base show
+                    // folder holding a different controller type under the same
+                    // name would type-confuse that cast and read wild pointers.
+                    if (it->GetType() != baseit->GetType()) {
+                        spdlog::warn("Controller '{}' NOT updated from base show folder: it is a {} controller here but a {} controller in the base show folder.",
+                                     it->GetName(), it->GetType(), baseit->GetType());
+                        continue;
+                    }
+
+                    bool force = false;
+                    if (prompt && !it->IsFromBase()) {
+                        if (ui) {
+                            force = ui->PromptYesNoAll(fmt::format("Controller {} found that clashes with base show directory. Do you want to take the base show directory version?", it->GetName()),
+                                                      "Controller clash", acceptAll, rejectAll);
+                        } else {
+                            force = Confirm(fmt::format("Controller {} found that clashes with base show directory. Do you want to take the base show directory version?", it->GetName()), "Controller clash");
+                        }
+                    }
+
+                    // we only update if controller originally came from base
+                    if (force || it->IsFromBase()) {
+                        if (force) it->SetFromBase(true);
+                        bool const thischanged = it->UpdateFrom(baseit);
+                        changed = thischanged || changed;
+                        if (thischanged) spdlog::debug("Controller '{}' updated from base show folder.", (const char*)it->GetName().c_str());
+                    } else {
+                        spdlog::debug("Controller '{}' NOT updated from base show folder as it never came from there.", (const char*)it->GetName().c_str());
+                    }
+                }
+            }
+
+            if (!found) {
+                auto c = baseit->Copy(this);
+                c->SetFromBase(true);
+                AddController(c);
+                changed = true;
+                spdlog::debug("Adding controller '{}' from base show folder.", (const char*)c->GetName().c_str());
+            }
+        }
+
+    } else {
+        spdlog::warn("MergeFromBase: unable to load base networks file from '{}' - merge skipped.", _baseShowDir);
+        return false;
+    }
+
+    if (changed) {
+        SomethingChanged();
+    }
+
+    if (changedOut != nullptr) *changedOut = changed;
+    return true;
+}
+
+bool OutputManager::NeedsBaseControllersUpdate() const
+{
+    if (_baseShowDir.empty()) return false;
+
+    std::string baseFile = (std::filesystem::path(_baseShowDir) / GetNetworksFileName()).string();
+    return FileUtils::NeedsBaseFileUpdate(baseFile, _baseControllersSyncedTime, "controller merge");
+}
+
+void OutputManager::MarkBaseControllersSynced()
+{
+    if (_baseShowDir.empty()) return;
+
+    std::string baseFile = (std::filesystem::path(_baseShowDir) / GetNetworksFileName()).string();
+    auto baseTicks = FileUtils::GetFileModTimeTicks(baseFile);
+    if (baseTicks) {
+        _baseControllersSyncedTime = std::to_string(*baseTicks);
+    }
+}
+
+void OutputManager::SaveToXML(pugi::xml_document& doc) {
+    pugi::xml_node decl = doc.prepend_child(pugi::node_declaration);
+    decl.append_attribute("version") = "1.0";
+    decl.append_attribute("encoding") = "UTF-8";
+
+    pugi::xml_node root = doc.append_child("Networks");
+
+    root.append_attribute("computer") = GetHostName();
+    root.append_attribute("GlobalFPPProxy") = _globalFPPProxy;
+    root.append_attribute("GlobalForceLocalIP") = _globalForceLocalIP;
+
+    root.append_attribute("AutoUpdateFromBase") = _autoUpdateFromBaseShowDir ? "1" : "0";
+    root.append_attribute("BaseShowDir") = _baseShowDir;
+
+    std::string baseRel;
+    if (!_baseShowDir.empty() && !_showDir.empty()) {
+        std::error_code ec;
+        auto rel = std::filesystem::relative(_baseShowDir, _showDir, ec);
+        if (!ec) baseRel = rel.generic_string();
+    }
+    root.append_attribute("BaseShowDirRelative") = baseRel;
+    root.append_attribute("BaseControllersSyncedTime") = _baseControllersSyncedTime;
+
+    if (_syncUniverse != 0) {
+        pugi::xml_node newNode = root.append_child("e131sync");
+        newNode.append_attribute("universe") = _syncUniverse;
+    }
+
+    if (_suppressFrames != 0) {
+        pugi::xml_node newNode = root.append_child("suppressframes");
+        newNode.append_attribute("frames") = _suppressFrames;
+    }
+
+    for (const auto& it : _controllers) {
+        it->Save(root);
+    }
+
+    for (const auto& it : _testPresets) {
+        it->Save(root);
+    }
+}
+
+bool OutputManager::Save() {
+    pugi::xml_document doc;
+    SaveToXML(doc);
+
+    if (doc.save_file(_filename.c_str())) {
+        _dirty = false;
+    }
+
+    return (_dirty == false);
+}
+
+// This function is used purely to locate and fix any outputnumber:startchannel model start channels when the networks file is first converted
+bool OutputManager::ConvertModelStartChannels(pugi::xml_node modelsNode) const {
+
+    // check if any conversion has been done
+    if (_conversionOutputs.size() == 0) return false;
+
+    bool changed = false;
+
+    for (pugi::xml_node model = modelsNode.first_child(); model; model = model.next_sibling()) {
+        if (std::string_view(model.name()) == "model") {
+
+            // Do main model start channel
+            std::string sc = UnXmlSafe(model.attribute("StartChannel").as_string(""));
+            std::string newsc;
+            if (ConvertStartChannel(sc, newsc)) {
+                SetXmlNodeAttribute(model, "StartChannel", XmlSafe(newsc));
+                changed = true;
+            }
+
+            if (std::string_view(model.attribute("Advanced").as_string("0")) == "1") {
+                // Try new attribute names first, fall back to old parm names
+                std::string strAttr = model.attribute("NumStrings").as_string("");
+                if (strAttr.empty()) strAttr = model.attribute("NumArches").as_string("");
+                if (strAttr.empty()) strAttr = model.attribute("NumCanes").as_string("");
+                if (strAttr.empty()) strAttr = model.attribute("NumChannels").as_string("");
+                if (strAttr.empty()) strAttr = model.attribute("DmxChannelCount").as_string("");
+                if (strAttr.empty()) strAttr = model.attribute("parm1").as_string("0");
+                int strings = std::strtol(strAttr.c_str(), nullptr, 10);
+                for (int i = 1; i <= strings; i++) {
+                    auto s = fmt::format("String{}", i);
+                    std::string sc = UnXmlSafe(model.attribute(s).as_string(""));
+                    if (ConvertStartChannel(sc, newsc)) {
+                        SetXmlNodeAttribute(model, s, XmlSafe(newsc));
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    return changed;
+}
+#pragma endregion
+
+#pragma region Static Functions
+void OutputManager::RegisterSentPacket() {
+
+    auto const now = std::chrono::system_clock::now();
+    auto const duration = now.time_since_epoch();
+    auto const aseconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
+    long long const total_seconds = aseconds.count();
+    // 4. Get 0-59 range using modulo
+    int const second = total_seconds % 60;
+
+    if (second == _currentSecond) {
+        _currentSecondCount++;
+    }
+    else {
+        if (second == _currentSecond + 1 || (second == 0 && _currentSecond == 59)) {
+            _lastSecond = _currentSecond;
+            _lastSecondCount = _currentSecondCount;
+        }
+        else {
+            _lastSecond = second - 1;
+            if (_lastSecond < 0) _lastSecond = 59;
+            _lastSecondCount = 0;
+        }
+        _currentSecond = second;
+        _currentSecondCount = 1;
+    }
+}
+
+std::vector<std::string> OutputManager::GetExportHeaders()
+{
+    return { "Controller Name", "Start Absolute", "End Absolute", "Type", "Protocol", "IP", "Comm Port", "Baud Rate", "Description", "Universe/Id", "Channels", "Active", "Suppress Duplicates", "Auto Size", "Auto Layout", "Auto Upload", "Full xLights Control", "FPP Proxy" };
+}
+#pragma endregion
+
+#pragma region Controller Management
+std::list<ControllerEthernet*> OutputManager::GetControllers(const std::string& ip, const std::string hostname) {
+
+    std::list<ControllerEthernet*> res;
+
+    for (const auto& it : _controllers) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr) {
+            if (eth->GetIP() == ip || eth->GetResolvedIP() == ip || eth->GetIP() == hostname) {
+                res.push_back(eth);
+            }
+        }
+    }
+    return res;
+}
+
+std::list<ControllerEthernet*> OutputManager::GetControllers(const std::string& ip) {
+
+    std::list<ControllerEthernet*> res;
+
+    for (const auto it : _controllers) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr) {
+            if (eth->GetIP() == ip || eth->GetResolvedIP() == ip) {
+                res.push_back(eth);
+            }
+        }
+    }
+    return res;
+}
+
+void OutputManager::AddController(Controller* controller, int pos)
+{
+    // Make sure global FPP proxy has been set
+    controller->SetGlobalFPPProxy(_globalFPPProxy);
+
+    if (pos < 0 || (size_t)pos > _controllers.size()) {
+        _controllers.push_back(controller);
+    }
+    else {
+        auto it = _controllers.begin();
+        std::advance(it, pos);
+        _controllers.insert(it, controller);
+    }
+    UpdateUnmanaged();
+}
+
+void OutputManager::DeleteController(const std::string& controllerName) {
+    ip_utils::waitForAllToResolve();
+    for (auto it = begin(_controllers); it != end(_controllers); ++it) {
+        if ((*it)->GetName() == controllerName) {
+            delete* it;
+            _controllers.erase(it);
+            break;
+        }
+    }
+    UpdateUnmanaged();
+}
+
+void OutputManager::DeleteAllControllers() {
+    ip_utils::waitForAllToResolve();
+    while (_controllers.size() > 0) {
+        delete _controllers.front();
+        _controllers.pop_front();
+    }
+
+    while (_conversionOutputs.size() > 0) {
+        delete _conversionOutputs.front().first;
+        _conversionOutputs.pop_front();
+    }
+}
+
+void OutputManager::MoveController(Controller* controller, int toControllerNumber) {
+
+    std::list<Controller*> res;
+    int i = 1;
+    bool added = false;
+    for (const auto& it : _controllers) {
+        if (i == toControllerNumber + 1) {
+            res.push_back(controller);
+            added = true;
+            i++;
+        }
+        if (it == controller) {
+            // do nothing we are moving this
+        }
+        else {
+            res.push_back(it);
+            i++;
+        }
+    }
+
+    if (!added) {
+        res.push_back(controller);
+    }
+
+    _controllers = res;
+    SomethingChanged();
+}
+
+Controller* OutputManager::GetController(const std::string& name) const {
+
+    auto const n = Trim(name);
+    for (const auto& it : _controllers) {
+        if (it->GetName() == n) return it;
+    }
+    return nullptr;
+}
+
+Controller* OutputManager::GetControllerIndex(int index) const {
+
+    auto it = _controllers.begin();
+    std::advance(it, index);
+    if (it == _controllers.end()) return nullptr;
+    return *it;
+}
+
+Controller* OutputManager::GetController(int32_t absoluteChannel, int32_t& startChannel) const {
+
+    for (const auto& it : _controllers) {
+        if (absoluteChannel >= it->GetStartChannel() && absoluteChannel <= it->GetEndChannel()) {
+            startChannel = absoluteChannel - it->GetStartChannel() + 1;
+            return it;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<Controller*> OutputManager::GetControllersInRange(int32_t startChannel, int32_t endChannel) const {
+
+    std::vector<Controller*> res;
+    for (const auto& it : _controllers) {
+        if (it->GetStartChannel() <= endChannel && it->GetEndChannel() >= startChannel) {
+            res.push_back(it);
+        }
+    }
+    return res;
+}
+
+Controller* OutputManager::GetControllerWithIP(const std::string& ip)
+{
+    // Finds the first controller with the ip address
+    for (const auto& it : _controllers) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr) {
+            if (eth->GetIP() == ip) return eth;
+        }
+    }
+	return nullptr;
+}
+
+int OutputManager::GetControllerIndex(Controller* c) {
+    int i = 0;
+    for (const auto& it : _controllers) {
+        if (c == it) return i;
+        i++;
+    }
+    return -1;
+}
+
+// ip can be ip, hostname or port
+int OutputManager::GetControllerCount(const std::string& type, const std::string& ip) const {
+
+    int count = 0;
+    for (const auto& it : _controllers) {
+        if (it->GetType() == type && it->GetColumn2Label() == ip) {
+            count++;
+        }
+    }
+    return count;
+}
+
+std::list<std::string> OutputManager::GetControllerNames() const {
+
+    std::list<std::string> res;
+    for (const auto& it : _controllers) {
+        if (it->IsLookedUpByControllerName()) {
+            res.push_back(it->GetName());
+        }
+    }
+    return res;
+}
+
+std::list<std::string> OutputManager::GetAutoLayoutControllerNames() const {
+
+    std::list<std::string> res;
+    for (const auto& it : _controllers) {
+        if (it->IsAutoLayout()) {
+            res.push_back(it->GetName());
+        }
+    }
+    return res;
+}
+
+bool OutputManager::IsControllerNameUnique(const std::string& name) const {
+    int count = 0;
+    for (const auto& it : _controllers) {
+        if (it->GetName() == name)
+            count++;
+    }
+    return count <= 1;
+}
+
+#pragma endregion
+
+#pragma region Output Management
+int OutputManager::GetOutputCount() const {
+
+    return std::accumulate(begin(_controllers), end(_controllers), 0, [](int accumulator, Controller* const c) { return accumulator + c->GetOutputCount(); });
+}
+
+std::vector<Output*> OutputManager::GetAllOutputs(const std::string& ip, const std::string& hostname) const {
+
+    std::vector<Output*> res;
+    auto outputs = GetAllOutputs();
+    res.reserve(outputs.size());
+    for (const auto& it : outputs) {
+        if (ip == "" || (it->IsIpOutput() && (it->GetIP() == ip || it->GetResolvedIP() == ip || it->GetIP() == hostname))) {
+            res.push_back(it);
+        }
+    }
+
+    return res;
+}
+
+std::vector<Output*> OutputManager::GetAllOutputs() const {
+
+    std::vector<Output*> res;
+    for (const auto& it : _controllers) {
+        for (const auto& it2 : it->GetOutputs()) {
+            res.push_back(it2);
+        }
+    }
+
+    return res;
+}
+
+// get an output based on an output number - zero based
+// THIS SHOULD BE ONLY USED IN CONVERSION AS OUTPUTNUMBER IS NO LONGER A VALID ADDRESSING MECHANISM
+Output* OutputManager::GetOutput_CONVERT(int outputNumber) const {
+
+    if (outputNumber >= (int)_conversionOutputs.size() || outputNumber < 0) {
+        return nullptr;
+    }
+
+    auto iter = _conversionOutputs.begin();
+    std::advance(iter, outputNumber);
+    return iter->first;
+}
+
+// get an output based on an absolute channel number
+Output* OutputManager::GetOutput(int32_t absoluteChannel, int32_t& startChannel) const {
+
+    auto outputs = GetAllOutputs();
+    for (const auto& it : outputs) {
+        if (absoluteChannel >= it->GetStartChannel() && absoluteChannel <= it->GetEndChannel()) {
+            startChannel = absoluteChannel - it->GetStartChannel() + 1;
+            return it;
+        }
+    }
+    return nullptr;
+}
+
+// get an output based on a universe/id number
+Output* OutputManager::GetOutput(int universe, const std::string& ip) const {
+
+    for (const auto& it : _controllers) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr && (eth->GetProtocol() == OUTPUT_E131 || eth->GetProtocol() == OUTPUT_ARTNET || eth->GetProtocol() == OUTPUT_KINET  || eth->GetProtocol() == OUTPUT_xxxETHERNET || eth->GetProtocol() == OUTPUT_OPC)) {
+            if (ip == "" || ip == eth->GetIP() || ip == eth->GetResolvedIP()) {
+                for (const auto& it2 : eth->GetOutputs()) {
+                    if (it2->GetUniverse() == universe) {
+                        return it2;
+                    }
+                }
+            }
+        } else if (eth != nullptr) {
+            if (ip == "" || ip == eth->GetIP() || ip == eth->GetResolvedIP()) {
+                if (it->GetId() == universe) {
+                    return it->GetFirstOutput();
+                }
+            }
+        } else if (it != nullptr && it->GetId() == universe) {
+            return it->GetFirstOutput();
+        }
+    }
+    return nullptr;
+}
+#pragma endregion
+
+#pragma region Channel Mapping
+int32_t OutputManager::GetTotalChannels() const
+{
+    if (_controllers.size() == 0)
+        return 0;
+    int ec = _controllers.back()->GetEndChannel();
+
+    // because some controllers with zero channels dont update their end channel ... look back until we find an end channel
+    if (ec == 0) {
+        auto it = _controllers.rbegin();
+        while (it != _controllers.rend() && (*it)->GetEndChannel() == 0) {
+            ++it;
+        }
+        if (it != _controllers.rend()) {
+            ec = (*it)->GetEndChannel();
+        }
+    }
+    return ec;
+}
+
+int32_t OutputManager::GetOutputsAbsoluteChannel(int universeIndex, int32_t startChannel) const
+{
+    auto o = GetAllOutputs();
+
+    if (universeIndex >= (int)o.size()) return -1;
+
+    auto it = o.begin();
+    std::advance(it, universeIndex);
+    return (*it)->GetStartChannel() + startChannel;
+}
+
+int32_t OutputManager::GetAbsoluteChannel(int controllerIndex, int32_t startChannel) const {
+
+    if (controllerIndex >= (int)_controllers.size()) return -1;
+
+    auto it = _controllers.begin();
+    std::advance(it, controllerIndex);
+    return (*it)->GetStartChannel() + startChannel;
+}
+
+int32_t OutputManager::GetAbsoluteChannel(const std::string& ip, int universe, int32_t startChannel) const {
+
+    auto o = GetAllOutputs(ip);
+    auto it = o.begin();
+    while (it != o.end()) {
+        if (universe + 1 == (*it)->GetUniverse() && (ip == "" || ip == (*it)->GetIP() || ip == (*it)->GetResolvedIP())) {
+            break;
+        }
+        ++it;
+    }
+
+    if (it == o.end()) return -1;
+    return (*it)->GetStartChannel() + startChannel;
+}
+
+int32_t OutputManager::DecodeStartChannel(const std::string& startChannelString) {
+
+    // Decodes Absolute, Output:StartChannel, #Universe:StartChannel, and #IP:Universe:StartChannel
+    // If there is an error 0 is returned
+
+    if (startChannelString == "") return 0;
+
+    if (startChannelString.find(':') != std::string::npos) {
+        if (startChannelString[0] == '#') {
+            auto parts = Split(startChannelString.substr(1), ':');
+            if (parts.size() > 3) return 0;
+            if (parts.size() == 2) {
+                int uni = (int)strtol(parts[0].c_str(), nullptr, 10);
+                long sc = strtol(parts[1].c_str(), nullptr, 10);
+                if (uni < 1) return 0;
+                if (sc < 1) return 0;
+                Output* o = GetOutput(uni, "");
+                if (o == nullptr) return 0;
+                return o->GetStartChannel() + sc - 1;
+            }
+            else {
+                std::string ip = parts[0];
+                int uni = (int)strtol(parts[1].c_str(), nullptr, 10);
+                long sc = strtol(parts[2].c_str(), nullptr, 10);
+                if (ip == "") return 0;
+                if (uni < 1) return 0;
+                if (sc < 1) return 0;
+                Output* o = GetOutput(uni, ip);
+                if (o == nullptr) return 0;
+                return o->GetStartChannel() + sc - 1;
+            }
+        }
+        else if (startChannelString[0] == '!') {
+            auto parts = Split(startChannelString.substr(1), ':');
+            if (parts.size() == 2) {
+                auto controller = GetController(parts[0]);
+                if (controller == nullptr) return 0;
+                long sc = strtol(parts[1].c_str(), nullptr, 10);
+                if (sc < 1) return 0;
+                return controller->GetStartChannel() + sc - 1;
+            }
+            else {
+                return 0;
+            }
+        }
+        else {
+            auto parts = Split(startChannelString, ':');
+            if (parts.size() > 2) return 0;
+            int output = (int)strtol(parts[0].c_str(), nullptr, 10);
+            long sc = strtol(parts[1].c_str(), nullptr, 10);
+            if (output < 1) return 0;
+            if (sc < 1) return 0;
+            Output* o = GetOutput_CONVERT(output - 1);
+            if (o == nullptr) return 0;
+            return o->GetStartChannel() + sc - 1;
+        }
+    }
+    else {
+        return strtol(startChannelString.c_str(), nullptr, 10);
+    }
+}
+#pragma endregion
+
+#pragma region Getters and Setters
+std::string OutputManager::GetFirstUnusedCommPort() const {
+    auto ports = SerialOutput::GetAvailableSerialPorts();
+    if (ports.size() == 1) {
+        if (ports.front() == "(no available ports)") return "NotConnected";
+    }
+    for (const auto& it : ports) {
+        bool used = false;
+        for (const auto& it2 : _controllers) {
+            auto s = dynamic_cast<ControllerSerial*>(it2);
+            if (s != nullptr && s->GetPort() == it) {
+                used = true;
+                break;
+            }
+        }
+        if (!used) return it;
+    }
+
+    // All CommPorts used
+    return "NotConnected";
+}
+
+std::list<int> OutputManager::GetIPUniverses(const std::string& ip) const {
+
+    std::list<int> res;
+    for (const auto& it : GetAllOutputs()) {
+        if (ip == "" || (ip == it->GetIP() || ip == it->GetResolvedIP())) {
+            assert(!it->IsOutputCollection_CONVERT());
+            if (std::find(res.begin(), res.end(), it->GetUniverse()) == res.end()) {
+                res.push_back(it->GetUniverse());
+            }
+        }
+    }
+    return res;
+}
+
+std::list<std::string> OutputManager::GetIps() const {
+
+    std::list<std::string> res;
+    for (const auto& it : GetControllers()) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr) {
+            if (std::find(res.begin(), res.end(), eth->GetIP()) == res.end()) {
+                res.push_back(eth->GetIP());
+            }
+        }
+    }
+    return res;
+}
+
+void OutputManager::SetGlobalFPPProxy(const std::string& globalFPPProxy)
+{
+    if (_globalFPPProxy != globalFPPProxy) {
+        _globalFPPProxy = globalFPPProxy; _dirty = true;
+        for (const auto& it : _controllers) {
+            it->SetGlobalFPPProxy(globalFPPProxy);
+        }
+    }
+}
+
+void OutputManager::SetGlobalForceLocalIP(const std::string& forceLocalIP)
+{
+    if (_globalForceLocalIP != forceLocalIP) {
+        _globalForceLocalIP = forceLocalIP;
+        _dirty = true;
+        for (const auto& it : _controllers) {
+            it->SetGlobalFPPProxy(forceLocalIP);
+        }
+    }
+}
+
+void OutputManager::SetShowDir(const std::string& showDir) {
+
+    _filename = (std::filesystem::path(showDir) / GetNetworksFileName()).string();
+}
+
+void OutputManager::SuspendAll(bool suspend) {
+
+    auto outputs = GetAllOutputs();
+    for_each(begin(outputs), end(outputs), [suspend](auto c) { return c->Suspend(suspend); });
+}
+
+int OutputManager::GetPacketsPerSecond() const {
+
+    if (IsOutputting()) {
+        return _lastSecondCount;
+    }
+    return 0;
+}
+
+// Mark all controllers with the same IP address as unmanaged
+void OutputManager::UpdateUnmanaged() {
+
+    // start with everything managed
+    for (auto& it : _controllers) {
+        auto eth = dynamic_cast<ControllerEthernet*>(it);
+        if (eth != nullptr) {
+            eth->SetManaged(true);
+        }
+    }
+
+    auto it1 = _controllers.begin();
+    while (it1 != _controllers.end())
+    {
+        auto eth1 = dynamic_cast<ControllerEthernet*>(*it1);
+        // only need to look at managed items
+        if (eth1 != nullptr && eth1->IsManaged() /* && (eth1->GetProtocol() == OUTPUT_E131 || eth1->GetProtocol() == OUTPUT_ARTNET || eth1->GetProtocol() == OUTPUT_KINET || eth1->GetProtocol() == OUTPUT_xxxETHERNET || eth1->GetProtocol() == OUTPUT_OPC) */ && eth1->GetIP() != "MULTICAST") {
+            auto it2 = it1;
+            ++it2;
+            while (it2 != _controllers.end()) {
+                auto eth2 = dynamic_cast<ControllerEthernet*>(*it2);
+                if (eth2 != nullptr /* && (eth2->GetProtocol() == OUTPUT_E131 || eth2->GetProtocol() == OUTPUT_ARTNET || eth2->GetProtocol() == OUTPUT_KINET || eth2->GetProtocol() == OUTPUT_xxxETHERNET || eth2->GetProtocol() == OUTPUT_OPC) */) {
+                    if (eth1->GetIP() == eth2->GetIP()) {
+                        eth1->SetManaged(false);
+                        eth2->SetManaged(false);
+                    }
+                }
+                ++it2;
+            }
+        }
+        ++it1;
+    }
+}
+
+std::string OutputManager::UniqueName(const std::string& prefix) {
+
+    if (GetController(prefix) == nullptr) return prefix;
+
+    std::string n;
+    std::string nprefix { BeforeLast(prefix, '_') };
+    if (nprefix.empty()) {
+        nprefix = prefix;
+    }
+    std::string snum { AfterLast(prefix, '_') };
+    int i{ ExtractInt(snum) };
+    if (-1 == i) {
+        i = 1;
+    }
+
+    do {
+        n = fmt::format("{}_{}", nprefix, i++);
+    } while (GetController(n) != nullptr);
+    return n;
+}
+
+bool OutputManager::IsIDUsed(int id)
+{
+    for (const auto& it : _controllers) {
+        if (it->GetId() == id) return true;
+    }
+    return false;
+}
+
+int OutputManager::UniqueId() {
+    int i = 1;
+    while (IsIDUsed(i) || (GetOutput(i, "") != nullptr)) {
+        ++i;
+    }
+    return i;
+}
+
+// Need to call this whenever something may have changed in an output to ensure all the transient data is updated
+void OutputManager::SomethingChanged() const {
+    int nullcnt = 0;
+    int start = 1;
+    for (auto& it : _controllers) {
+        it->SetTransientData(start, nullcnt);
+    }
+}
+
+bool OutputManager::IsDirty() const {
+
+    if (_dirty) return _dirty;
+    return std::any_of(begin(_controllers), end(_controllers), [](Controller* c) {return c->IsDirty(); });
+}
+
+std::list<std::string> OutputManager::GetForceIPs(const std::string& protocol) const
+{
+    std::list<std::string> res;
+
+    for (const auto& it : GetControllers()) {
+        auto e = dynamic_cast<ControllerEthernet*>(it);
+        if (e != nullptr && it->GetOutputCount() > 0 && e->GetFirstOutput()->GetType() == protocol) {
+            auto fip = e->GetForceLocalIP();
+            if (std::find(begin(res), end(res), fip) == end(res))
+                res.push_back(fip);
+        }
+    }
+    return res;
+}
+
+bool OutputManager::AtLeastOneOutputUsingProtocol(const std::string& protocol) const {
+
+    for (const auto& it : GetControllers()) {
+        if (it->GetOutputCount() > 0 && it->GetFirstOutput()->GetType() == protocol) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string OutputManager::GetChannelName(int32_t channel) {
+
+    int32_t startChannel = 0;
+    ++channel;
+
+    auto c = GetController(channel, startChannel);
+    if (c == nullptr) {
+        return fmt::format("Ch {}: invalid", channel);
+    }
+    else {
+        return fmt::format("Ch {}: Net {} #{}",
+            channel,
+            GetControllerIndex(c) + 1,
+            channel - c->GetStartChannel() + 1);
+    }
+}
+
+#pragma endregion
+
+
+#pragma region Start and Stop
+bool OutputManager::StartOutput() {
+
+    
+
+    if (_outputting) return false;
+    if (!_outputCriticalSection.try_lock()) return false;
+
+    spdlog::debug("Starting light output.");
+
+    int started = 0;
+    bool ok = true;
+    bool err = false;
+
+    // Re-resolve any controllers whose hostnames failed to resolve at startup
+    for (const auto& ctrl : GetControllers()) {
+        auto eth = dynamic_cast<ControllerEthernet*>(ctrl);
+        if (eth != nullptr) eth->RefreshResolvedIP();
+    }
+    ip_utils::waitForAllToResolve();
+
+    for (const auto& it : GetAllOutputs()) {
+
+        // make sure global FPP proxy is up to date ...
+        it->SetGlobalFPPProxyIP(_globalFPPProxy);
+        it->SetGlobalForceLocalIP(_globalForceLocalIP);
+
+        bool preok = ok;
+        ok = it->Open() && ok;
+        if (!ok && ok != preok) {
+            auto name = it->GetIP();
+            if (name == "") name = it->GetCommPort();
+
+            spdlog::error("An error occurred opening output {} ({}). Do you want to continue trying to start output?", started + 1, (const char*)name.c_str());
+            if (!Confirm(fmt::format("An error occurred opening output {} ({}). Do you want to continue trying to start output?", started + 1, name), "Continue?")) {
+                return _outputting;
+            }
+            err = true;
+        }
+        if (ok) started++;
+        _outputting = (started > 0);
+    }
+    
+    if (err && !_outputting) {
+        // fake it so we dont keep getting error messages
+        _outputting = true;
+    }
+
+    _outputCriticalSection.unlock();
+
+    return _outputting; // even partially started is ok
+}
+
+bool OutputManager::StartControllerOutputs(Controller* controller) {
+    if (!_outputCriticalSection.try_lock()) return false;
+
+    auto eth = dynamic_cast<ControllerEthernet*>(controller);
+    if (eth != nullptr) {
+        eth->RefreshResolvedIP();
+        ip_utils::waitForAllToResolve();
+    }
+
+    int started = 0;
+    for (auto output : controller->GetOutputs()) {
+        output->SetGlobalFPPProxyIP(_globalFPPProxy);
+        output->SetGlobalForceLocalIP(_globalForceLocalIP);
+        if (output->Open()) started++;
+    }
+
+    if (started > 0) _outputting = true;
+
+    _outputCriticalSection.unlock();
+    return started > 0;
+}
+
+void OutputManager::StopOutput() {
+
+    
+
+    if (!_outputting) return;
+    if (!_outputCriticalSection.try_lock()) return;
+
+    spdlog::debug("Stopping light output.");
+
+    _outputting = false;
+
+    for (const auto& it : GetAllOutputs()) {
+        it->Close();
+    }
+
+    _outputCriticalSection.unlock();
+}
+
+size_t OutputManager::TxNonEmptyCount() {
+
+    size_t res = 0;
+    for (const auto& it : GetAllOutputs()) {
+        res += it->TxNonEmptyCount();
+    }
+    return res;
+}
+
+bool OutputManager::TxEmpty() {
+
+    for (const auto& it : GetAllOutputs()) {
+        if (!it->TxEmpty()) return false;
+    }
+    return true;
+}
+#pragma endregion
+
+#pragma region Frame Handling
+void OutputManager::StartFrame(long msec) {
+
+    if (!_outputting) return;
+    if (!_outputCriticalSection.try_lock()) return;
+    
+    for (const auto& it : GetAllOutputs()) {
+        it->StartFrame(msec);
+    }
+    _outputCriticalSection.unlock();
+}
+
+void OutputManager::ResetFrame() {
+
+    if (!_outputting) return;
+    if (!_outputCriticalSection.try_lock()) return;
+
+    for (const auto& it : GetAllOutputs()) {
+        it->ResetFrame();
+    }
+    _outputCriticalSection.unlock();
+}
+
+void OutputManager::EndFrame() {
+
+    if (!_outputting) return;
+    if (!_outputCriticalSection.try_lock()) return;
+
+    auto outputs = GetAllOutputs();
+    if (_parallelTransmission) {
+        parallel_for(0, (int)outputs.size(), [this, &outputs](int n) {
+            outputs[n]->EndFrame(_suppressFrames);
+        });
+    }
+    else {
+        for (const auto& it : outputs) {
+            it->EndFrame(_suppressFrames);
+        }
+    }
+
+    if (IsSyncEnabled()) {
+        if (_syncUniverse != 0) {
+            if (AtLeastOneOutputUsingProtocol(OUTPUT_E131)) {
+                for (const auto& it : GetForceIPs(OUTPUT_E131))
+                    E131Output::SendSync(_syncUniverse, it);
+            }
+        }
+
+        if (AtLeastOneOutputUsingProtocol(OUTPUT_ARTNET)) {
+            for (const auto& it : GetForceIPs(OUTPUT_ARTNET))
+                ArtNetOutput::SendSync(it);
+        }
+
+        if (AtLeastOneOutputUsingProtocol(OUTPUT_DDP)) {
+            for (const auto& it : GetForceIPs(OUTPUT_DDP))
+                DDPOutput::SendSync(it);
+        }
+
+        if (AtLeastOneOutputUsingProtocol(OUTPUT_ZCPP)) {
+            for (const auto& it : GetForceIPs(OUTPUT_ZCPP))
+                ZCPPOutput::SendSync(it);
+        }
+    }
+    _outputCriticalSection.unlock();
+}
+
+void OutputManager::SendHeartbeat() {
+
+    for (const auto& it : GetAllOutputs()) {
+        it->SendHeartbeat();
+    }
+}
+#pragma endregion
+
+#pragma region Data Setting
+// channel here is zero based
+void OutputManager::SetOneChannel(int32_t channel, unsigned char data) {
+
+    int32_t sc = 0;
+    Output* output = GetOutput(channel + 1, sc);
+    if (output != nullptr) {
+        if (output->IsEnabled()) {
+            output->SetOneChannel(sc - 1, data);
+        }
+    }
+}
+
+// channel here is zero based
+void OutputManager::SetManyChannels(int32_t channel, unsigned char* data, size_t size) {
+
+    if (size == 0) return;
+
+    int32_t stch;
+    Output* o = GetOutput(channel + 1, stch);
+
+    // if this doesnt map to an output then skip it
+    if (o == nullptr) return;
+
+    // get an iterator to the output which contains our first channel
+    auto outputs = GetAllOutputs();
+    auto it = outputs.begin();
+    while (it != outputs.end() && *it != o) ++it;
+    if (it == outputs.end()) return;
+
+    size_t left = size;
+    while (left > 0 && o != nullptr) {
+        assert(!o->IsOutputCollection_CONVERT());
+        size_t mx = o->GetChannels() - stch + 1;
+        size_t send = std::min(left, mx);
+        if (o->IsEnabled()) {
+            o->SetManyChannels(stch - 1, &data[size - left], send);
+        }
+        stch = 1;
+        left -= send;
+
+        // Move to the next output
+        ++it;
+        if (it == outputs.end()) {
+            o = nullptr;
+        }
+        else {
+            o = *it;
+        }
+    }
+}
+
+void OutputManager::AllOff(bool send) {
+
+    if (!_outputCriticalSection.try_lock()) return;
+
+    for (const auto& it : GetAllOutputs()) {
+        it->AllOff();
+        if (send) {
+            it->EndFrame(_suppressFrames);
+        }
+    }
+    _outputCriticalSection.unlock();
+}
+#pragma endregion 
+
+#pragma region Test Presets
+std::list<std::string> OutputManager::GetTestPresets() {
+
+    std::list<std::string> res;
+    for (const auto& it : _testPresets) {
+        res.push_back(it->GetName());
+    }
+
+    return res;
+}
+
+TestPreset* OutputManager::GetTestPreset(std::string preset) {
+
+    for (const auto& it : _testPresets) {
+        if (preset == it->GetName()) {
+            return it;
+        }
+    }
+    return nullptr;
+}
+
+// create a preset. If one with the same name exists then it is erased
+TestPreset* OutputManager::CreateTestPreset(std::string preset) {
+
+    auto apreset = GetTestPreset(preset);
+    if (apreset != nullptr) {
+        _testPresets.remove(apreset);
+        delete apreset;
+    }
+
+    auto p = new TestPreset(preset);
+    _testPresets.push_back(p);
+    return p;
+}
+
+void OutputManager::DeleteTestPreset()
+{
+    for (auto& tp : _testPresets) {
+        delete tp;
+    }
+    _testPresets.clear();
+}
+
+void OutputManager::SortControllersbyName() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        return a->GetName() < b->GetName();
+    });
+    SomethingChanged();
+}
+
+void OutputManager::SortControllersbyID() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        return a->GetId() < b->GetId();
+    });
+    SomethingChanged();
+}
+
+void OutputManager::SortControllersbyIP() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        auto ea = dynamic_cast<ControllerEthernet*>(a);
+        auto eb = dynamic_cast<ControllerEthernet*>(b);
+        if (ea != nullptr && eb != nullptr) {
+            return ea->GetIP() < eb->GetIP();
+        }
+        return a->GetName() < b->GetName();
+    });
+    SomethingChanged();
+}
+
+void OutputManager::SortControllersbyFPPProxy() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        auto ea = dynamic_cast<ControllerEthernet*>(a);
+        auto eb = dynamic_cast<ControllerEthernet*>(b);
+        if (ea != nullptr && eb != nullptr) {
+            // Raw, unresolved proxy string - a sort order doesn't need a live DNS
+            // resolve, and GetFPPProxy() here would trigger one (uncached on
+            // failure, ~5s timeout) per comparison during the sort.
+            auto pa = ea->GetControllerFPPProxy();
+            auto pb = eb->GetControllerFPPProxy();
+            if (!pa.empty() && !pb.empty()) {
+                return pa < pb;
+            }
+            if (!pa.empty()) {
+                return true;
+            }
+            if (!pb.empty()) {
+                return false;
+            }
+            return ea->GetIP() < eb->GetIP();
+        }
+        return a->GetName() < b->GetName();
+    });
+    SomethingChanged();
+}
+
+void OutputManager::SortControllersbyModel() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        auto ea = dynamic_cast<ControllerEthernet*>(a);
+        auto eb = dynamic_cast<ControllerEthernet*>(b);
+        if (ea != nullptr && eb != nullptr) {
+            if (!ea->GetModel().empty() &&
+                !eb->GetModel().empty()) {
+                return ea->GetModel() < eb->GetModel();
+            }
+            if (!ea->GetModel().empty()) {
+                return true;
+            }
+            if (!eb->GetModel().empty()) {
+                return false;
+            }
+        }
+        return a->GetName() < b->GetName();
+    });
+    SomethingChanged();
+}
+
+void OutputManager::SortControllersbyProtocal() {
+    _controllers.sort([](Controller* a, Controller* b) {
+        auto ea = dynamic_cast<ControllerEthernet*>(a);
+        auto eb = dynamic_cast<ControllerEthernet*>(b);
+        if (ea != nullptr && eb != nullptr) {
+            return ea->GetProtocol() < eb->GetProtocol();
+        }
+        return a->GetName() < b->GetName();
+    });
+    SomethingChanged();
+}
+
+#pragma endregion 

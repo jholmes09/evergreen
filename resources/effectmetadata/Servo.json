@@ -1,0 +1,71 @@
+{
+    "effectName": "Servo",
+    "properties": [
+        {
+            "id": "Channel",
+            "label": "Base Channel",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "",
+            "dynamicOptions": "modelNodeNames",
+            "expandToFill": true,
+            "description": "Selects which channel on the DMX model to control. The channel list is populated from the model's node names."
+        },
+        {
+            "id": "16bit",
+            "label": "16 bit",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": true,
+            "description": "When enabled, outputs a 16-bit value across two channels (coarse and fine) for higher precision servo positioning. When disabled, uses a single 8-bit channel."
+        },
+        {
+            "id": "Timing_Track",
+            "label": "Use Timing Track",
+            "type": "bool",
+            "controlType": "checkbox",
+            "default": false,
+            "description": "When enabled, the servo position is driven by phoneme data from a timing track instead of the start/end value sliders, useful for lip-sync animations."
+        },
+        {
+            "id": "Servo_TimingTrack",
+            "label": "Timing Track",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [],
+            "default": "",
+            "dynamicOptions": "lyricTimingTracks",
+            "expandToFill": true,
+            "description": "Selects which timing track to use for phoneme-driven servo positioning when Use Timing Track is enabled."
+        },
+        {
+            "id": "Servo_StartEndRow",
+            "label": "",
+            "type": "string",
+            "controlType": "custom",
+            "default": "",
+            "description": "Start/End servo position sliders (0-100% as a float with 0.1 precision) with optional value-curve and per-effect link toggles."
+        },
+        {
+            "id": "Servo_ButtonRow",
+            "label": "",
+            "type": "string",
+            "controlType": "custom",
+            "default": "",
+            "description": "Sync (mirrors Start and End values), Equal (copies Start to End), and Swap (exchanges Start and End) action buttons."
+        }
+    ],
+    "groups": [
+        {
+            "type": "section",
+            "columns": 1,
+            "properties": ["Servo_StartEndRow"]
+        },
+        {
+            "type": "section",
+            "columns": 1,
+            "properties": ["Servo_ButtonRow"]
+        }
+    ]
+}

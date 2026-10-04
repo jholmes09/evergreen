@@ -1,0 +1,544 @@
+
+xLights REST Automation API
+If the xFade service is enabled in the xLights preferences panel, an HTTP port is opened
+on port 49913 (for A) or 49914 (for B).
+
+Important note:  GET requests require the parameters to have any spaces escaped with %20
+and cannot support / in parameters.
+
+Currently xLights provides the following REST endpoints:
+
+GET /getVersion - Get xLights Version
+
+GET /getShowFolder - Returns the current Show Folder
+
+GET /openSequence - returns the currently open sequence
+
+GET /openSequence/My%20Sequence.xsq - opens the "My Sequence.xsq" sequence
+    Can have optional query params of:
+    force=true to force opening even if a current sequence is open
+    promptIssues=true to prompt for any issues during opening
+
+POST /openSequence - opens a sequence, the payload needs to be application/json:
+    {"seq":"My Sequence.xsq", "promptIssues":true|false, "force":true|false}
+
+GET /renderAll - renders the open sequence
+    {"highdef":"false|true"}
+
+GET /closeSequence - closes the sequence
+    Can have optional query params of:
+    quiet=true don't report an error if a sequence isn't open
+    force=true to close even if there are unsaved changes
+
+GET /newSequence
+    Needs either duration or media query params:
+    duration=  Time in seconds
+    media= Media filename
+    frameMS= frame time in MS (typically 25 or 50 or 0) optional
+    view= view to use for master view ("Empty", "All Models" or a valid view name) optional
+
+GET /saveSequence
+    seq=  Sequence name to save as, don't specify to use current name
+    
+GET /batchRender
+    seq_#=  # starts at 0 and increases, each sequence to render
+   
+GET /getMediaIssues
+    lists the media in the open sequence that is not playable on all platforms -
+    unsupported video codecs/containers (AVI in particular), and audio that cannot
+    be decoded. This is the same check the sequence-open warning runs.
+
+GET /convertMedia
+    transcodes every convertible video the open sequence references to a supported
+    format and repoints the Video effects at the new files. Animated GIFs become
+    Pictures effects instead of being transcoded. Audio issues are reported by
+    getMediaIssues but not converted. You must save the sequence afterwards.
+
+GET /getMedia
+    lists every media file the open sequence references (images, SVGs, shaders,
+    text files, binary files, video, audio) with its embed state
+    Optional query param:
+    type= image|svg|shader|text|binary|video|audio to list only that type
+
+GET /embedMedia
+    embeds media into the open sequence so it no longer depends on external files,
+    and rewrites each embedded entry's stored path to be show/media-folder relative
+    (effect settings and face definitions are repointed to match).
+    You must save the sequence afterwards.
+    Optional query params:
+    file= a single media path (as reported by getMedia); omit to embed everything
+    type= image|svg|shader|text to restrict to one type
+
+GET /extractMedia
+    writes embedded media back out to files and repoints the sequence at them.
+    You must save the sequence afterwards.
+    Optional query params:
+    file= a single media path; omit to extract everything embedded
+    type= image|svg|shader|text to restrict to one type
+    dir=  directory to write into (must be inside the show or a media folder);
+          omit to write back to where the stored path resolves
+
+GET /cleanupFileLocations
+    cleans up file locations in layout and any open sequence. You must save both the sequence and the layout to ensure it isnt lost.
+
+GET /saveLayout
+    saves the layout and controller settings
+
+GET /uploadController
+GET /uploadFPPConfig
+GET /uploadSequence
+GET /checkSequence
+GET /changeShowFolder
+GET /openController
+GET /openControllerProxy
+GET /exportModelsCSV
+GET /exportModel
+GET /exportModelWithRender
+GET /closexLights
+GET /lightsOn
+GET /lightsOff
+GET /playJukebox
+GET /jukeboxButtonTooltips
+GET /jukeboxButtonEffectPresent
+GET /e131Tag
+
+
+POST /xlDoAutomation - runs one of the command JSON's below.
+
+POST /mcp - a Model Context Protocol (MCP) server over the same port, for MCP-aware
+    AI clients/agents. This is the stateless flavor of MCP's "Streamable HTTP"
+    transport: send one JSON-RPC 2.0 request, get one JSON-RPC 2.0 response, no
+    session id and no server-initiated SSE stream. Supported methods: initialize,
+    ping, tools/list, tools/call. tools/list returns a generic "xlights_command"
+    tool (cmd + params, covering every command in this file) plus convenience
+    tools for the most common commands (getVersion, openSequence, saveSequence,
+    closeSequence, renderAll, getModels, getControllers, get/set/add/deleteEffect,
+    lightsOn/lightsOff). See src-ui-wx/automation/xLightsMCPServer.cpp.
+
+
+WARNING:  This is extremely experimental and will likely be replaced with a proper REST
+  API in the not to distant future.   Plan accordingly.
+
+
+Start xLights
+    {"cmd:"startxLights", "ifNotRunning":"true|false"}
+    
+Render all (assumes an open sequence)
+    {"cmd":"renderAll", "highdef":"true|false"}
+Response
+    {"res":200, "msg": "Rendered."}
+
+Load a sequence
+    {"cmd":"loadSequence", "seq":"filename", "promptIssues":"true|false"}
+Response
+    {"res":200, "seq": "SequenceName.xsq", "fullseq": "C:\FullPath\SequenceName.xsq", "media": "C:\FullPath\media.mp3", "len": "120000", "framems": "25"}
+
+    
+Close a sequence
+    {"cmd":"closeSequence", "quiet":"true|false", "force":"true|false"}
+    
+    Quiet when true will return success even if no sequence was open
+    This command will fail if the sequence has unsaved changes
+Response
+    {"res":200, "msg": "Sequence closed."}
+
+Close xLights
+    {"cmd":"closexLights", "force":"true|false"}
+
+    if force is not true then it will fail if anything is unsaved
+Response
+    {"res":200, "msg": "xLights closed."}
+
+New Sequence    
+    {"cmd":"newSequence", "force":"true|false", "mediaFile":"media filename", "durationSecs":30, "frameMS":50, "view":"All Models"}
+    
+    If force is not true then this command will fail if there is a sequence already open
+    If mediaFile is blank then durationSecs is the length of the animation opened
+    If mediaFile is not blank then sequence is created for the audio
+    If frameMS is blank or not present then 50ms is used
+    If view is blank or not present then All Models is used
+Response
+    {"res":200, "msg": "Sequence created."}
+
+Save Sequence
+    {"cmd":"saveSequence", "seq":"filename"}
+
+    If seq is blank then it will save the sequence using the name it was opened with
+Response
+    {"res":200, "msg": "Sequence Saved."}
+
+Batch Render Named Sequences
+    {"cmd":"batchRender", "seqs":["filename"], "promptIssues":"true|false"}
+Response
+    {"res":200, "msg": "Sequence batch rendered."}
+    
+Upload controller configuration
+    {"cmd":"uploadController", "ip":"ip address"}
+Response
+    {"res":200, "msg": "Uploaded to controller '192.168.1.100'"}
+
+Upload FPP configuration
+    {"cmd":"uploadFPPConfig", "ip":"ip address", "udp":"all|proxy|", "models":"true|false", "map":"true|false"}
+    
+    If models is true then the models are uploaded to FPP
+    If map is true then the virtual display map is uploaded to FPP
+Response
+    {"res":200, "msg": "Uploaded to FPP '192.168.1.100'"}
+
+Upload Sequence to FPP/Falcon V4/Pixel Stick
+    {"cmd":"uploadSequence", "ip":"ip address", "media":"true|false", "format":"v1|v2std|v2zlib|v2uncompressedsparse|v2uncompressed|v2stdsparse|v2zlibsparse", "seq":"xsq filename"}
+Response
+    {"res":200, "msg": "Sequence uploaded."}
+
+Check sequence
+    {"cmd":"checkSequence", "seq":"xsq filename"}
+
+    Open and check a sequence
+Response
+    {"res":200, "msg": "Sequence checked.","output":"Path to Check Seq File Path"}
+    
+Change Show Folder
+    {"cmd":"changeShowFolder", "folder":"show folder", "force":"true|false"}
+Response
+    {"res":200, "msg": "Show folder changed to (show_folder_path)."}
+
+Open Controller
+    {"cmd":"openController", "ip":"ip address"}
+
+    Opens the controller in a browser
+Response
+    {"res":200, "msg": "Controller opened"}
+    
+Get xLights Version
+    {"cmd":"getVersion"}
+
+    Gets the xLights version
+Response
+    {"res":200, "version": "2022.3"}
+
+Export Models CSV
+    {"cmd":"exportModels", "filename":"file to create"}
+Response
+    {"res":200, "msg": "Models Exported.", "output": "C:\FullPath\Models_.csv"}
+
+Export Model
+    {"cmd":"exportModel", "filename":"file to create", "model":"model to export", "format":"lsp|lorclipboard|lorclipboards5|vixenroutine|hls|eseq|eseqcompressed|avicompressed|mp4compressed|mp4highquality|aviuncompressed|mp4uncompressed|losslessrgb|prores4444|hdprores|minleon|gif"}
+
+    Video format values:
+        avicompressed / mp4compressed   Compressed Video (H.264 .mp4)
+        mp4highquality                  High Quality Compressed Video (HEVC .mp4)
+        aviuncompressed / mp4uncompressed  Uncompressed Video (.avi)
+        losslessrgb                     Lossless RGB Video (.mov)
+        prores4444                      ProRes 4444 Video (.mov)
+        hdprores                        HD ProRes Video 1920x1080 (.mov)
+
+    This assumes the rendered model data is up to date
+
+Export Model With Render
+    {"cmd":"exportModelWithRender", "filename":"file to create", "model":"model to export", "highdef":"true|false", "format":"lsp|lorclipboard|lorclipboards5|vixenroutine|hls|eseq|eseqcompressed|avicompressed|mp4compressed|mp4highquality|aviuncompressed|mp4uncompressed|losslessrgb|prores4444|hdprores|minleon|gif"}
+    
+Response
+    {"res":200, "msg": "Model exported."}
+    
+Lights On
+    {"cmd":"lightsOn"}
+Response
+    {"res":200, "msg": "Lights on."}
+
+Lights Off
+    {"cmd":"lightsOff"}
+Response
+    {"res":200, "msg": "Lights off."}
+
+Play jukebox button
+    {"cmd":"playJukebox","button":1}
+Response
+    {"res":200, "msg": "Played button 1"}
+    
+Get Jukebox tooltips
+    {"cmd":"getJukeboxButtonTooltips"}
+Response
+    {"res":200, "tooltips": ["Tooltips Button 1","Tooltips Button 2", "Tooltips Button 3"]}
+
+Get Jukebox buttons have effects
+    {"cmd":"getJukeboxButtonEffectPresent"}
+Response
+    {"res":200, "effects": ["1","2", "3"]}
+
+Get open sequence 
+    {"cmd":"getOpenSequence"}
+Response
+    {"res":200, "seq": "SequenceName.xsq", "fullseq": "C:\FullPath\SequenceName.xsq", "media": "C:\FullPath\media.mp3", "len": "120000", "framems": "25"}
+
+Get E131 Tag
+    {"cmd":"getE131Tag"}
+Response
+    {"res":200, "tag": "xLights 984566"}
+
+Add Ethernet Type Controller
+    {"cmd":"addEthernetController", "ip":"IP Address", "name", "Name in xLights"}
+Response
+    {"res":200, "msg": "Added Ethernet Controller"}
+
+Packaged Sequence Files
+    {"cmd":"packageSequence"}
+Response
+    {"res":200, "output": "SequenceName.xsqz"}
+
+Packaged Log Files
+    {"cmd":"packageLogFiles"}
+Response
+    {"res":200, "output": "xLightsProblem.zip"}
+
+Export Video Preview
+    {"cmd":"exportVideoPreview", "filename":"Export File Name", "width":"Optional Export Width", "height":"Optional Export Height"}
+    "width"/"height" are optional; when omitted, the export uses the House Preview pane's current on-screen size.
+Response
+    {"res":200, "output": "Filename.mp4"}
+
+Run Lua Script
+    {"cmd":"runScript", "filename":"Lua File Name"}
+Response
+    {"res":200,"msg":"Script Was Successful."}
+
+Copy All Effects from One Model to Another Model
+    {"cmd":"cloneModelEffects", "target":"Model to Copy Effects To", "source":"Model to Copy Effects From", "eraseModel":"Erase Existing Effects from Target Model"}
+Response
+    {"res":200, "msg":"Model Effects Cloned.","worked":"true"}
+
+Add Effect to a Model
+    {"cmd":"addEffect", "target":"Model to Add Effect To", "effect":"Effect Type", "settings":"Effect Settings", "palette":"Color Palette Settings", "layer":"Effect Layer", "startTime":"Start Time in ms", "endTime":"End Time in ms"}
+Response
+    {"res":200, "msg":"Added Effects.","worked":"true"}
+
+Get List of all the Models and Model Groups
+    {"cmd":"getModels", "models":"true", "groups":"true"}
+Response
+    {"res":200, "models": ["All House","MegaTree","Arch1","Arch2","Outline","WindowFrame1"]}
+
+Get List of all the Views from an open Sequence
+    {"cmd":"getViews"}
+Response
+    {"res":200, "views": ["Master View","Singing","Template"]}
+    {"res":503, "msg": "No sequence open."}
+
+Make a given view the Master View
+    {"cmd":"makeMaster" "view": "viewname"}
+Response
+    {"res":200}
+    {"res":503, "msg": "No sequence open."}
+    {"res":504, "msg": "No template view selected."}
+
+Get List of all the Controllers
+    {"cmd":"getControllers"}
+Response
+    {"res":200, "controllers": [{
+        "name": "Yard",
+        "desc": "",
+        "type": "Ethernet",
+        "vendor": "ScottNation",
+        "model": "PB16",
+        "variant": "Expansion",
+        "protocol": "DDP",
+        "id": 64007,
+        "startchannel": 159976,
+        "channels": 4953,
+        "managed": true,
+        "autolayout": true,
+        "canvisualise": true,
+        "active": true,
+        "ip": "192.168.1.209",
+        "controllercap": {
+            "pixelports": 32,
+            "serialports": 2,
+            "supportspanels": false,
+            "supportsvirtualmatrix": false,
+            "smartremotecount": 6,
+            "smartremotetypes": [
+                "falcon_v1",
+                "fpp_v2"
+            ],
+            "pixelprotocols": [
+                "ws2811"
+            ],
+            "serialprotocols": [
+                "dmx",
+                "pixelnet"
+            ]
+        }
+    }]}
+
+Get List of all the Models on a Controller by IP or Name
+    {"cmd":"getControllerPortMap", "ip":"192.168.1.209" or "name":"Yard"}
+Response
+    {
+    "pixelports": [
+        {
+            "port": 1,
+            "startchannel": 159976,
+            "universe": 64007,
+            "universestartchannel": 1,
+            "channels": 150,
+            "pixels": 50,
+            "models": [
+                {
+                    "name": "Arch2",
+                    "description": "",
+                    "startchannel": 159976,
+                    "universe": 64007,
+                    "universestartchannel": 1,
+                    "channels": 75,
+                    "pixels": 25
+                },
+                {
+                    "name": "Arch1",
+                    "description": "",
+                    "startchannel": 160051,
+                    "universe": 64007,
+                    "universestartchannel": 76,
+                    "channels": 75,
+                    "pixels": 25
+                }
+            ]
+        }
+    ],
+    "serialports": [],
+    "virtualmatrixports": [],
+    "ledpanelmatrixports": []
+}
+
+Get List of all the Controllers by IP Address, if they are a Ethernet based controller
+Command
+    {"cmd":"getControllerIPs"}
+Response
+    {"res":200, "controllers":[ "192.168.1.205","192.168.1.100"]}
+
+Get List of all the Effect IDs by Layer for a model.
+Command
+    {"cmd":"getEffectIDs", "model":"model name"}
+Response
+    {"res":200, "effects":[ ["0","1"],[]]}
+
+Get the Effect Settings for an Effect on a model.
+Command
+    {"cmd":"getEffectSettings", "model":"model name", "layer":"0", "id":"0" }
+Response
+    {"res":200,"name":"On","palette":{"C_BUTTON_Palette1":"#0000FF","C_CHECKBOX_Palette1":"1" },"settings":{"E_TEXTCTRL_Eff_On_Start":"10"},"startTime":"10","endTime":"100","selected":"0"}
+
+Set Effect Settings for an Effect on a model.
+Command
+    {"cmd":"setEffectSettings","model":"model name","layer":"0","id":"0","name":"On","palette":{"C_BUTTON_Palette1":"#0000FF","C_CHECKBOX_Palette1":"1" },"settings":{"E_TEXTCTRL_Eff_On_Start":"10"},"startTime":"10","endTime":"100"}
+Response
+    {"res":200, "msg":"Set Effect Settings.","worked":"true"}
+
+Delete an Effect from a model.
+Command
+    {"cmd":"deleteEffect","model":"model name","layer":"0","id":"0"}
+Response
+    {"res":200, "msg":"Deleted Effect.","worked":"true"}
+
+Import Effects from a xLights Sequence.
+Command
+    {"cmd":"importXLightsSequence","filename":"xsq/zip file path","mapmethod":"file","mapfile":"xjmap/xmap/xmaphint file path"}
+    {"cmd":"importXLightsSequence","filename":"xsq/zip file path","mapmethod":"auto"}
+    Optional params:
+      "mapmethod" : "file" (default, requires mapfile) | "auto" (Auto Map by name, no mapfile needed) | "both" (Load Map first, then Auto Map for remaining; requires mapfile)
+      "importmedia": "true" (default) | "false"  -- copy audio/media from package to destination show
+Response
+    {"res":200, "msg":"Imported XLights Sequence.","worked":"true"}
+
+List sequence and package files in a folder (useful for Lua batch-import scripts).
+Scans for .xsq, .xsqz, .zip, and .piz files. The folder does not need to be
+an xLights show — any folder containing package files is accepted.
+Command
+    {"cmd":"listSequences","folder":"C:\\ShowFolder"}
+Response
+    {"res":200, "sequences":[{"name":"MyShow","path":"C:\\ShowFolder\\MyShow.xsq","type":"sequence"}, ...]}
+    type is "sequence" for .xsq, or "package" for .xsqz/.zip/.piz
+
+Read basic properties of a sequence file without opening it in the editor.
+Command
+    {"cmd":"getSequenceInfo","filename":"C:\\ShowFolder\\MyShow.xsq"}
+Response
+    {"res":200, "duration":180000, "frameRate":50, "mediaFile":"C:\\audio\\song.mp3", "name":"MyShow"}
+    duration is in milliseconds; frameRate is frames-per-second.
+
+Set Model Settings for a Model.
+Command
+	{"cmd":"setModelProperty","model":"model name","key":"Controller","data":"Yard"}
+    {"cmd":"setModelProperty","model":"model name","key":"ModelControllerConnectionPort","data":"5"}
+Response
+    {"res":200, "msg":"Set Model Property.","worked":"true"}
+
+List media in the open sequence that is not playable on all platforms. Same check the
+sequence-open compatibility warning runs: video that AVFoundation cannot play (legacy
+AVI/QuickTime codecs and similar) and audio that cannot be decoded.
+"canconvert" is false for files that could not even be opened - those can only be
+reported, not transcoded. "animatedgif" files are converted by switching the effect
+type rather than by transcoding.
+Command
+    {"cmd":"getMediaIssues"}
+Response
+    {"res":200, "issues":[{"path":"C:\\Show\\clip.avi","reason":"Unsupported video codec","type":"video","canconvert":true,"animatedgif":false}, ...]}
+
+Convert every convertible video in the open sequence to a supported format and repoint
+the sequence's Video effects at the results. Intended for bulk-updating a library of
+sequences to portable media. The sequence must be saved afterwards for this to persist.
+Animated GIFs are not transcoded - their Video effects become Pictures effects, which
+play GIF animation natively. Audio issues are not converted; re-encode those separately.
+Command
+    {"cmd":"convertMedia"}
+Response
+    {"res":200, "msg":"Converted 3 of 3 file(s). 7 video effect(s) updated.",
+     "attempted":3, "converted":3, "effectsupdated":7, "gifeffectsconverted":1}
+    A "failed" array of "<file>: <reason>" strings is returned with res 503 if any
+    conversion failed; the files that did convert are still applied.
+
+List the media referenced by the open sequence, with its embed state.
+"embedded" is whether the bytes live in the .xsq; "embeddable" is whether they could
+(video and audio are always referenced by path, never embedded). Images also report
+width/height and frame count (>1 for animated GIF/WebP and for -1/-2/-3 frame series).
+Command
+    {"cmd":"getMedia"}
+    {"cmd":"getMedia","type":"image"}
+Response
+    {"res":200, "media":[{"path":"Images/star.png","type":"image","embedded":false,"embeddable":true,"used":true,"width":64,"height":64,"frames":1}, ...]}
+
+Embed media into the open sequence so it carries its own copy and no longer depends on
+external files. The sequence must be saved afterwards for this to persist. Media that
+cannot be embedded (video, audio, binary/Glediator files) is skipped.
+Embedded bytes travel inside the .xsq, so the stored path is only an identity key -
+each one is rewritten relative to the show folder or a media folder, and every effect
+setting and face definition referencing it is repointed. Paths outside those folders,
+and any whose relative form is already taken by another entry, are left alone.
+Entries that were already embedded are re-keyed too but not re-counted: "count" is
+newly embedded files, "maderelative" is how many paths were shortened.
+Command
+    {"cmd":"embedMedia"}
+    {"cmd":"embedMedia","type":"image"}
+    {"cmd":"embedMedia","file":"Images/star.png"}
+Response
+    {"res":200, "msg":"Embedded 12 media file(s).","count":12,"maderelative":12}
+    A "failed" array of paths is returned with res 503 if any named file could not be embedded.
+
+Extract embedded media back out to files and repoint the sequence's effects and face
+definitions at them. The sequence must be saved afterwards for this to persist.
+Command
+    {"cmd":"extractMedia"}
+    {"cmd":"extractMedia","type":"image","dir":"C:\\ShowFolder\\Images"}
+    {"cmd":"extractMedia","file":"Images/star.png"}
+Response
+    {"res":200, "msg":"Extracted 12 media file(s).","count":12}
+    "dir" must be inside the show folder or a media folder; omit it to write each file
+    back to where its stored path resolves.
+
+Get current show folder.
+Command
+	{"cmd":"getShowFolder"}
+Response
+    {"res":200, "folder":"C:\ShowFolder"}
+Get the fseq directory from preferences.
+Command
+	{"cmd":"getFseqDirectory"}
+Response
+    {"res":200, "folder":"C:\ShowFolder"}

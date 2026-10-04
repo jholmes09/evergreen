@@ -1,0 +1,231 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include "WebSocketClient.h"
+#include <chrono>
+#include <cstdlib>
+#include <spdlog/fmt/fmt.h>
+#include <thread>
+
+#include <log.h>
+
+WebSocketClient::WebSocketClient()
+{
+    _connected = false;
+}
+
+bool WebSocketClient::Connect(std::string ip, std::string url)
+{
+    spdlog::debug("Connecting to websocket {} {}.", ip, url);
+
+    if (!_socket.Connect(ip, 80, "", false)) {
+        spdlog::error("    Failed to connect.");
+        return false;
+    }
+
+    _connected = true;
+
+    spdlog::debug("    Connected.");
+
+    if (url == "") url = "/";
+    const std::string line = fmt::format("GET {} HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==\r\nSec-WebSocket-Version: 13\r\nOrigin:http://{}/\r\n\r\n", url, ip, ip);
+    _socket.Write(reinterpret_cast<const uint8_t*>(line.c_str()), line.size());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const std::string answer = ReadSocket();
+    int status = 0;
+    if (answer.rfind("HTTP/1.1 ", 0) == 0 && answer.size() >= 12) {
+        status = static_cast<int>(std::strtol(answer.substr(9, 3).c_str(), nullptr, 10));
+    }
+
+    if (status == 101) {
+        spdlog::debug("    Converted to websocket.");
+
+        ClearIncomingData();
+
+        return true;
+    }
+
+    spdlog::error("     Failed to convert to web socket {}.", status);
+
+    _socket.Close();
+    _connected = false;
+
+    return false;
+}
+
+bool WebSocketClient::Send(std::string message)
+{
+    
+    spdlog::debug("WebSocket Sent: {}", message);
+    //printf("Send: %s\n", message.c_str());
+
+    bool useMask = false;
+    const uint8_t masking_key[4] = { 0x12, 0x34, 0x56, 0x78 };
+    std::vector<uint8_t> header;
+    header.assign(2 + (message.size() >= 126 ? 2 : 0) + (message.size() >= 65536 ? 6 : 0) + (useMask ? 4 : 0), 0);
+    header[0] = 0x80 | 0x01;
+    if (false) {}
+    else if (message.size() < 126) {
+        header[1] = (message.size() & 0xff) | (useMask ? 0x80 : 0);
+        if (useMask) {
+            header[2] = masking_key[0];
+            header[3] = masking_key[1];
+            header[4] = masking_key[2];
+            header[5] = masking_key[3];
+        }
+    } else if (message.size() < 65536) {
+        header[1] = 126 | (useMask ? 0x80 : 0);
+        header[2] = (message.size() >> 8) & 0xff;
+        header[3] = (message.size() >> 0) & 0xff;
+        if (useMask) {
+            header[4] = masking_key[0];
+            header[5] = masking_key[1];
+            header[6] = masking_key[2];
+            header[7] = masking_key[3];
+        }
+    } else { // TODO: run coverage testing here
+        header[1] = 127 | (useMask ? 0x80 : 0);
+        header[2] = 0; // (message.size() >> 56) & 0xff;
+        header[3] = 0; // (message.size() >> 48) & 0xff;
+        header[4] = 0; // (message.size() >> 40) & 0xff;
+        header[5] = 0; // (message.size() >> 32) & 0xff;
+        header[6] = (message.size() >> 24) & 0xff;
+        header[7] = (message.size() >> 16) & 0xff;
+        header[8] = (message.size() >> 8) & 0xff;
+        header[9] = (message.size() >> 0) & 0xff;
+        if (useMask) {
+            header[10] = masking_key[0];
+            header[11] = masking_key[1];
+            header[12] = masking_key[2];
+            header[13] = masking_key[3];
+        }
+    }
+    for (size_t i = 0; i < message.size(); i++) {
+        header.push_back(message[i]);
+    }
+    _socket.Write(&header[0], header.size());
+    return true;
+}
+
+std::string WebSocketClient::Receive()
+{
+    
+    uint8_t buffer[8192];
+    _socket.Peek(buffer, sizeof(buffer));
+    auto read = _socket.LastReadCount();
+    if (read >= 2) {
+        bool fin = false;
+        std::string res = "";
+        while (!fin) {
+            bool fin = (buffer[0] & 0x80) == 0x80;
+            //uint8_t opcode = (buffer[0] & 0x0f);
+            uint8_t mask = (buffer[1] & 0x80) == 0x80;
+            uint8_t N0 = (buffer[1] & 0x7f);
+            int header_size = 2 + (N0 == 126 ? 2 : 0) + (N0 == 127 ? 8 : 0) + (mask ? 4 : 0);
+
+            if (read >= (unsigned int)header_size) {
+                char masking_key[4];
+                int i = 0;
+                unsigned long N = 0;
+                if (N0 < 126) {
+                    N = N0;
+                    i = 2;
+                } else if (N0 == 126) {
+                    N = 0;
+                    N += ((uint64_t)buffer[2]) << 8;
+                    N += ((uint64_t)buffer[3]);
+                    i = 4;
+                } else if (N0 == 127) {
+                    N = 0;
+                    N += ((uint64_t)buffer[2]) << 56;
+                    N += ((uint64_t)buffer[3]) << 48;
+                    N += ((uint64_t)buffer[4]) << 40;
+                    N += ((uint64_t)buffer[5]) << 32;
+                    N += ((uint64_t)buffer[6]) << 24;
+                    N += ((uint64_t)buffer[7]) << 16;
+                    N += ((uint64_t)buffer[8]) << 8;
+                    N += ((uint64_t)buffer[9]);
+                    i = 10;
+                }
+                if (mask) {
+                    masking_key[0] = ((uint8_t)buffer[i + 0]) << 0;
+                    masking_key[1] = ((uint8_t)buffer[i + 1]) << 0;
+                    masking_key[2] = ((uint8_t)buffer[i + 2]) << 0;
+                    masking_key[3] = ((uint8_t)buffer[i + 3]) << 0;
+                } else {
+                    masking_key[0] = 0;
+                    masking_key[1] = 0;
+                    masking_key[2] = 0;
+                    masking_key[3] = 0;
+                }
+                //FIX ME: this causes an infinate loop if the buffer is smaller than than data from the client.
+                if (read >= header_size + N) {
+                    // now really read it
+                    _socket.Read(buffer, header_size + N);
+
+                    if (mask) {
+                        for (size_t j = 0; j != N; ++j) {
+                            buffer[j + header_size] ^= masking_key[j & 0x3];
+                        }
+                    }
+
+                    buffer[N + header_size] = 0x00;
+
+                    res += std::string((char*)&buffer[header_size]);
+                    if (fin) {
+                        spdlog::debug("WebSocket Received: {}", res);
+                        //printf("Receive: %s\n", res.c_str());
+                        return res;
+                    }
+                }
+                _socket.Peek(buffer, sizeof(buffer));
+                read = _socket.LastReadCount();
+                while (read < 2) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    _socket.Peek(buffer, sizeof(buffer));
+                    read = _socket.LastReadCount();
+                }
+            }
+        }
+    }
+    return "";
+}
+
+std::string WebSocketClient::ReadSocket()
+{
+    unsigned char buffer[4096];
+    memset(buffer, 0x00, sizeof(buffer));
+    for (int i = 0; i < 2 || (i < 255 && buffer[i - 2] != '\r' && buffer[i - 1] != '\n'); ++i) {
+        _socket.Read(&buffer[i], 1);
+        if (_socket.LastReadCount() == 0) return "";
+        buffer[i+1] = 0;
+    }
+
+    return std::string((char*)buffer);
+}
+
+void WebSocketClient::ClearIncomingData()
+{
+    int to = _socket.GetReadTimeoutMs();
+    _socket.SetReadTimeoutMs(1000);
+    unsigned char buffer[4096];
+    int read = 999;
+    while (read != 0) {
+        _socket.Read(buffer, sizeof(buffer));
+        read = _socket.LastReadCount();
+    }
+    _socket.SetReadTimeoutMs(to);
+}
+
+WebSocketClient::~WebSocketClient()
+{
+    _socket.Close();
+    _connected = false;
+}

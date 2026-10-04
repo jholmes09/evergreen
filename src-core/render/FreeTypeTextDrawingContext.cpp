@@ -1,0 +1,1081 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+// Portable TextDrawingContext implementation using FreeType + HarfBuzz. Used on
+// Linux to replace wxTextDrawingContext, freeing TextEffect and ShapeEffect to
+// render on the render-thread pool instead of being forced to the main thread by
+// wxGTK/Pango's lack of off-thread safety.
+//
+// The class is per-instance thread-safe: each context owns its own
+// FT_Library, FT_Face cache, and HarfBuzz font handles. Font-file lookup is
+// only done at face-load time, behind a process-wide mutex, and results are
+// cached. The TextDrawingContext pool already hands out one context per
+// render thread, so render threads never share these instances.
+//
+// Family name -> font file is the one platform-specific piece: Fontconfig on
+// Linux, DirectWrite on Windows.
+//
+// Windows: gated OFF. XL_FREETYPE_TEXT is deliberately not defined by any build,
+// so this compiles to the stubs at the bottom of the file and Direct2D stays the
+// Windows backend. The code is kept because it has been built and measured:
+// FreeType rasterises text 2-4x cheaper than Direct2D, but that never reached
+// sequence wall-clock (those renders are dependency-bound), and it would cost two
+// unmanaged Windows dependencies. To re-enable, define XL_FREETYPE_TEXT and give
+// the build FreeType + HarfBuzz; plans/freetype-windows-prototype.md has the
+// numbers, the exact build steps, and the caveats found.
+
+#include "FreeTypeTextDrawingContext.h"
+
+#if defined(LINUX)
+#define XL_FT_FONTCONFIG 1
+#elif defined(_WIN32) && defined(XL_FREETYPE_TEXT)
+#define XL_FT_DIRECTWRITE 1
+// M_PI is not in MSVC's <cmath> without this, and the rotated path needs it.
+#define _USE_MATH_DEFINES
+#endif
+
+#if defined(XL_FT_FONTCONFIG) || defined(XL_FT_DIRECTWRITE)
+
+#include "Color.h"
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#include FT_GLYPH_H
+#include FT_OUTLINE_H
+
+#include <hb.h>
+#include <hb-ft.h>
+
+#ifdef XL_FT_FONTCONFIG
+#include <fontconfig/fontconfig.h>
+#endif
+#ifdef XL_FT_DIRECTWRITE
+#include <windows.h>
+#include <dwrite.h>
+#pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "freetype.lib")
+#pragma comment(lib, "harfbuzz.lib")
+// windows.h defines DrawText as DrawTextW, which would rename this class's
+// DrawText overrides. The header undefines it before declaring them; this TU
+// pulls windows.h in afterwards, so it has to undefine it again.
+#ifdef DrawText
+#undef DrawText
+#endif
+#endif
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <log.h>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Font discovery: face name → font file
+// ---------------------------------------------------------------------------
+// Fallback families. FreeType needs a real file, so an unresolvable family has
+// to be substituted with one that is actually installed rather than left to a
+// toolkit's default.
+#ifdef XL_FT_DIRECTWRITE
+constexpr char FT_GENERIC_FACE[] = "Segoe UI";
+constexpr char FT_GENERIC_FACE_ALT[] = "Arial";
+constexpr char FT_EMOJI_FACE[] = "Segoe UI Emoji";
+constexpr char FT_EMOJI_FACE_ALT[] = "Segoe UI Symbol";
+#else
+constexpr char FT_GENERIC_FACE[] = "DejaVu Sans";
+constexpr char FT_GENERIC_FACE_ALT[] = "Liberation Sans";
+constexpr char FT_EMOJI_FACE[] = "Noto Color Emoji";
+constexpr char FT_EMOJI_FACE_ALT[] = "Noto Emoji";
+#endif
+
+struct FontFileQuery {
+    std::string family;
+    bool bold = false;
+    bool italic = false;
+    bool light = false;
+
+    bool operator==(const FontFileQuery& o) const {
+        return family == o.family && bold == o.bold && italic == o.italic && light == o.light;
+    }
+};
+
+struct FontFileQueryHash {
+    size_t operator()(const FontFileQuery& q) const noexcept {
+        size_t h = std::hash<std::string>{}(q.family);
+        h ^= (q.bold ? 0x9e3779b9 : 0);
+        h ^= (q.italic ? 0x85ebca6b : 0);
+        h ^= (q.light ? 0xc2b2ae35 : 0);
+        return h;
+    }
+};
+
+// A face inside a font file. The index matters on Windows, where many families
+// ship as TrueType collections (.ttc) holding several faces.
+struct FontFileRef {
+    std::string path;
+    int index = 0;
+
+    bool valid() const { return !path.empty(); }
+};
+
+static std::mutex sFontEnumMutex;
+static std::unordered_map<FontFileQuery, FontFileRef, FontFileQueryHash> sFontFileCache;
+static bool sFontEnumOk = false;
+static bool sFontEnumTried = false;
+
+#ifdef XL_FT_FONTCONFIG
+static void EnsureFontEnumInit() {
+    if (sFontEnumTried) return;
+    sFontEnumTried = true;
+    if (FcInit()) {
+        sFontEnumOk = true;
+    } else {
+        spdlog::error("FreeTypeTextDrawingContext: FcInit() failed; font lookup will fall back to defaults.");
+    }
+}
+
+static FontFileRef LookupFontFile(const FontFileQuery& q) {
+    FontFileRef out;
+    FcPattern* pat = FcPatternCreate();
+    if (!pat) return out;
+
+    if (!q.family.empty()) {
+        FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)q.family.c_str());
+    }
+    int weight = FC_WEIGHT_NORMAL;
+    if (q.bold) weight = FC_WEIGHT_BOLD;
+    else if (q.light) weight = FC_WEIGHT_LIGHT;
+    FcPatternAddInteger(pat, FC_WEIGHT, weight);
+    FcPatternAddInteger(pat, FC_SLANT, q.italic ? FC_SLANT_ITALIC : FC_SLANT_ROMAN);
+
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+
+    FcResult fcRes = FcResultNoMatch;
+    FcPattern* match = FcFontMatch(nullptr, pat, &fcRes);
+    if (match) {
+        FcChar8* file = nullptr;
+        if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+            out.path = (const char*)file;
+        }
+        int idx = 0;
+        if (FcPatternGetInteger(match, FC_INDEX, 0, &idx) == FcResultMatch) {
+            out.index = idx;
+        }
+        FcPatternDestroy(match);
+    }
+    FcPatternDestroy(pat);
+    return out;
+}
+#endif // XL_FT_FONTCONFIG
+
+#ifdef XL_FT_DIRECTWRITE
+static IDWriteFactory* sDWriteFactory = nullptr;
+
+static void EnsureFontEnumInit() {
+    if (sFontEnumTried) return;
+    sFontEnumTried = true;
+    HRESULT hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                                     __uuidof(IDWriteFactory),
+                                     reinterpret_cast<IUnknown**>(&sDWriteFactory));
+    if (SUCCEEDED(hr) && sDWriteFactory != nullptr) {
+        sFontEnumOk = true;
+    } else {
+        spdlog::error("FreeTypeTextDrawingContext: DWriteCreateFactory failed (hr 0x{:08x}).", (uint32_t)hr);
+    }
+}
+
+template <class T>
+static void ComRelease(T*& p) {
+    if (p != nullptr) {
+        p->Release();
+        p = nullptr;
+    }
+}
+
+static std::wstring Widen(const std::string& utf8) {
+    if (utf8.empty()) return std::wstring();
+    int need = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (need <= 0) return std::wstring();
+    std::wstring out((size_t)need, L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &out[0], need);
+    return out;
+}
+
+static std::string Narrow(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int need = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return std::string();
+    std::string out((size_t)need, '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &out[0], need, nullptr, nullptr);
+    return out;
+}
+
+static FontFileRef LookupFontFile(const FontFileQuery& q) {
+    FontFileRef out;
+
+    IDWriteFontCollection* collection = nullptr;
+    if (FAILED(sDWriteFactory->GetSystemFontCollection(&collection, FALSE)) || collection == nullptr) {
+        return out;
+    }
+
+    UINT32 familyIndex = 0;
+    BOOL exists = FALSE;
+    std::wstring family = Widen(q.family);
+    if (!family.empty()) {
+        collection->FindFamilyName(family.c_str(), &familyIndex, &exists);
+    }
+    if (!exists) {
+        // Fontconfig substitutes something installed for an unknown family;
+        // DirectWrite reports "not found" and we would hand FreeType nothing.
+        for (const char* alt : { FT_GENERIC_FACE, FT_GENERIC_FACE_ALT }) {
+            if (SUCCEEDED(collection->FindFamilyName(Widen(alt).c_str(), &familyIndex, &exists)) && exists) {
+                break;
+            }
+        }
+    }
+    if (!exists) {
+        ComRelease(collection);
+        return out;
+    }
+
+    IDWriteFontFamily* fontFamily = nullptr;
+    if (FAILED(collection->GetFontFamily(familyIndex, &fontFamily)) || fontFamily == nullptr) {
+        ComRelease(collection);
+        return out;
+    }
+
+    DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
+    if (q.bold) {
+        weight = DWRITE_FONT_WEIGHT_BOLD;
+    } else if (q.light) {
+        weight = DWRITE_FONT_WEIGHT_LIGHT;
+    }
+
+    IDWriteFont* font = nullptr;
+    if (SUCCEEDED(fontFamily->GetFirstMatchingFont(weight,
+                                                   DWRITE_FONT_STRETCH_NORMAL,
+                                                   q.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
+                                                   &font))
+        && font != nullptr) {
+        IDWriteFontFace* fontFace = nullptr;
+        if (SUCCEEDED(font->CreateFontFace(&fontFace)) && fontFace != nullptr) {
+            UINT32 fileCount = 1;
+            IDWriteFontFile* fontFile = nullptr;
+            if (SUCCEEDED(fontFace->GetFiles(&fileCount, &fontFile)) && fontFile != nullptr) {
+                const void* refKey = nullptr;
+                UINT32 refKeySize = 0;
+                IDWriteFontFileLoader* loader = nullptr;
+                if (SUCCEEDED(fontFile->GetReferenceKey(&refKey, &refKeySize))
+                    && SUCCEEDED(fontFile->GetLoader(&loader)) && loader != nullptr) {
+                    IDWriteLocalFontFileLoader* localLoader = nullptr;
+                    if (SUCCEEDED(loader->QueryInterface(__uuidof(IDWriteLocalFontFileLoader),
+                                                         reinterpret_cast<void**>(&localLoader)))
+                        && localLoader != nullptr) {
+                        UINT32 pathLen = 0;
+                        if (SUCCEEDED(localLoader->GetFilePathLengthFromKey(refKey, refKeySize, &pathLen))) {
+                            std::wstring path((size_t)pathLen + 1, L'\0');
+                            if (SUCCEEDED(localLoader->GetFilePathFromKey(refKey, refKeySize, &path[0], pathLen + 1))) {
+                                path.resize(pathLen);
+                                out.path = Narrow(path);
+                                out.index = (int)fontFace->GetIndex();
+                            }
+                        }
+                        ComRelease(localLoader);
+                    }
+                    ComRelease(loader);
+                }
+                ComRelease(fontFile);
+            }
+            ComRelease(fontFace);
+        }
+        ComRelease(font);
+    }
+
+    ComRelease(fontFamily);
+    ComRelease(collection);
+    return out;
+}
+#endif // XL_FT_DIRECTWRITE
+
+// Resolve a face description to a font file. Returns an invalid ref on failure.
+static FontFileRef ResolveFontFile(const FontFileQuery& q) {
+    std::lock_guard<std::mutex> lock(sFontEnumMutex);
+    EnsureFontEnumInit();
+
+    auto it = sFontFileCache.find(q);
+    if (it != sFontFileCache.end()) return it->second;
+
+    FontFileRef result;
+    if (sFontEnumOk) {
+        result = LookupFontFile(q);
+    }
+
+    sFontFileCache.emplace(q, result);
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 decoding
+// ---------------------------------------------------------------------------
+struct CodePoint {
+    uint32_t value = 0;
+    uint32_t byteStart = 0; // index in source UTF-8 string
+    uint32_t byteLen = 0;
+};
+
+static std::vector<CodePoint> DecodeUTF8(const std::string& s) {
+    std::vector<CodePoint> out;
+    out.reserve(s.size());
+    const uint8_t* p = (const uint8_t*)s.data();
+    size_t i = 0, n = s.size();
+    while (i < n) {
+        CodePoint cp;
+        cp.byteStart = (uint32_t)i;
+        uint8_t b = p[i];
+        if (b < 0x80) {
+            cp.value = b;
+            cp.byteLen = 1;
+        } else if ((b & 0xE0) == 0xC0 && i + 1 < n) {
+            cp.value = ((b & 0x1F) << 6) | (p[i + 1] & 0x3F);
+            cp.byteLen = 2;
+        } else if ((b & 0xF0) == 0xE0 && i + 2 < n) {
+            cp.value = ((b & 0x0F) << 12) | ((p[i + 1] & 0x3F) << 6) | (p[i + 2] & 0x3F);
+            cp.byteLen = 3;
+        } else if ((b & 0xF8) == 0xF0 && i + 3 < n) {
+            cp.value = ((b & 0x07) << 18) | ((p[i + 1] & 0x3F) << 12) | ((p[i + 2] & 0x3F) << 6) | (p[i + 3] & 0x3F);
+            cp.byteLen = 4;
+        } else {
+            cp.value = 0xFFFD;
+            cp.byteLen = 1;
+        }
+        i += cp.byteLen;
+        out.push_back(cp);
+    }
+    return out;
+}
+
+static bool IsEmojiCodepoint(uint32_t cp) {
+    // Coarse classifier: anything obviously emoji-flavored should fall through
+    // to the emoji font. Includes Fitzpatrick skin-tone modifiers, ZWJ, regional
+    // indicators, and the main emoji blocks. Tightening this is fine — false
+    // positives just route through the emoji font's cmap, and if the emoji
+    // font doesn't have it, it falls through again to DejaVu.
+    if (cp == 0x200D) return true;                              // ZWJ
+    if (cp == 0xFE0F || cp == 0xFE0E) return true;              // VS16 / VS15
+    if (cp >= 0x1F1E6 && cp <= 0x1F1FF) return true;            // Regional indicators
+    if (cp >= 0x1F3FB && cp <= 0x1F3FF) return true;            // Skin tones
+    if (cp >= 0x1F300 && cp <= 0x1FAFF) return true;            // Misc symbols & pictographs / emoji blocks
+    if (cp >= 0x2600 && cp <= 0x27BF) return true;              // Misc symbols + dingbats
+    if (cp == 0x2934 || cp == 0x2935) return true;
+    if (cp >= 0x2B00 && cp <= 0x2BFF) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-context state
+// ---------------------------------------------------------------------------
+struct LoadedFace {
+    FT_Face face = nullptr;
+    hb_font_t* hbFont = nullptr;
+    int pixelSize = 0;
+    bool hasColor = false;
+};
+
+} // anon namespace
+
+struct FreeTypeTextDrawingContext::Impl {
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> pixels; // RGBA, top-to-bottom
+
+    FT_Library lib = nullptr;
+
+    // Faces opened in this context. Key: "<path>|<size>". The value's
+    // FT_Face is at the requested pixel size and has FT_LOAD_COLOR applied.
+    struct FaceCacheEntry {
+        FT_Face face = nullptr;
+        hb_font_t* hbFont = nullptr;
+        bool hasColor = false;
+    };
+    std::unordered_map<std::string, FaceCacheEntry> faceCache;
+
+    // Currently selected text font (from SetFont)
+    TextFontInfo currentFont;
+    xlColor currentColor{255, 255, 255};
+    int currentPixelSize = 12; // resolved size used for rendering
+
+    // Cache of fallback-resolved faces for SetFont's primary font
+    LoadedFace primary;       // user-selected face
+    LoadedFace emojiFallback; // Noto Color Emoji
+    LoadedFace genericFallback; // DejaVu Sans
+
+    Impl(int w, int h) {
+        FT_Error err = FT_Init_FreeType(&lib);
+        if (err) {
+            spdlog::error("FreeTypeTextDrawingContext: FT_Init_FreeType failed (code {}).", (int)err);
+            lib = nullptr;
+        }
+        Resize(w, h);
+    }
+
+    ~Impl() {
+        for (auto& [k, e] : faceCache) {
+            if (e.hbFont) hb_font_destroy(e.hbFont);
+            if (e.face) FT_Done_Face(e.face);
+        }
+        if (lib) FT_Done_FreeType(lib);
+    }
+
+    void Resize(int w, int h) {
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+        width = w;
+        height = h;
+        pixels.assign((size_t)w * h * 4, 0);
+    }
+
+    void Clear() {
+        std::fill(pixels.begin(), pixels.end(), (uint8_t)0);
+    }
+
+    // Acquire a face at a specific pixel size. Returns null on failure.
+    LoadedFace LoadFace(const std::string& family, bool bold, bool italic, bool light, int pixelSize) {
+        if (!lib) return {};
+        if (pixelSize < 1) pixelSize = 12;
+
+        FontFileQuery q{family, bold, italic, light};
+        FontFileRef ref = ResolveFontFile(q);
+        if (!ref.valid()) {
+            spdlog::debug("FreeTypeTextDrawingContext: no font file matched '{}'.", family);
+            return {};
+        }
+
+        std::string key = ref.path + "#" + std::to_string(ref.index) + "|" + std::to_string(pixelSize);
+        auto it = faceCache.find(key);
+        if (it != faceCache.end()) {
+            LoadedFace lf;
+            lf.face = it->second.face;
+            lf.hbFont = it->second.hbFont;
+            lf.pixelSize = pixelSize;
+            lf.hasColor = it->second.hasColor;
+            return lf;
+        }
+
+        FT_Face face = nullptr;
+        FT_Error err = FT_New_Face(lib, ref.path.c_str(), ref.index, &face);
+        if (err || !face) {
+            spdlog::warn("FreeTypeTextDrawingContext: FT_New_Face('{}', {}) failed (code {}).", ref.path, ref.index, (int)err);
+            return {};
+        }
+
+        bool hasColor = (face->face_flags & FT_FACE_FLAG_COLOR) != 0;
+
+        // Color bitmap fonts (CBDT) have fixed strike sizes — pick the closest.
+        if (hasColor && face->num_fixed_sizes > 0) {
+            int best = 0;
+            int bestDelta = std::abs((int)face->available_sizes[0].y_ppem / 64 - pixelSize);
+            for (int i = 1; i < face->num_fixed_sizes; i++) {
+                int d = std::abs((int)face->available_sizes[i].y_ppem / 64 - pixelSize);
+                if (d < bestDelta) { bestDelta = d; best = i; }
+            }
+            FT_Select_Size(face, best);
+        } else {
+            FT_Set_Pixel_Sizes(face, 0, pixelSize);
+        }
+
+        hb_font_t* hbFont = hb_ft_font_create_referenced(face);
+        if (hbFont) {
+            hb_ft_font_set_funcs(hbFont);
+        }
+
+        FaceCacheEntry e;
+        e.face = face;
+        e.hbFont = hbFont;
+        e.hasColor = hasColor;
+        faceCache[key] = e;
+
+        LoadedFace lf;
+        lf.face = face;
+        lf.hbFont = hbFont;
+        lf.pixelSize = pixelSize;
+        lf.hasColor = hasColor;
+        return lf;
+    }
+
+    void EnsureFallbacks(int pixelSize) {
+        // Primary
+        if (primary.face == nullptr || primary.pixelSize != pixelSize) {
+            primary = LoadFace(currentFont.faceName, currentFont.bold, currentFont.italic || currentFont.slant, currentFont.light, pixelSize);
+            if (primary.face == nullptr) {
+                primary = LoadFace(FT_GENERIC_FACE, currentFont.bold, currentFont.italic || currentFont.slant, currentFont.light, pixelSize);
+            }
+        }
+        // Emoji
+        if (emojiFallback.face == nullptr || emojiFallback.pixelSize != pixelSize) {
+            emojiFallback = LoadFace(FT_EMOJI_FACE, false, false, false, pixelSize);
+            if (emojiFallback.face == nullptr) {
+                emojiFallback = LoadFace(FT_EMOJI_FACE_ALT, false, false, false, pixelSize);
+            }
+        }
+        // Generic last resort (different from primary if possible)
+        if (genericFallback.face == nullptr || genericFallback.pixelSize != pixelSize) {
+            genericFallback = LoadFace(FT_GENERIC_FACE, false, false, false, pixelSize);
+            if (genericFallback.face == nullptr) {
+                genericFallback = LoadFace(FT_GENERIC_FACE_ALT, false, false, false, pixelSize);
+            }
+        }
+    }
+
+    // Pick the best face for a single codepoint among the available chain.
+    // Returns nullptr if none can render it (caller should still try shaping
+    // with primary so a notdef glyph is emitted).
+    LoadedFace ChooseFaceFor(uint32_t cp) {
+        // For known emoji codepoints, prefer the emoji font even if the
+        // primary face has a fallback ASCII glyph (e.g. Noto Sans has a
+        // monochrome tofu for many emoji that we'd rather see as color).
+        if (IsEmojiCodepoint(cp)) {
+            if (emojiFallback.face && FT_Get_Char_Index(emojiFallback.face, cp) != 0) {
+                return emojiFallback;
+            }
+        }
+        if (primary.face && FT_Get_Char_Index(primary.face, cp) != 0) {
+            return primary;
+        }
+        if (emojiFallback.face && FT_Get_Char_Index(emojiFallback.face, cp) != 0) {
+            return emojiFallback;
+        }
+        if (genericFallback.face && FT_Get_Char_Index(genericFallback.face, cp) != 0) {
+            return genericFallback;
+        }
+        // Nothing has this codepoint — return primary so HarfBuzz emits notdef.
+        return primary;
+    }
+
+    struct ShapedGlyph {
+        FT_Face face = nullptr;
+        bool faceHasColor = false;
+        uint32_t glyphIndex = 0;
+        // Position in 26.6 fixed-point pixels (HarfBuzz returns design units
+        // that match FT pixel size since hb-ft sets the scale from FT_Face).
+        int xOffset = 0;
+        int yOffset = 0;
+        int xAdvance = 0;
+        int yAdvance = 0;
+    };
+
+    // Shape a contiguous run with one face.
+    void ShapeRun(LoadedFace& face,
+                  const std::vector<CodePoint>& cps,
+                  size_t firstIdx, size_t lastIdxExclusive,
+                  std::vector<ShapedGlyph>& outGlyphs) const {
+        if (face.hbFont == nullptr || lastIdxExclusive <= firstIdx) return;
+
+        hb_buffer_t* buf = hb_buffer_create();
+        hb_buffer_set_content_type(buf, HB_BUFFER_CONTENT_TYPE_UNICODE);
+        for (size_t i = firstIdx; i < lastIdxExclusive; i++) {
+            hb_buffer_add(buf, cps[i].value, (unsigned)i);
+        }
+        hb_buffer_set_direction(buf, HB_DIRECTION_LTR);
+        hb_buffer_guess_segment_properties(buf);
+
+        hb_shape(face.hbFont, buf, nullptr, 0);
+
+        unsigned int n = 0;
+        hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buf, &n);
+        hb_glyph_position_t* positions = hb_buffer_get_glyph_positions(buf, &n);
+
+        outGlyphs.reserve(outGlyphs.size() + n);
+        for (unsigned i = 0; i < n; i++) {
+            ShapedGlyph g;
+            g.face = face.face;
+            g.faceHasColor = face.hasColor;
+            g.glyphIndex = infos[i].codepoint; // HarfBuzz's "codepoint" is the resolved glyph index
+            g.xOffset = positions[i].x_offset;
+            g.yOffset = positions[i].y_offset;
+            g.xAdvance = positions[i].x_advance;
+            g.yAdvance = positions[i].y_advance;
+            // CBDT/CBLC color bitmap fonts (Noto Color Emoji on Linux) sometimes
+            // come back from hb-ft with x_advance=0 because the advance metric
+            // lives in the embedded bitmap strike and hb_font_funcs's default
+            // path queries scalable outline metrics. Fall back to FT's own
+            // advance from the glyph slot, which is correct for both bitmap
+            // and outline glyphs.
+            if (g.xAdvance == 0 && face.face) {
+                FT_Error e = FT_Load_Glyph(face.face, g.glyphIndex, FT_LOAD_DEFAULT | FT_LOAD_COLOR);
+                if (!e) {
+                    g.xAdvance = (int)face.face->glyph->advance.x;
+                    if (g.yAdvance == 0) g.yAdvance = (int)face.face->glyph->advance.y;
+                }
+            }
+            outGlyphs.push_back(g);
+        }
+        hb_buffer_destroy(buf);
+    }
+
+    // Shape an entire string, partitioning into runs by which fallback face
+    // owns each codepoint.
+    std::vector<ShapedGlyph> ShapeString(const std::string& s) {
+        std::vector<ShapedGlyph> out;
+        if (s.empty()) return out;
+
+        EnsureFallbacks(currentPixelSize);
+
+        std::vector<CodePoint> cps = DecodeUTF8(s);
+        if (cps.empty()) return out;
+
+        size_t runStart = 0;
+        LoadedFace runFace = ChooseFaceFor(cps[0].value);
+        for (size_t i = 1; i <= cps.size(); i++) {
+            LoadedFace nextFace = (i < cps.size()) ? ChooseFaceFor(cps[i].value) : LoadedFace{};
+            // Treat ZWJ and variation selectors as continuation of current run.
+            bool continueRun = (i < cps.size())
+                && (cps[i].value == 0x200D || cps[i].value == 0xFE0F || cps[i].value == 0xFE0E
+                    || (cps[i].value >= 0x1F3FB && cps[i].value <= 0x1F3FF));
+            if (continueRun) continue;
+
+            if (i == cps.size() || nextFace.face != runFace.face) {
+                if (runFace.face) {
+                    ShapeRun(runFace, cps, runStart, i, out);
+                }
+                runStart = i;
+                if (i < cps.size()) runFace = nextFace;
+            }
+        }
+        return out;
+    }
+
+    // Composite an alpha glyph (FT_PIXEL_MODE_GRAY) tinted by currentColor
+    // into the RGBA buffer. (x,y) is the top-left of the bitmap in target
+    // pixel coordinates.
+    void BlitGray(int x, int y, FT_Bitmap& bmp) {
+        if (bmp.buffer == nullptr) return;
+        const uint8_t cr = currentColor.red;
+        const uint8_t cg = currentColor.green;
+        const uint8_t cb = currentColor.blue;
+
+        for (unsigned int row = 0; row < bmp.rows; row++) {
+            int dstY = y + (int)row;
+            if (dstY < 0 || dstY >= height) continue;
+            const uint8_t* src = bmp.buffer + row * bmp.pitch;
+            uint8_t* dst = pixels.data() + (size_t)(dstY * width + x) * 4;
+            for (unsigned int col = 0; col < bmp.width; col++) {
+                int dstX = x + (int)col;
+                if (dstX < 0 || dstX >= width) { dst += 4; continue; }
+                uint8_t a = src[col];
+                if (a == 0) { dst += 4; continue; }
+                // Source-over composite: out = src + dst*(1-srcA)
+                uint8_t srcR = (uint8_t)((cr * a + 127) / 255);
+                uint8_t srcG = (uint8_t)((cg * a + 127) / 255);
+                uint8_t srcB = (uint8_t)((cb * a + 127) / 255);
+                uint8_t inv = 255 - a;
+                dst[0] = (uint8_t)(srcR + (dst[0] * inv + 127) / 255);
+                dst[1] = (uint8_t)(srcG + (dst[1] * inv + 127) / 255);
+                dst[2] = (uint8_t)(srcB + (dst[2] * inv + 127) / 255);
+                dst[3] = (uint8_t)(a + (dst[3] * inv + 127) / 255);
+                dst += 4;
+            }
+        }
+    }
+
+    // Composite a color BGRA glyph (FT_PIXEL_MODE_BGRA, premultiplied) into
+    // the RGBA buffer. Used for color emoji.
+    void BlitBGRA(int x, int y, FT_Bitmap& bmp) {
+        if (bmp.buffer == nullptr) return;
+        for (unsigned int row = 0; row < bmp.rows; row++) {
+            int dstY = y + (int)row;
+            if (dstY < 0 || dstY >= height) continue;
+            const uint8_t* src = bmp.buffer + row * bmp.pitch;
+            uint8_t* dst = pixels.data() + (size_t)(dstY * width + x) * 4;
+            for (unsigned int col = 0; col < bmp.width; col++) {
+                int dstX = x + (int)col;
+                if (dstX < 0 || dstX >= width) { dst += 4; src += 4; continue; }
+                uint8_t b = src[0];
+                uint8_t g = src[1];
+                uint8_t r = src[2];
+                uint8_t a = src[3];
+                if (a == 0) { dst += 4; src += 4; continue; }
+                uint8_t inv = 255 - a;
+                // Source already premultiplied per FT_PIXEL_MODE_BGRA contract.
+                dst[0] = (uint8_t)(r + (dst[0] * inv + 127) / 255);
+                dst[1] = (uint8_t)(g + (dst[1] * inv + 127) / 255);
+                dst[2] = (uint8_t)(b + (dst[2] * inv + 127) / 255);
+                dst[3] = (uint8_t)(a + (dst[3] * inv + 127) / 255);
+                dst += 4;
+                src += 4;
+            }
+        }
+    }
+
+    // Draw at unrotated origin (penX, penY). penY anchors the TOP of the
+    // typographic block (matching wxDC::DrawText semantics, which is what
+    // TextEffect was written against).
+    void DrawShapedAtOrigin(double penX, double penY, std::vector<ShapedGlyph>& glyphs) {
+        if (glyphs.empty()) return;
+        // Convert pen-top-of-line to pen-baseline by adding ascent of the
+        // primary face. TextEffect computes line height via GetTextExtent
+        // (ascent+descent+leading from us), so positioning must use the same
+        // ascender we report.
+        double baselineY = penY;
+        if (primary.face) {
+            FT_Face f = primary.face;
+            double ascent;
+            if (f->size && f->size->metrics.ascender != 0) {
+                ascent = f->size->metrics.ascender / 64.0;
+            } else {
+                ascent = (f->ascender * (double)currentPixelSize) / (double)f->units_per_EM;
+            }
+            baselineY += ascent;
+        }
+
+        double cursorX = penX;
+        double cursorY = baselineY;
+        for (auto& g : glyphs) {
+            if (!g.face) continue;
+
+            // Render at 1bpp (FT_LOAD_TARGET_MONO) for outline fonts to match
+            // wxTextDrawingContext's AA-off behavior — text effects render
+            // into LED-grid buffers where AA produces blurry half-lit pixels.
+            // Color bitmap glyphs ignore the target hint and come back as
+            // their pre-rasterized BGRA — that's the right behavior for emoji.
+            FT_Int32 loadFlags = FT_LOAD_DEFAULT | FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_MONOCHROME | FT_LOAD_NO_BITMAP;
+            if (g.faceHasColor) {
+                loadFlags = FT_LOAD_DEFAULT | FT_LOAD_RENDER | FT_LOAD_COLOR;
+            }
+            FT_Error err = FT_Load_Glyph(g.face, g.glyphIndex, loadFlags);
+            if (err) {
+                cursorX += g.xAdvance / 64.0;
+                cursorY += g.yAdvance / 64.0;
+                continue;
+            }
+            FT_GlyphSlot slot = g.face->glyph;
+            FT_Bitmap& bmp = slot->bitmap;
+
+            int penPixX = (int)std::lround(cursorX + g.xOffset / 64.0 + slot->bitmap_left);
+            int penPixY = (int)std::lround(cursorY + g.yOffset / 64.0 - slot->bitmap_top);
+
+            if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
+                BlitBGRA(penPixX, penPixY, bmp);
+            } else if (bmp.pixel_mode == FT_PIXEL_MODE_GRAY) {
+                BlitGray(penPixX, penPixY, bmp);
+            } else if (bmp.pixel_mode == FT_PIXEL_MODE_MONO) {
+                // Expand 1-bit into the gray path.
+                std::vector<uint8_t> expanded((size_t)bmp.width * bmp.rows, 0);
+                for (unsigned int row = 0; row < bmp.rows; row++) {
+                    const uint8_t* src = bmp.buffer + row * bmp.pitch;
+                    uint8_t* dst = expanded.data() + row * bmp.width;
+                    for (unsigned int col = 0; col < bmp.width; col++) {
+                        if (src[col >> 3] & (0x80 >> (col & 7))) dst[col] = 255;
+                    }
+                }
+                FT_Bitmap fake = bmp;
+                fake.pixel_mode = FT_PIXEL_MODE_GRAY;
+                fake.buffer = expanded.data();
+                fake.pitch = (int)bmp.width;
+                BlitGray(penPixX, penPixY, fake);
+            }
+
+            cursorX += g.xAdvance / 64.0;
+            cursorY += g.yAdvance / 64.0;
+        }
+    }
+
+    // Rotation applied to glyph outlines via FT_Set_Transform, plus rotated
+    // pen-positioning. Color bitmap glyphs ignore FT_Set_Transform (FT only
+    // rotates outlines), so rotated emoji come out upright but at rotated
+    // positions — acceptable since rotated text effects with emoji are an
+    // edge case.
+    void DrawShapedRotated(double penX, double penY, double degrees, std::vector<ShapedGlyph>& glyphs) {
+        double rad = degrees * M_PI / 180.0;
+        // Note: TextEffect's rotation argument is "degrees clockwise" in
+        // wxGraphicsContext::DrawText terms (positive = clockwise visually
+        // because y grows downward). Match that here.
+        double cosA = std::cos(rad);
+        double sinA = std::sin(rad);
+
+        // Convert top-of-line origin to baseline along the rotated y axis.
+        double ascent = 0.0;
+        if (primary.face) {
+            FT_Face f = primary.face;
+            if (f->size && f->size->metrics.ascender != 0) {
+                ascent = f->size->metrics.ascender / 64.0;
+            } else {
+                ascent = (f->ascender * (double)currentPixelSize) / (double)f->units_per_EM;
+            }
+        }
+        double baselineX = penX + ascent * sinA;
+        double baselineY = penY + ascent * cosA;
+
+        FT_Matrix mat;
+        // FT_Matrix uses 16.16 fixed point. Glyph y is up-positive in FT,
+        // so to rotate clockwise on a y-down screen we use the same matrix
+        // as standard rotation in math axes.
+        mat.xx = (FT_Fixed)(cosA * 0x10000L);
+        mat.xy = (FT_Fixed)(-sinA * 0x10000L);
+        mat.yx = (FT_Fixed)(sinA * 0x10000L);
+        mat.yy = (FT_Fixed)(cosA * 0x10000L);
+
+        double cursorX = baselineX;
+        double cursorY = baselineY;
+        for (auto& g : glyphs) {
+            if (!g.face) continue;
+
+            FT_Set_Transform(g.face, &mat, nullptr);
+
+            FT_Int32 loadFlags = FT_LOAD_DEFAULT | FT_LOAD_RENDER | FT_LOAD_TARGET_MONO | FT_LOAD_MONOCHROME | FT_LOAD_NO_BITMAP;
+            if (g.faceHasColor) {
+                loadFlags = FT_LOAD_DEFAULT | FT_LOAD_RENDER | FT_LOAD_COLOR;
+            }
+            FT_Error err = FT_Load_Glyph(g.face, g.glyphIndex, loadFlags);
+            if (err) {
+                FT_Set_Transform(g.face, nullptr, nullptr);
+                cursorX += (g.xAdvance / 64.0) * cosA;
+                cursorY += (g.xAdvance / 64.0) * sinA;
+                continue;
+            }
+            FT_GlyphSlot slot = g.face->glyph;
+            FT_Bitmap& bmp = slot->bitmap;
+
+            int penPixX = (int)std::lround(cursorX + slot->bitmap_left);
+            int penPixY = (int)std::lround(cursorY - slot->bitmap_top);
+
+            if (bmp.pixel_mode == FT_PIXEL_MODE_BGRA) {
+                BlitBGRA(penPixX, penPixY, bmp);
+            } else if (bmp.pixel_mode == FT_PIXEL_MODE_GRAY) {
+                BlitGray(penPixX, penPixY, bmp);
+            } else if (bmp.pixel_mode == FT_PIXEL_MODE_MONO) {
+                std::vector<uint8_t> expanded((size_t)bmp.width * bmp.rows, 0);
+                for (unsigned int row = 0; row < bmp.rows; row++) {
+                    const uint8_t* src = bmp.buffer + row * bmp.pitch;
+                    uint8_t* dst = expanded.data() + row * bmp.width;
+                    for (unsigned int col = 0; col < bmp.width; col++) {
+                        if (src[col >> 3] & (0x80 >> (col & 7))) dst[col] = 255;
+                    }
+                }
+                FT_Bitmap fake = bmp;
+                fake.pixel_mode = FT_PIXEL_MODE_GRAY;
+                fake.buffer = expanded.data();
+                fake.pitch = (int)bmp.width;
+                BlitGray(penPixX, penPixY, fake);
+            }
+
+            FT_Set_Transform(g.face, nullptr, nullptr);
+
+            double advancePx = g.xAdvance / 64.0;
+            cursorX += advancePx * cosA;
+            cursorY += advancePx * sinA;
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Public class
+// ---------------------------------------------------------------------------
+FreeTypeTextDrawingContext::FreeTypeTextDrawingContext(int w, int h, bool /*aa*/)
+    : impl(std::make_unique<Impl>(w, h)) {}
+
+FreeTypeTextDrawingContext::~FreeTypeTextDrawingContext() = default;
+
+void FreeTypeTextDrawingContext::ResetSize(int w, int h) {
+    impl->Resize(w, h);
+}
+
+size_t FreeTypeTextDrawingContext::GetWidth() const { return impl->width; }
+size_t FreeTypeTextDrawingContext::GetHeight() const { return impl->height; }
+
+void FreeTypeTextDrawingContext::Clear() {
+    impl->Clear();
+}
+
+const uint8_t* FreeTypeTextDrawingContext::FlushAndGetImage(int* width, int* height) {
+    if (width) *width = impl->width;
+    if (height) *height = impl->height;
+    return impl->pixels.data();
+}
+
+void FreeTypeTextDrawingContext::SetFont(const TextFontInfo& font, const xlColor& color) {
+    bool sizeChanged = font.pixelSize != impl->currentPixelSize;
+    bool faceChanged = font.faceName != impl->currentFont.faceName
+                       || font.bold != impl->currentFont.bold
+                       || font.italic != impl->currentFont.italic
+                       || font.slant != impl->currentFont.slant
+                       || font.light != impl->currentFont.light;
+    impl->currentFont = font;
+    impl->currentColor = color;
+    impl->currentPixelSize = font.pixelSize > 0 ? font.pixelSize : 12;
+    if (sizeChanged || faceChanged) {
+        impl->primary = LoadedFace{};
+        impl->emojiFallback = LoadedFace{};
+        impl->genericFallback = LoadedFace{};
+    }
+}
+
+void FreeTypeTextDrawingContext::DrawText(const std::string& msg, int x, int y, double rotation) {
+    auto glyphs = impl->ShapeString(msg);
+    if (rotation == 0.0) {
+        impl->DrawShapedAtOrigin(x, y, glyphs);
+    } else {
+        impl->DrawShapedRotated(x, y, rotation, glyphs);
+    }
+}
+
+void FreeTypeTextDrawingContext::DrawText(const std::string& msg, int x, int y) {
+    DrawText(msg, x, y, 0.0);
+}
+
+void FreeTypeTextDrawingContext::GetTextExtent(const std::string& msg, double* width, double* height) {
+    impl->EnsureFallbacks(impl->currentPixelSize);
+    auto glyphs = impl->ShapeString(msg);
+    double w = 0;
+    for (auto& g : glyphs) w += g.xAdvance / 64.0;
+
+    double h = 0;
+    if (impl->primary.face) {
+        FT_Face f = impl->primary.face;
+        if (f->size && (f->size->metrics.ascender != 0 || f->size->metrics.descender != 0)) {
+            // Match wx's text extent: ascent + descent + line gap.
+            h = (f->size->metrics.ascender - f->size->metrics.descender) / 64.0;
+            // Pango/CoreText include leading; FT's height includes line-gap.
+            double height_metric = f->size->metrics.height / 64.0;
+            if (height_metric > h) h = height_metric;
+        } else if (f->units_per_EM > 0) {
+            h = ((f->ascender - f->descender) * (double)impl->currentPixelSize) / f->units_per_EM;
+        } else {
+            h = impl->currentPixelSize;
+        }
+    } else {
+        h = impl->currentPixelSize;
+    }
+    if (width) *width = w;
+    if (height) *height = h;
+}
+
+void FreeTypeTextDrawingContext::GetTextExtents(const std::string& msg, std::vector<double>& extents) {
+    extents.clear();
+    if (msg.empty()) return;
+    // Per-character partial extents — mirrors wx's GetPartialTextExtents,
+    // which reports cumulative width up through each character. Shape the
+    // full string once and accumulate advances; map glyph cluster back to
+    // character index. For non-ligatured Latin text this is the same as
+    // shaping each prefix, but cheaper.
+    auto cps = DecodeUTF8(msg);
+    extents.resize(cps.size(), 0.0);
+    auto glyphs = impl->ShapeString(msg);
+
+    // Approximation: HarfBuzz output preserves cluster info per-glyph; we'd
+    // need it to map glyphs → input characters precisely. For our use case
+    // (TextEffect's per-character coloring), shaping each prefix yields the
+    // same widths and is what wx does internally. Go with the cumulative
+    // advance approach: split runs at each codepoint boundary by re-shaping.
+    // This is O(n^2) on length but text effect strings are short.
+    double cumulative = 0;
+    for (size_t i = 0; i < cps.size(); i++) {
+        std::string upTo = msg.substr(0, cps[i].byteStart + cps[i].byteLen);
+        auto gg = impl->ShapeString(upTo);
+        double w = 0;
+        for (auto& g : gg) w += g.xAdvance / 64.0;
+        extents[i] = w;
+        cumulative = w;
+    }
+    (void)cumulative;
+}
+
+void FreeTypeTextDrawingContext::SetOverlayMode(bool /*b*/) {
+    // Not needed: BlitGray/BlitBGRA always do source-over composition.
+}
+
+// ---------------------------------------------------------------------------
+// Factory + font parsing
+// ---------------------------------------------------------------------------
+TextDrawingContext* FreeTypeTextDrawingContext::Create(int w, int h, bool aa) {
+    return new FreeTypeTextDrawingContext(w, h, aa);
+}
+
+// Parse a wx native-font-info user description. Format is loose — tokens can
+// include style keywords (bold/italic/oblique/light), a numeric pixel size,
+// a charset (e.g. "utf-8"), and the face name in any order. Examples:
+//   "bold arial 26 utf-8"     (wxOSX/wxMSW style)
+//   "Arial 12"                (wxGTK/Pango style)
+//   "DejaVu Sans Bold 14"     (wxGTK/Pango style)
+bool FreeTypeTextDrawingContext::Register() {
+#ifdef XL_FT_DIRECTWRITE
+    // Only refuse to register where the caller has somewhere better to go. On
+    // Windows that is Direct2D. On Linux the alternative is wx/Pango, which
+    // cannot render off the main thread, so registering unconditionally and
+    // letting font lookup fail per-face (as it did before) is the lesser evil —
+    // and it keeps Fontconfig initialisation lazy, as it has always been.
+    {
+        std::lock_guard<std::mutex> lock(sFontEnumMutex);
+        EnsureFontEnumInit();
+        if (!sFontEnumOk) {
+            return false;
+        }
+    }
+#endif
+    TextDrawingContext::RegisterFactory(&FreeTypeTextDrawingContext::Create,
+                                        &FreeTypeTextDrawingContext::ParseTextFont,
+                                        &FreeTypeTextDrawingContext::ParseShapeFont);
+    TextDrawingContext::Initialize();
+    return true;
+}
+
+#else // no FreeType backend on this platform
+
+// Platforms without the FreeType backend don't link FreeType/HarfBuzz. Provide
+// no-op stubs so the symbols exist if anything references them. Register()
+// returns false so a caller falls through to another backend, and the empty TU
+// keeps the file compiling cleanly when picked up by the macOS Xcode
+// auto-discovery for src-core/.
+
+struct FreeTypeTextDrawingContext::Impl {};
+
+FreeTypeTextDrawingContext::FreeTypeTextDrawingContext(int, int, bool) {}
+FreeTypeTextDrawingContext::~FreeTypeTextDrawingContext() = default;
+void FreeTypeTextDrawingContext::ResetSize(int, int) {}
+size_t FreeTypeTextDrawingContext::GetWidth() const { return 0; }
+size_t FreeTypeTextDrawingContext::GetHeight() const { return 0; }
+void FreeTypeTextDrawingContext::Clear() {}
+const uint8_t* FreeTypeTextDrawingContext::FlushAndGetImage(int*, int*) { return nullptr; }
+void FreeTypeTextDrawingContext::SetFont(const TextFontInfo&, const xlColor&) {}
+void FreeTypeTextDrawingContext::DrawText(const std::string&, int, int, double) {}
+void FreeTypeTextDrawingContext::DrawText(const std::string&, int, int) {}
+void FreeTypeTextDrawingContext::GetTextExtent(const std::string&, double*, double*) {}
+void FreeTypeTextDrawingContext::GetTextExtents(const std::string&, std::vector<double>&) {}
+void FreeTypeTextDrawingContext::SetOverlayMode(bool) {}
+TextDrawingContext* FreeTypeTextDrawingContext::Create(int, int, bool) { return nullptr; }
+bool FreeTypeTextDrawingContext::Register() { return false; }
+
+#endif // FreeType backend
+
+// Parsing needs no FreeType, so it lives outside the backend guard and simply
+// defers to the shared toolkit-free implementation.
+namespace {
+#ifdef _WIN32
+constexpr char FT_DEFAULT_DESCRIPTOR_FACE[] = "Segoe UI";
+#else
+constexpr char FT_DEFAULT_DESCRIPTOR_FACE[] = "DejaVu Sans";
+#endif
+}
+
+TextFontInfo FreeTypeTextDrawingContext::ParseTextFont(const std::string& fontString) {
+    return TextDrawingContext::ParseFontDescriptor(fontString, FT_DEFAULT_DESCRIPTOR_FACE);
+}
+
+TextFontInfo FreeTypeTextDrawingContext::ParseShapeFont(const std::string& fontString) {
+    return TextDrawingContext::ParseShapeFontDescriptor(fontString, FT_DEFAULT_DESCRIPTOR_FACE);
+}

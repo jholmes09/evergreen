@@ -1,0 +1,132 @@
+/***************************************************************
+ * This source files comes from the xLights project
+ * https://www.xlights.org
+ * https://github.com/xLightsSequencer/xLights
+ * See the github commit history for a record of contributing
+ * developers.
+ * Copyright claimed based on commit dates recorded in Github
+ * License: https://github.com/xLightsSequencer/xLights/blob/master/License.txt
+ **************************************************************/
+
+#include <spdlog/fmt/fmt.h>
+
+#include "OffEffect.h"
+#include "../render/Effect.h"
+#include "../render/RenderBuffer.h"
+#include "../models/DMX/DmxDimmerAbility.h"
+#include "../models/DMX/DmxModel.h"
+#include "UtilFunctions.h"
+#include "models/Model.h"
+
+#include "../../include/Off.xpm"
+
+std::string OffEffect::sStyleDefault = "Black";
+
+OffEffect::OffEffect(int i) : RenderableEffect(i, "Off", Off, Off, Off, Off, Off)
+{
+    //ctor
+}
+
+OffEffect::~OffEffect()
+{
+    //dtor
+}
+
+void OffEffect::OnMetadataLoaded()
+{
+    sStyleDefault = GetStringDefault("Off_Style", sStyleDefault);
+}
+
+std::list<std::string> OffEffect::CheckEffectSettings(const SettingsMap& settings, AudioManager* media, Model* model, Effect* eff, bool renderCache)
+{
+    std::list<std::string> res = RenderableEffect::CheckEffectSettings(settings, media, model, eff, renderCache);
+
+    // if persistent is on then canvas/off transparent cant be checked
+    if (settings.Get("B_CHECKBOX_OverlayBkg", "0") == "0") {
+        if (settings.Get("T_CHECKBOX_Canvas", "0") == "1" &&
+            settings.Get("E_CHOICE_Off_Style", sStyleDefault) == "Black") {
+            res.push_back(fmt::format("    WARN: Canvas mode enabled on a off effect but effect is not transparent. This does nothing and slows down rendering. Effect: Off, Model: {}, Start {}", model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        } else if (settings.Get("T_CHECKBOX_Canvas", "0") == "0" &&
+            settings.Get("E_CHOICE_Off_Style", sStyleDefault) != "Black") {
+            res.push_back(fmt::format("    WARN: Canvas mode not enabled on a off effect and effect is transparent. This does not do anything useful. Effect: Off, Model: {}, Start {}", model->GetFullName(), FORMATTIME(eff->GetStartTimeMS())));
+        }
+    }
+
+    return res;
+}
+
+bool OffEffect::needToAdjustSettings(const std::string& version) {
+    if (IsVersionOlder("2024.11", version)) {
+        return true;
+    }
+    return RenderableEffect::needToAdjustSettings(version);
+}
+void OffEffect::adjustSettings(const std::string& version, Effect* effect, bool removeDefaults) {
+    RenderableEffect::adjustSettings(version, effect, removeDefaults);
+    std::string i = effect->GetSettings().Get("E_CHECKBOX_Off_Transparent", "");
+    if (i != "") {
+        effect->GetSettings().erase("E_CHECKBOX_Off_Transparent");
+        if (i == "1") {
+            i = effect->GetSettings().Get("T_CHECKBOX_Canvas", "");
+            if (i == "1") {
+                // old canvas + transparent OFF effects would be black as canvas would not
+                // have any alpha channels.
+                effect->GetSettings()["E_CHOICE_Off_Style"] = "Transparent -> Black";
+            } else {
+                effect->GetSettings()["E_CHOICE_Off_Style"] = "Transparent";
+            }
+        }
+    }
+}
+
+
+void OffEffect::Render(Effect* effect, const SettingsMap& settings, RenderBuffer& buffer)
+{
+    std::string style = settings.Get("CHOICE_Off_Style", sStyleDefault);
+    if (style == "Transparent") {
+        // dont change any pixels at all if we are transparent
+        return;
+    }
+
+    // Moving heads (and other DMX fixtures with a dimmer channel) shouldn't have their
+    // pan/tilt/color/etc. channels reset to black by an Off effect - only the dimmer
+    // should be turned off so the fixture stays where it was last positioned.
+    const DmxModel* dmxModel = dynamic_cast<const DmxModel*>(buffer.GetModel());
+    if (dmxModel != nullptr && dmxModel->HasDimmerAbility()) {
+        int dimmerChannel = dmxModel->GetDimmerAbility()->GetDimmerChannel();
+        if (dimmerChannel > 0 && (uint32_t)dimmerChannel <= buffer.GetPixelCount()) {
+            int idx = dimmerChannel - 1;
+            if (style == "Black") {
+                buffer.SetPixel(idx, 0, xlBLACK, false, false, true);
+            } else if (style == "Black -> Transparent") {
+                if (buffer.GetPixels()[idx] == xlBLACK) {
+                    buffer.GetPixels()[idx] = xlCLEAR;
+                }
+            } else if (style == "Transparent -> Black") {
+                if (buffer.GetPixels()[idx] == xlCLEAR) {
+                    buffer.SetPixel(idx, 0, xlBLACK, false, false, true);
+                }
+            }
+            return;
+        }
+    }
+
+    if (style == "Black") {
+        //  Every Node, every frame set to BLACK
+        buffer.Fill(xlBLACK);
+    } else if (style == "Black -> Transparent") {
+        for (size_t x = 0; x < buffer.GetPixelCount(); ++x) {
+            if (buffer.GetPixels()[x] == xlBLACK) {
+                buffer.GetPixels()[x] = xlCLEAR;
+            }
+        }
+    } else if (style == "Transparent -> Black") {
+        for (size_t x = 0; x < buffer.GetPixelCount(); ++x) {
+            if (buffer.GetPixels()[x] == xlCLEAR) {
+                buffer.GetPixels()[x] = xlBLACK;
+            }
+        }
+    }
+
+}
+

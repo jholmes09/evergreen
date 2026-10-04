@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<wxsmith>
+	<object class="wxPanel" name="EffectAssist">
+		<id_arg>0</id_arg>
+		<style>wxTAB_TRAVERSAL|wxWANTS_CHARS</style>
+		<handler function="OnResize" entry="EVT_SIZE" />
+		<object class="wxFlexGridSizer" variable="FlexGridSizer1" member="yes">
+			<cols>1</cols>
+			<rows>1</rows>
+		</object>
+	</object>
+</wxsmith>

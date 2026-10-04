@@ -1,0 +1,68 @@
+{
+    "effectName": "Kaleidoscope",
+    "canvasMode": true,
+    "description": "The Kaleidoscope effect distorts the pixels in the layers below it. The Canvas option in Layer Blending must be enabled for it to work.",
+    "properties": [
+        {
+            "id": "Kaleidoscope_Type",
+            "label": "Kaleidoscope Type",
+            "type": "enum",
+            "controlType": "choice",
+            "options": [
+                "Triangle",
+                "Square",
+                "Square 2",
+                "6-Fold",
+                "8-Fold",
+                "12-Fold",
+                "Radial"
+            ],
+            "default": "Triangle",
+            "description": "Selects the symmetry pattern used for the kaleidoscope reflection. Triangle and Square use edge-based mirroring, while 6/8/12-Fold use triangular tiling for higher-order symmetry, and Radial creates rotational segment repetition."
+        },
+        {
+            "id": "Kaleidoscope_X",
+            "label": "Center X",
+            "type": "int",
+            "controlType": "slider",
+            "default": 50,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Horizontal position of the kaleidoscope center point as a percentage of the buffer width."
+        },
+        {
+            "id": "Kaleidoscope_Y",
+            "label": "Center Y",
+            "type": "int",
+            "controlType": "slider",
+            "default": 50,
+            "min": 0,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Vertical position of the kaleidoscope center point as a percentage of the buffer height."
+        },
+        {
+            "id": "Kaleidoscope_Size",
+            "label": "Size",
+            "type": "int",
+            "controlType": "slider",
+            "default": 5,
+            "min": 2,
+            "max": 100,
+            "valueCurve": true,
+            "description": "Controls the size of the base tile that gets reflected to fill the model. Smaller values create more repetitions; larger values create fewer, bigger reflections."
+        },
+        {
+            "id": "Kaleidoscope_Rotation",
+            "label": "Rotation",
+            "type": "int",
+            "controlType": "slider",
+            "default": 0,
+            "min": 0,
+            "max": 359,
+            "valueCurve": true,
+            "description": "Rotates the entire kaleidoscope pattern around the center point in degrees."
+        }
+    ]
+}
