@@ -13,14 +13,15 @@
 // Show folder revision stamp.
 //
 // A show folder may carry a rev="..." attribute on the root element of
-// xlights_networks.xml. When it is present the folder is only opened after the
-// matching entry is confirmed, and the attribute is then removed so later opens
-// are unaffected. Shared by xLights and xSchedule; header-only so neither
+// xlights_networks.xml and/or xlights_rgbeffects.xml. When either is present the
+// folder is only opened after the matching entry is confirmed, and the attribute
+// is then removed from every file carrying it so later opens are unaffected. Shared by xLights and xSchedule; header-only so neither
 // project file needs to change.
 
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <wx/file.h>
 #include <wx/filefn.h>
@@ -160,11 +161,11 @@ inline void Derive(const uint8_t salt[kSaltBytes], const std::string& entry, uin
     }
 }
 
-// Locate rev="<hex>" inside the <Networks ...> start tag. On success, start/len
-// cover the attribute including its leading whitespace, and value is the hex.
-inline bool FindStamp(const std::string& xml, size_t& start, size_t& len, std::string& value)
+// Locate rev="<hex>" inside the root start tag (e.g. "<Networks"). On success,
+// start/len cover the attribute including its leading whitespace, and value is the hex.
+inline bool FindStamp(const std::string& xml, const char* rootTag, size_t& start, size_t& len, std::string& value)
 {
-    size_t tag = xml.find("<Networks");
+    size_t tag = xml.find(rootTag);
     if (tag == std::string::npos) return false;
     size_t tagEnd = xml.find('>', tag);
     if (tagEnd == std::string::npos) return false;
@@ -213,48 +214,66 @@ inline bool WriteAll(const wxString& path, const std::string& data)
 } // namespace detail
 
 // True when the folder may be opened: no stamp, or the entry matched (the stamp
-// is then cleared). False when the user cancels. Must run before anything reads
-// the show folder.
+// is then cleared from every file). False when the user cancels. Must run before
+// anything reads the show folder.
 inline bool Confirm(const wxString& showDir, wxWindow* parent)
 {
-    wxFileName fn(showDir, "xlights_networks.xml");
-    const wxString path = fn.GetFullPath();
-    std::string xml;
-    if (!wxFileExists(path) || !detail::ReadAll(path, xml)) return true;
+    struct Stamped {
+        wxString path;
+        std::string xml;
+        size_t start = 0, len = 0;
+        uint8_t salt[detail::kSaltBytes];
+        uint8_t expected[detail::kDigestBytes];
+    };
+    static const char* const kFiles[][2] = { { "xlights_networks.xml", "<Networks" },
+                                             { "xlights_rgbeffects.xml", "<xrgb" } };
 
-    size_t start = 0, len = 0;
-    std::string value;
-    if (!detail::FindStamp(xml, start, len, value)) return true;
-
-    uint8_t salt[detail::kSaltBytes];
-    uint8_t expected[detail::kDigestBytes];
-    if (value.size() != (detail::kSaltBytes + detail::kDigestBytes) * 2 ||
-        !detail::FromHex(value.substr(0, detail::kSaltBytes * 2), salt, detail::kSaltBytes) ||
-        !detail::FromHex(value.substr(detail::kSaltBytes * 2), expected, detail::kDigestBytes)) {
-        // A malformed stamp is treated as present: refuse rather than open silently.
-        wxMessageBox("This show folder could not be opened.", "Jeff Holmes Presents", wxOK | wxICON_ERROR, parent);
-        return false;
+    std::vector<Stamped> found;
+    for (const auto& f : kFiles) {
+        Stamped st;
+        st.path = wxFileName(showDir, f[0]).GetFullPath();
+        std::string value;
+        if (!wxFileExists(st.path) || !detail::ReadAll(st.path, st.xml)) continue;
+        if (!detail::FindStamp(st.xml, f[1], st.start, st.len, value)) continue;
+        if (value.size() != (detail::kSaltBytes + detail::kDigestBytes) * 2 ||
+            !detail::FromHex(value.substr(0, detail::kSaltBytes * 2), st.salt, detail::kSaltBytes) ||
+            !detail::FromHex(value.substr(detail::kSaltBytes * 2), st.expected, detail::kDigestBytes)) {
+            // A malformed stamp is treated as present: refuse rather than open silently.
+            wxMessageBox("This show folder could not be opened.", "Jeff Holmes Presents:", wxOK | wxICON_ERROR, parent);
+            return false;
+        }
+        found.push_back(std::move(st));
     }
+    if (found.empty()) return true;
 
     const wxString message = "Use of this show file without payment is unauthorized. Contact Jeff Holmes Presents for more information.";
     while (true) {
-        wxTextEntryDialog dlg(parent, message, "Jeff Holmes Presents", "", wxTextEntryDialogStyle | wxTE_PASSWORD);
+        wxTextEntryDialog dlg(parent, message, "Jeff Holmes Presents:", "", wxTextEntryDialogStyle | wxTE_PASSWORD);
         if (dlg.ShowModal() != wxID_OK) return false;
 
         const wxScopedCharBuffer utf8 = dlg.GetValue().ToUTF8();
-        uint8_t got[detail::kDigestBytes];
-        detail::Derive(salt, std::string(utf8.data(), utf8.length()), got);
-        uint8_t diff = 0;
-        for (size_t i = 0; i < detail::kDigestBytes; i++) diff |= (uint8_t)(got[i] ^ expected[i]);
-        if (diff == 0) break;
+        const std::string entry(utf8.data(), utf8.length());
+        bool matched = false;
+        for (const auto& st : found) {
+            uint8_t got[detail::kDigestBytes];
+            detail::Derive(st.salt, entry, got);
+            uint8_t diff = 0;
+            for (size_t i = 0; i < detail::kDigestBytes; i++) diff |= (uint8_t)(got[i] ^ st.expected[i]);
+            if (diff == 0) { matched = true; break; }
+        }
+        if (matched) break;
 
-        wxMessageBox("That entry was not accepted.", "Jeff Holmes Presents", wxOK | wxICON_WARNING, parent);
+        wxMessageBox("That entry was not accepted.", "Jeff Holmes Presents:", wxOK | wxICON_WARNING, parent);
     }
 
-    xml.erase(start, len);
-    if (!detail::WriteAll(path, xml)) {
-        wxMessageBox("The show folder was opened, but xlights_networks.xml could not be updated. You may be asked again next time.",
-                     "Jeff Holmes Presents", wxOK | wxICON_WARNING, parent);
+    bool allWritten = true;
+    for (auto& st : found) {
+        st.xml.erase(st.start, st.len);
+        if (!detail::WriteAll(st.path, st.xml)) allWritten = false;
+    }
+    if (!allWritten) {
+        wxMessageBox("The show folder was opened, but a show file could not be updated. You may be asked again next time.",
+                     "Jeff Holmes Presents:", wxOK | wxICON_WARNING, parent);
     }
     return true;
 }
