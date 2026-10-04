@@ -19,13 +19,36 @@ jobs:
     - name: Setup msbuild
       uses: microsoft/setup-msbuild@v2
 
+    # wxWidgets never changes between our builds, so keep the built copy and reuse it.
+    # The key includes the runner image so a compiler update forces a fresh build.
+    - name: Runner image
+      id: image
+      shell: pwsh
+      run: echo "version=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+
+    - name: Restore wxWidgets
+      id: wxcache
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}\..\wxWidgets
+        key: wxWidgets-xlights_2026.04-x64-Release-${{ steps.image.outputs.version }}
+
     # Same wxWidgets the xSchedule 2026.06 release builds with.
     - name: Download wxWidgets
+      if: steps.wxcache.outputs.cache-hit != 'true'
       run: git clone --depth=1 --shallow-submodules --recurse-submodules -b xlights_2026.04 https://github.com/xLightsSequencer/wxWidgets ..\wxWidgets\
 
     - name: Build wxWidgets
+      if: steps.wxcache.outputs.cache-hit != 'true'
       working-directory: ..\wxWidgets\
       run: msbuild /m .\build\msw\wx_vc17.sln /p:Configuration="Release" /p:Platform="x64"
+
+    # Intermediate object files are not needed to build against wxWidgets; dropping them keeps the saved copy small.
+    - name: Trim wxWidgets build files
+      if: steps.wxcache.outputs.cache-hit != 'true'
+      working-directory: ..\wxWidgets\
+      shell: pwsh
+      run: Get-ChildItem -Path build\msw -Recurse -File -Include *.obj,*.pch,*.tlog,*.ilk | Remove-Item -Force
 
     - name: Build xSchedule
       shell: cmd
