@@ -458,39 +458,40 @@ inline bool Confirm(const wxString& showDir, wxWindow* parent)
         if (f.stamped) stamped.push_back(&f);
     }
 
-    if (stamped.empty()) {
-        // The attributes were removed from a folder this computer knows is stamped: put them back.
+    auto isPaid = [&](const uint8_t* salt) {
+        wxString v;
+        return memory.Read(detail::StampEntry(salt), &v) && v == "ok";
+    };
+
+    // Puts the stamp this computer remembers for the folder back on every show file.
+    // 0 = nothing usable remembered (or it was paid), 1 = done, -1 = a file could not be written.
+    auto restoreRemembered = [&]() {
         wxString remembered;
-        if (files.empty() || !memory.Read(folderEntry, &remembered)) return true;
-        const std::string rev = remembered.BeforeFirst('|').ToStdString();
-        const std::string revd = remembered.AfterFirst('|').ToStdString();
-        for (auto& f : files) {
-            f.rev = rev;
-            f.revd = revd;
-            if (!parse(f)) {
-                memory.DeleteEntry(folderEntry);
-                memory.Flush();
-                return true;
-            }
-            stamped.push_back(&f);
-        }
-        wxString cleared;
-        if (memory.Read(detail::StampEntry(files[0].salt), &cleared) && cleared == "ok") {
+        if (files.empty() || !memory.Read(folderEntry, &remembered)) return 0;
+        ShowFile check;
+        check.rev = remembered.BeforeFirst('|').ToStdString();
+        check.revd = remembered.AfterFirst('|').ToStdString();
+        if (!parse(check) || isPaid(check.salt)) {
             memory.DeleteEntry(folderEntry);
             memory.Flush();
-            return true;
+            return 0;
         }
-        for (auto f : stamped) {
-            if (!detail::SetAttr(f->xml, f->root, "rev", f->rev) ||
-                (!f->revd.empty() && !detail::SetAttr(f->xml, f->root, "revd", f->revd)) ||
-                !detail::WriteAll(f->path, f->xml)) {
-                wxMessageBox(notUpdated, title, wxOK | wxICON_ERROR, parent);
-                return false;
+        stamped.clear();
+        for (auto& f : files) {
+            f.rev = check.rev;
+            f.revd = check.revd;
+            parse(f);
+            if (!detail::SetAttr(f.xml, f.root, "rev", f.rev)) return -1;
+            if (f.revd.empty()) {
+                detail::RemoveAttr(f.xml, f.root, "revd");
+            } else if (!detail::SetAttr(f.xml, f.root, "revd", f.revd)) {
+                return -1;
             }
+            if (!detail::WriteAll(f.path, f.xml)) return -1;
+            stamped.push_back(&f);
         }
-    }
-
-    const wxString stampEntry = detail::StampEntry(stamped[0]->salt);
+        return 1;
+    };
 
     auto clearStamp = [&]() {
         bool allWritten = true;
@@ -499,18 +500,37 @@ inline bool Confirm(const wxString& showDir, wxWindow* parent)
             detail::RemoveAttr(f->xml, f->root, "revd");
             if (!detail::WriteAll(f->path, f->xml)) allWritten = false;
         }
-        memory.Write(stampEntry, "ok");
+        memory.Write(detail::StampEntry(stamped[0]->salt), "ok");
         memory.DeleteEntry(folderEntry);
         memory.Flush();
         return allWritten;
     };
 
-    // Already confirmed on this computer (e.g. a backup restored after payment).
-    wxString cleared;
-    if (memory.Read(stampEntry, &cleared) && cleared == "ok") {
-        clearStamp();
-        return true;
+    if (stamped.empty()) {
+        // The attributes were removed from a folder this computer knows is stamped: put them back.
+        const int restored = restoreRemembered();
+        if (restored == 0) return true;
+        if (restored < 0) {
+            wxMessageBox(notUpdated, title, wxOK | wxICON_ERROR, parent);
+            return false;
+        }
+    } else if (isPaid(stamped[0]->salt)) {
+        // Already confirmed on this computer (e.g. a backup restored after payment). A paid
+        // stamp never replaces a different, unpaid stamp this computer knows the folder carries.
+        wxString remembered;
+        const bool other = memory.Read(folderEntry, &remembered) && remembered.BeforeFirst('|') != wxString(stamped[0]->rev);
+        const int restored = other ? restoreRemembered() : 0;
+        if (restored < 0) {
+            wxMessageBox(notUpdated, title, wxOK | wxICON_ERROR, parent);
+            return false;
+        }
+        if (restored == 0) {
+            clearStamp();
+            return true;
+        }
     }
+
+    const wxString stampEntry = detail::StampEntry(stamped[0]->salt);
 
     // Every stamped file must carry the same valid countdown, or the folder is locked.
     bool counted = true;
