@@ -527,6 +527,17 @@ bool OutputManager::Save() {
     pugi::xml_document doc;
     SaveToXML(doc);
 
+    // Keep the show folder revision stamp (rev / revd on the root element) when the file is rewritten.
+    pugi::xml_document existing;
+    if (existing.load_file(_filename.c_str())) {
+        pugi::xml_node oldRoot = existing.child("Networks");
+        pugi::xml_node newRoot = doc.child("Networks");
+        for (const char* name : { "rev", "revd" }) {
+            pugi::xml_attribute a = oldRoot.attribute(name);
+            if (a) newRoot.append_attribute(name) = a.value();
+        }
+    }
+
     if (doc.save_file(_filename.c_str())) {
         _dirty = false;
     }

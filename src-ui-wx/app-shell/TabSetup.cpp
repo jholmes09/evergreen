@@ -18,6 +18,7 @@
 #include <wx/settings.h>
 #include <wx/stdpaths.h>
 #include "settings/XLightsConfigAdapter.h"
+#include "ShowRevision.h"
 #include <wx/artprov.h>
 #include <wx/propgrid/propgrid.h>
 #include <wx/propgrid/advprops.h>
@@ -191,6 +192,11 @@ bool xLightsFrame::SetDir(const wxString& newdir, bool permanent)
 {
     if (readOnlyMode) {
         wxMessageBox("Show directory cannot be changed in read only mode.", "Read Only Mode", wxICON_INFORMATION | wxOK);
+        return false;
+    }
+
+    // Before anything is closed or read, so a declined folder changes nothing.
+    if (!ShowRevision::Confirm(newdir, this)) {
         return false;
     }
     
