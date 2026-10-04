@@ -1,0 +1,44 @@
+name: Windows build (xSchedule)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ current-schedule ]
+    paths-ignore:
+      - '*.md'
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Setup msbuild
+      uses: microsoft/setup-msbuild@v2
+
+    # Same wxWidgets the xSchedule 2026.06 release builds with.
+    - name: Download wxWidgets
+      run: git clone --depth=1 --shallow-submodules --recurse-submodules -b xlights_2026.04 https://github.com/xLightsSequencer/wxWidgets ..\wxWidgets\
+
+    - name: Build wxWidgets
+      working-directory: ..\wxWidgets\
+      run: msbuild /m .\build\msw\wx_vc17.sln /p:Configuration="Release" /p:Platform="x64"
+
+    - name: Build xSchedule
+      shell: cmd
+      working-directory: build_scripts\msw
+      run: call build_xSchedule_x64.cmd
+
+    - name: Build installer
+      working-directory: build_scripts\msw
+      run: ISCC.exe xSchedule_64bit.iss
+
+    - name: Upload installer
+      uses: actions/upload-artifact@v4
+      with:
+        name: xSchedule_Windows_x64_Installer
+        path: 'build_scripts\msw\output\*.exe'
+        retention-days: 30

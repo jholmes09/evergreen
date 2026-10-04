@@ -59,6 +59,7 @@
 #include "../xlights/xLights/utils/UtilFunctions.h"
 #include "../xlights/xLights/ui/wxUtilities.h"
 #include "../xlights/xLights/utils/ip_utils.h"
+#include "ShowRevision.h"
 #include "ConfigureMIDITimecodeDialog.h"
 #include "City.h"
 #include "events/ListenerManager.h"
@@ -927,6 +928,22 @@ xScheduleFrame::xScheduleFrame(wxWindow* parent, const std::string& showdir, con
 void xScheduleFrame::LoadSchedule()
 {
     wxASSERT(wxThread::IsMain());
+
+    // Must run before anything below reads or writes _showDir. Callers have already
+    // saved the new folder, so on refusal put back the folder that is running (if
+    // any) and save it again; with nothing loaded yet the caller closes xSchedule.
+    static std::string confirmedShowDir;
+    if (_showDir != confirmedShowDir) {
+        if (!ShowRevision::Confirm(_showDir, this)) {
+            spdlog::warn("Show folder not opened: {}", _showDir);
+            if (__schedule != nullptr && !confirmedShowDir.empty()) {
+                _showDir = confirmedShowDir;
+                SaveShowDir();
+            }
+            return;
+        }
+        confirmedShowDir = _showDir;
+    }
 
     // reset our special options
     SpecialOptions::StashShowDir(_showDir);
