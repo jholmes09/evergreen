@@ -1,0 +1,49 @@
+name: Windows build (xLights)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ current ]
+    paths-ignore:
+      - '*.md'
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        submodules: 'true'
+
+    - name: Setup msbuild
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Install ISPC
+      uses: ispc/install-ispc-action@main
+      with:
+        version: 1.31.0
+
+    - name: Install Vulkan SDK
+      uses: jakoch/install-vulkan-sdk-action@v1
+      with:
+        install_runtime: false
+        cache: true
+
+    # Prebuilt dependencies (wxWidgets etc.) are fetched by the project itself,
+    # pinned in ci_scripts/deps_version.txt.
+    - name: Build xLights
+      shell: cmd
+      working-directory: build_scripts\msw
+      run: call build_VS_x64.cmd
+
+    - name: Build installer
+      working-directory: build_scripts\msw
+      run: ISCC.exe xLights_4_64bit_VS.iss
+
+    - name: Upload installer
+      uses: actions/upload-artifact@v4
+      with:
+        name: xLights_Windows_x64_Installer
+        path: 'build_scripts\msw\output\*.exe'
+        retention-days: 30
