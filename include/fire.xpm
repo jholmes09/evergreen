@@ -1,0 +1,32 @@
+/* XPM */
+static const char *fire[] = {
+/* width height num_colors chars_per_pixel */
+"16 16 8 1",
+/* colors */
+"  c #000000",
+". c #fe8787",
+"X c #ff0303",
+"o c #ff6a00",
+"O c #ffbb00",
+"+ c #ffaa00",
+"@ c #eeff00",
+"# c #fff200",
+/* pixels */
+"                ",
+"                ",
+"    ..          ",
+"   ...   ..     ",
+"  ..X.   .. ..  ",
+" ..XX.. ... ... ",
+"..XXXX...X...X. ",
+"XXXXXX..XXXXXX. ",
+"XXoXXXXXXoXXXX..",
+"XoooXXXXXoXXXX..",
+"XoOoXXXoo+o+XXXo",
+"ooO+oo@+OOO+o+XX",
+"o+O@+oo+@O@+++oo",
+"++OO++@OOOOOO@O+",
+"oo+o@oo+o+o+o++o",
+"OO##OO#OO#OOO#OO"
+};
+

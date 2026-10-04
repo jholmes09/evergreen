@@ -1,0 +1,13 @@
+*.layout
+*.VC.db
+*.depend
+*.cpp.save-failed
+obj/
+x64/
+Debug/
+*.xschedule
+*.vcxproj.user
+.vs/
+.objs*/
+Release/
+/log.txt

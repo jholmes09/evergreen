@@ -1,0 +1,13 @@
+.objs/
+.objs*/
+xLights.depend
+xLights.layout
+*.psess
+*.vsp
+*.vspx
+x64/
+Debug/
+Release/
+.vs/
+*.vcxproj.user
+packages/

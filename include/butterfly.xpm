@@ -1,0 +1,32 @@
+/* XPM */
+static const char *butterfly[] = {
+/* width height num_colors chars_per_pixel */
+"16 16 8 1",
+/* colors */
+"  c #00ff44",
+". c #00ffc3",
+"X c #0077ff",
+"o c #6a00ff",
+"O c #e100ff",
+"+ c #ff0008",
+"@ c #eeff00",
+"# c #ff7b00",
+/* pixels */
+" .XoOOoX. ++++++",
+"@ .XoOoX.  @++++",
+"+@ .XooX. @@++++",
+"@+@ .XX. @@#++++",
+" @+@ .. @@#+#@@+",
+". @+@  @@#+#@  +",
+"X. @+@@@#+#@ ...",
+"oX. @+##+#@ ..XX",
+"OX. @#++#@ .XXoo",
+"oX. @#++@ .XXoOO",
+"X. @#+#@+@ .XoOO",
+". @#+#@ @+@ .XoO",
+" @#+#@ . @+@ .Xo",
+"@#+#@ .X. @+@ .X",
+"#+#@ .XoX. @+@ .",
+"+#@ .XoOoX. @+@ "
+};
+
