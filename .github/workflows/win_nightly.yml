@@ -1,0 +1,85 @@
+name: Windows Nightly
+
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  check_for_commits:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for new commits today
+        id: check-new-commits
+        shell: bash
+        run: |
+          # Get the timestamp from 24 hours ago
+          CUTOFF_TIME=$(date -d '24 hours ago' +%s)
+          # Get the timestamp of the latest commit
+          LATEST_COMMIT=$(git log -1 --format=%ct)
+          # Compare and set output
+          if [ "$LATEST_COMMIT" -gt "$CUTOFF_TIME" ]; then
+            echo "has-new-commits=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-new-commits=false" >> $GITHUB_OUTPUT
+          fi
+
+    outputs:
+      should_run: ${{ steps.check-new-commits.outputs.has-new-commits }}
+
+  build:
+    needs: check_for_commits
+    if: ${{ needs.check_for_commits.outputs.should_run == 'true' }}
+    runs-on: windows-2022
+    steps:
+      - name: Checkout xSchedule
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - name: Setup msbuild
+        uses: microsoft/setup-msbuild@v1
+      - name: Download wxWidgets
+        run: |
+          git clone --depth=1 --shallow-submodules --recurse-submodules -b xlights_2026.04 https://github.com/xLightsSequencer/wxWidgets ..\wxWidgets\
+      - name: Build wxWidgets
+        working-directory: ..\wxWidgets\
+        run: msbuild /m .\build\msw\wx_vc17.sln /p:Configuration="Release" /p:Platform="x64"
+      - name: Build xSchedule
+        shell: cmd
+        working-directory: build_scripts\msw
+        run: call build_xSchedule_x64.cmd
+      - name: Build Installer
+        working-directory: build_scripts\msw
+        run: ISCC.exe xSchedule_64bit.iss
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: xSchedule_Installer
+          path: 'build_scripts\msw\output\**'
+      - name: Generate WhatToTest changelog
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          # Fetch full history and tags for changelog generation
+          git fetch --tags --force --deepen 400 origin ${{ github.sha }}
+          # Generate changelog from last commit to HEAD
+          git log HEAD..origin/main --format="%s (%aN)" 2>/dev/null | head -n 50 > WhatToTest.txt || \
+          git log -50 --format="%s (%aN)" > WhatToTest.txt
+          # Display the changelog
+          echo "Generated changelog:"
+          cat WhatToTest.txt
+      - name: Create prerelease
+        if: github.ref == 'refs/heads/main'
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          prerelease: true
+          automatic_release_tag: "nightly"
+          title: "xSchedule Nightly"
+          files: |
+            ./build_scripts/msw/output/*.exe

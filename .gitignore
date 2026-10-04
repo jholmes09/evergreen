@@ -1,0 +1,11 @@
+bin/RemoteFalcon.so
+bin/xSMSDaemon.so
+bin/xSchedule
+xSchedule/RemoteFalcon/RemoteFalcon.cbp.mak
+xSchedule/RemoteFalcon/RemoteFalcon.cbp.mak.orig
+xSchedule/xSMSDaemon/xSMSDaemon.cbp.mak
+xSchedule/xSMSDaemon/xSMSDaemon.cbp.mak.orig
+xSchedule/xSchedule.cbp.mak
+xSchedule/xSchedule.cbp.mak.orig
+*.json
+*.wsuo
