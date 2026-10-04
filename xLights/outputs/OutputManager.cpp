@@ -33,6 +33,7 @@
 #include "../UtilFunctions.h"
 #include "../ExternalHooks.h"
 #include "utils/ip_utils.h"
+#include "../utils/ShowRevision.h"
 #include <wx/regex.h>
 
 #include <numeric>
@@ -409,6 +410,7 @@ wxXmlDocument OutputManager::SaveToXML() {
 
     root->AddAttribute("AutoUpdateFromBase", _autoUpdateFromBaseShowDir  ? "1" : "0");
     root->AddAttribute("BaseShowDir", _baseShowDir);
+    ShowRevision::CarryOver(_filename, root);
 
     doc.SetRoot(root);
 

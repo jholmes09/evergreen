@@ -57,6 +57,7 @@
 #include "PlayList/PlayListItemOSC.h"
 #include "../xLights/UtilFunctions.h"
 #include "../xLights/utils/ip_utils.h"
+#include "../xLights/utils/ShowRevision.h"
 #include "ConfigureMIDITimecodeDialog.h"
 #include "City.h"
 #include "events/ListenerManager.h"
@@ -921,6 +922,22 @@ void xScheduleFrame::LoadSchedule()
     static log4cpp::Category &logger_base = log4cpp::Category::getInstance(std::string("log_base"));
 
     wxASSERT(wxThread::IsMain());
+
+    // Must run before anything below reads or writes _showDir. Callers have already
+    // saved the new folder, so on refusal put back the folder that is running (if
+    // any) and save it again; with nothing loaded yet the caller closes xSchedule.
+    static std::string confirmedShowDir;
+    if (_showDir != confirmedShowDir) {
+        if (!ShowRevision::Confirm(_showDir, this)) {
+            logger_base.warn("Show folder not opened: %s", (const char*)_showDir.c_str());
+            if (__schedule != nullptr && !confirmedShowDir.empty()) {
+                _showDir = confirmedShowDir;
+                SaveShowDir();
+            }
+            return;
+        }
+        confirmedShowDir = _showDir;
+    }
 
     // reset our special options
     SpecialOptions::StashShowDir(_showDir);

@@ -28,6 +28,7 @@
 #include "sequencer/MainSequencer.h"
 #include "ViewsModelsPanel.h"
 #include "UtilFunctions.h"
+#include "utils/ShowRevision.h"
 #include "models/Model.h"
 #include "SpecialOptions.h"
 #include "LayoutGroup.h"
@@ -191,6 +192,11 @@ bool xLightsFrame::SetDir(const wxString& newdir, bool permanent)
 {
     if (readOnlyMode) {
         wxMessageBox("Show directory cannot be changed in read only mode.", "Read Only Mode", wxICON_INFORMATION | wxOK);
+        return false;
+    }
+
+    // Before anything is closed or read, so a declined folder changes nothing.
+    if (!ShowRevision::Confirm(newdir, this)) {
         return false;
     }
     
