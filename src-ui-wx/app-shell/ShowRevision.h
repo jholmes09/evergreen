@@ -246,7 +246,7 @@ inline bool Confirm(const wxString& showDir, wxWindow* parent)
     }
     if (found.empty()) return true;
 
-    const wxString message = "Use of this show file without payment is unauthorized. Contact Jeff Holmes Presents for more information.";
+    const wxString message = "Use of this show folder without payment is prohibited. Please contact Jeff Holmes Presents for more information.";
     while (true) {
         wxTextEntryDialog dlg(parent, message, "Jeff Holmes Presents:", "", wxTextEntryDialogStyle | wxTE_PASSWORD);
         if (dlg.ShowModal() != wxID_OK) return false;
