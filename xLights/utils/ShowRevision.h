@@ -32,6 +32,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <wx/config.h>
@@ -382,18 +383,25 @@ inline wxString StampEntry(const uint8_t salt[kSaltBytes])
 
 } // namespace detail
 
-// Keeps the stamp when xLights rewrites xlights_networks.xml from scratch.
-inline void CarryOver(const wxString& path, wxXmlNode* root)
+// The stamp attributes (name, value) currently on a show file's root element, so code
+// that rewrites the file from scratch can keep them. rootTag is e.g. "<xrgb".
+inline std::vector<std::pair<std::string, std::string>> StampAttrs(const wxString& path, const char* rootTag)
 {
+    std::vector<std::pair<std::string, std::string>> attrs;
     std::string xml;
-    if (!wxFileExists(path) || !detail::ReadAll(path, xml)) return;
+    if (!wxFileExists(path) || !detail::ReadAll(path, xml)) return attrs;
     for (const char* name : { "rev", "revd" }) {
         size_t start, len;
         std::string value;
-        if (detail::FindStamp(xml, "<Networks", start, len, value, name)) {
-            root->AddAttribute(name, value);
-        }
+        if (detail::FindStamp(xml, rootTag, start, len, value, name)) attrs.emplace_back(name, value);
     }
+    return attrs;
+}
+
+// Keeps the stamp when xLights rewrites xlights_networks.xml from scratch.
+inline void CarryOver(const wxString& path, wxXmlNode* root)
+{
+    for (const auto& a : StampAttrs(path, "<Networks")) root->AddAttribute(a.first, a.second);
 }
 
 // True when the folder may be opened: no stamp, days remain on the countdown and
